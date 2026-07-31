@@ -221,6 +221,10 @@ pub fn api_router<B: BlobStore + 'static>(state: AppState<B>) -> Router {
         .route("/v1/runs/{id}/retry", post(retry_run::<B>))
         .route("/v1/files/{id}/versions", get(list_versions::<B>))
         .route("/v1/files/{id}/url", post(issue_grant::<B>))
+        .route(
+            "/v1/files/{id}/renditions",
+            post(request_rendition::<B>).get(list_renditions::<B>),
+        )
         .layer(request_deadline)
         .with_state(state.clone())
         .merge(transfer_routes)
@@ -563,6 +567,166 @@ pub(crate) async fn remove_file_core<B: BlobStore>(
     )
     .await?;
     Ok(())
+}
+
+/// Rendition request body. Defaults produce a 256-square jpeg thumb.
+#[derive(Debug, Deserialize)]
+struct RenditionRequest {
+    #[serde(default = "default_rendition_kind")]
+    kind: String,
+    #[serde(default = "default_rendition_dim")]
+    width: u32,
+    #[serde(default = "default_rendition_dim")]
+    height: u32,
+    #[serde(default = "default_rendition_format")]
+    format: String,
+}
+
+fn default_rendition_kind() -> String {
+    "thumb".to_owned()
+}
+
+fn default_rendition_dim() -> u32 {
+    256
+}
+
+fn default_rendition_format() -> String {
+    "jpeg".to_owned()
+}
+
+/// Request a rendition: create the derived record at its deterministic
+/// path, link it to the source, and enqueue the render. A repeat with
+/// the same parameters returns the existing record instead of a
+/// duplicate, because the rendition path is unique per live file.
+async fn request_rendition<B: BlobStore>(
+    State(state): State<AppState<B>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(request): Json<RenditionRequest>,
+) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
+    let tenant = crate::auth::authenticate(&state, &headers).await?;
+    let id = parse_id(&id)?;
+    if !state.flow.has_workflow(crate::pipeline::DERIVE_WORKFLOW) {
+        return Err(CopalError::validation("the derivatives pipeline is not configured").into());
+    }
+    if !(16..=4096).contains(&request.width) || !(16..=4096).contains(&request.height) {
+        return Err(CopalError::validation("width and height must be within 16..=4096").into());
+    }
+    if !matches!(request.format.as_str(), "jpeg" | "png") {
+        return Err(CopalError::validation("format must be jpeg or png").into());
+    }
+    let kind_ok = !request.kind.is_empty()
+        && request.kind.len() <= 32
+        && request
+            .kind
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'));
+    if !kind_ok {
+        return Err(CopalError::validation(
+            "kind must be 1..=32 characters of letters, digits, hyphen, underscore",
+        )
+        .into());
+    }
+
+    let source = file_repo::get_file(&state.store, &tenant, &id)
+        .await?
+        .ok_or_else(|| CopalError::not_found(format!("file {id}")))?;
+    if !source.servable_content() {
+        return Err(CopalError::conflict("source has no served content").into());
+    }
+    if !source.content_type.starts_with("image/") {
+        return Err(CopalError::validation("renditions require an image source").into());
+    }
+    let source_digest = source
+        .digest
+        .clone()
+        .expect("servable content carries a digest");
+
+    let params = format!(
+        "w={}&h={}&f={}",
+        request.width, request.height, request.format
+    );
+    let full_digest = {
+        use sha2::Digest as _;
+        hex::encode(sha2::Sha256::digest(params.as_bytes()))
+    };
+    let params_digest = &full_digest[..16];
+    let rendition_path = format!(
+        "{}@{}-{}x{}.{}",
+        source.path, request.kind, request.width, request.height, request.format
+    );
+
+    let spec = FileSpec {
+        path: rendition_path.clone(),
+        content_type: format!("image/{}", request.format),
+        access: source.access,
+        metadata: serde_json::Value::Null,
+        idempotency_key: None,
+    };
+    let derived = match file_repo::create_file(&state.store, &tenant, &spec, "derive").await {
+        Ok(created) => created.record,
+        Err(CopalError::Conflict(_)) => {
+            // The path already holds this rendition; return it.
+            let existing = file_repo::find_by_path(&state.store, &tenant, &rendition_path)
+                .await?
+                .ok_or_else(|| CopalError::conflict("rendition path is contended"))?;
+            return Ok((StatusCode::OK, Json(crate::wire::wire_file(&existing))));
+        }
+        Err(other) => return Err(other.into()),
+    };
+    file_repo::mark_rendition(
+        &state.store,
+        &tenant,
+        &derived.id,
+        &id,
+        &request.kind,
+        params_digest,
+    )
+    .await?;
+
+    let input = json!({
+        "tenant": tenant.as_str(),
+        "derived_file": derived.id.as_str(),
+        "source_file": id.as_str(),
+        "source_digest": source_digest.as_str(),
+        "source_size": source.size_bytes,
+        "kind": request.kind,
+        "width": request.width,
+        "height": request.height,
+        "format": request.format,
+    });
+    let (run_id, _) = state
+        .flow
+        .enqueue(
+            &tenant,
+            crate::pipeline::DERIVE_WORKFLOW,
+            RunSpec {
+                input,
+                subject: Some(derived.id.clone()),
+                idempotency_key: Some(crate::pipeline::derive_run_key(
+                    &derived.id,
+                    &source_digest,
+                    params_digest,
+                )),
+            },
+        )
+        .await?;
+    let mut body = crate::wire::wire_file(&derived);
+    body["run"] = json!(run_id);
+    Ok((StatusCode::ACCEPTED, Json(body)))
+}
+
+/// Live renditions of a file, in path order.
+async fn list_renditions<B: BlobStore>(
+    State(state): State<AppState<B>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let tenant = crate::auth::authenticate(&state, &headers).await?;
+    let id = parse_id(&id)?;
+    let rows = file_repo::list_renditions(&state.store, &tenant, &id).await?;
+    let items: Vec<_> = rows.iter().map(crate::wire::wire_file).collect();
+    Ok(Json(json!({ "items": items })))
 }
 
 /// Stream bytes in and finish the upload in one request.

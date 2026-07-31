@@ -203,6 +203,61 @@ pub async fn list_by_path_prefix(
     rows.into_iter().map(FileRow::into_domain).collect()
 }
 
+/// Mark a file as a rendition of another: arm the `derived_from` link
+/// and record the kind and parameter digest. Runs right after the
+/// rendition record is created (links arm via UPDATE, never CREATE).
+pub async fn mark_rendition(
+    store: &Store,
+    tenant: &TenantId,
+    id: &FileId,
+    source: &FileId,
+    kind: &str,
+    params_digest: &str,
+) -> copal_core::Result<()> {
+    let source_rid = rid(source)?;
+    let query = Query::new()
+        .update_set(rid(id)?.to_string())
+        .map_err(|e| map_store_err("mark_rendition", e))?
+        .set_expr("derived_from", raw(source_rid.to_string()))
+        .map_err(|e| map_store_err("mark_rendition", e))?
+        .set("rendition_kind", Value::from(kind))
+        .map_err(|e| map_store_err("mark_rendition", e))?
+        .set("rendition_params_digest", Value::from(params_digest))
+        .map_err(|e| map_store_err("mark_rendition", e))?
+        .where_(eq("tenant_id", tenant.as_str()))
+        .return_after();
+    let rows: Vec<Value> = query_records(store.client(), &query)
+        .await
+        .map_err(|e| map_store_err("mark_rendition", e))?;
+    if rows.is_empty() {
+        return Err(CopalError::not_found("rendition record"));
+    }
+    Ok(())
+}
+
+/// Live renditions of a source file, in path order. Rides the
+/// renditions index with the link pinned.
+pub async fn list_renditions(
+    store: &Store,
+    tenant: &TenantId,
+    source: &FileId,
+) -> copal_core::Result<Vec<FileRecord>> {
+    let source_rid = rid(source)?;
+    let query = Query::new()
+        .select(None)
+        .from_table(TABLE)
+        .map_err(|e| map_store_err("list_renditions", e))?
+        .where_(eq("tenant_id", tenant.as_str()))
+        .where_str(format!("derived_from = {source_rid}"))
+        .where_(is_none("deleted_at"))
+        .order_by("path", "ASC")
+        .map_err(|e| map_store_err("list_renditions", e))?;
+    let rows: Vec<FileRow> = query_records(store.client(), &query)
+        .await
+        .map_err(|e| map_store_err("list_renditions", e))?;
+    rows.into_iter().map(FileRow::into_domain).collect()
+}
+
 /// Fetch one file, tenant-scoped, tombstones excluded.
 pub async fn get_file(
     store: &Store,

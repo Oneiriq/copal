@@ -162,6 +162,27 @@ download: their bytes flow only through issued grants. Listings walk
 the live-path index in key order; `delimiter` collapses shared segments
 into `CommonPrefixes`.
 
+## Renditions
+
+`POST /v1/files/{id}/renditions` derives an image rendition on the
+flow engine. The body takes `kind` (default `thumb`), `width` and
+`height` (16 to 4096, default 256), and `format` (`jpeg` or `png`).
+The response is 202 with the derived record in `draft` plus the run
+id; the render finishes it to `ready` through the standard claim and
+complete path, so a rendition is a real file with a digest, versions,
+grants, and every serving rule intact. `GET /v1/files/{id}/renditions`
+lists them.
+
+Renditions live at a deterministic path,
+`{source_path}@{kind}-{w}x{h}.{format}`, and repeating a request
+returns the existing record with 200 instead of a duplicate. The
+derived record links its source (`derived_from`) and inherits the
+source's access level. Sources must be servable images; a source past
+32 MiB or one that fails to decode fails the derived record with the
+run completed, and the reason lands in the run output. Re-uploading a
+source does not touch existing renditions; request again to render
+from the new content.
+
 ## Events and webhooks
 
 Terminal state transitions (`file.ready`, `file.quarantined`,

@@ -59,9 +59,10 @@ sealed gateway credentials).
    born in the same transaction as the state change, LIVE SELECT as
    the dispatcher wake). Remaining: GraphQL subscriptions over the
    same outbox, which needs the Janus runtime subscription seam.
-2. Derivatives on the existing flow engine: thumbnails and transcodes
-   as registered workflows, removing the recurring hosted-transform
-   tax that drives the alternatives market.
+2. Derivatives: image renditions shipped on the flow engine
+   (deterministic paths, idempotent repeats, refusals that fail the
+   derived record with the run completed). Remaining: transcodes and
+   documents, which need an external transformer seam.
 3. Per-tenant BYO bucket over OpenDAL: each tenant's bytes in their
    own bucket and keys. The data-residency wedge.
 4. `cg2` HMAC edge tokens for CDN-edge verification without a

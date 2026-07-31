@@ -42,6 +42,14 @@ sha2 = { workspace = true }
 reqwest = { version = "0.12", default-features = false, features = [
     "rustls-tls",
 ] }
+# Rendition decoding and encoding. Decoders cover the common upload
+# formats; renditions encode to jpeg or png.
+image = { version = "0.25", default-features = false, features = [
+    "jpeg",
+    "png",
+    "gif",
+    "webp",
+] }
 
 [dev-dependencies]
 base64 = "0.22"

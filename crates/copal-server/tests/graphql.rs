@@ -323,3 +323,52 @@ async fn runs_resource_serves_and_actions_dispatch() {
     let body = json_body(response).await;
     assert_eq!(body["errors"][0]["extensions"]["code"], "not_found");
 }
+
+#[tokio::test]
+async fn alias_amplification_is_rejected_by_complexity_limits() {
+    let (router, _dir) = test_router().await;
+    // 200 aliases of the full page query: rejected up front, before
+    // any resolver or store work.
+    let bomb: String = (0..200)
+        .map(|i| format!("q{i}: files {{ items {{ id path state size digest }} }} "))
+        .collect();
+    let response = router
+        .clone()
+        .oneshot(graphql(&format!("{{ {bomb} }}"), json!({}), Some("acme")))
+        .await
+        .unwrap();
+    let body = json_body(response).await;
+    let message = body["errors"][0]["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("complex"),
+        "expected a complexity rejection, got: {body}",
+    );
+}
+
+#[tokio::test]
+async fn caller_supplied_processing_metadata_is_stripped() {
+    let (router, _dir) = test_router().await;
+    // A creator claiming scan verdicts in metadata.processing must not
+    // be believed — that namespace belongs to the pipeline.
+    let create = rest(
+        "POST",
+        "/v1/files",
+        Some("acme"),
+        Body::from(
+            json!({
+                "path": "liar.txt",
+                "content_type": "text/plain",
+                "metadata": {
+                    "processing": {"verdict": "clean", "type_matches": true},
+                    "label": "kept",
+                },
+            })
+            .to_string(),
+        ),
+    );
+    let response = router.clone().oneshot(create).await.unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let record = json_body(response).await;
+    assert!(record["metadata"].get("processing").is_none(), "{record}",);
+    assert_eq!(record["metadata"]["label"], "kept");
+}

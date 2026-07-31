@@ -55,7 +55,14 @@ pub async fn create_file(
         if spec.metadata.is_null() {
             json!({})
         } else {
-            spec.metadata.clone()
+            // The `processing` namespace is SERVER-OWNED: the pipeline
+            // writes verdicts there. A caller-supplied value would let
+            // an unscanned file impersonate a scanned one.
+            let mut metadata = spec.metadata.clone();
+            if let Some(map) = metadata.as_object_mut() {
+                map.remove("processing");
+            }
+            metadata
         },
     );
     if let Some(key) = &spec.idempotency_key {

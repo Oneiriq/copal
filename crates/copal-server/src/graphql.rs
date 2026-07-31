@@ -20,7 +20,7 @@ use axum::{Json, Router};
 use copal_blob::BlobStore;
 use copal_core::{CopalError, FileId, FileState, TenantId};
 use copal_store::repo::{file as file_repo, flow as flow_repo};
-use janus::runtime::graphql::build_schema;
+
 use janus::runtime::{
     BoxFuture, Dispatcher, JanusContext, JanusError, ListOutput, Middleware, Next, Operation,
     Outcome, Payload, Resolvers, SortDirection,
@@ -316,11 +316,20 @@ struct GraphqlState<B: BlobStore> {
 /// construction-time bugs the contract tests catch first.
 pub fn graphql_router<B: BlobStore + 'static>(state: AppState<B>) -> Router {
     let tables = copal_store::schema::tables();
-    let schema = build_schema(
+    // Depth and complexity ceilings close the alias-amplification hole
+    // (N aliases of files(limit: 100) multiplying into the store). The
+    // schema has no cycles, so honest queries sit far below both.
+    // Introspection stays on deliberately: GET /graphql serves the SDL
+    // openly, so introspection reveals nothing the contract does not.
+    let schema = janus::runtime::graphql::schema_builder(
         &tables,
         dispatcher(state.clone()).expect("resolver completeness"),
     )
-    .expect("contract builds a schema");
+    .expect("contract builds a schema")
+    .limit_depth(10)
+    .limit_complexity(500)
+    .finish()
+    .expect("schema finishes");
     let sdl =
         janus::generate_sdl(&crate::contract::contract(), &tables).expect("contract generates SDL");
     let gql = GraphqlState {

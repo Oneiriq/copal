@@ -54,6 +54,11 @@ pub struct AuthConfig {
     pub admin_token: Option<String>,
 }
 
+/// A fixed 64-hex compare target (matching no real key) burned on
+/// unknown key ids, so lookup misses cost the same hash-and-compare as
+/// secret mismatches.
+const DUMMY_HASH: &str = "5f1f0e8a2f2a2f2a5c9d8b7a6f5e4d3c2b1a09f8e7d6c5b4a3928170605f4e3d";
+
 fn refused() -> ApiError {
     // Uniform: parse failure, unknown key, wrong secret, and revoked
     // key are indistinguishable to the caller.
@@ -80,9 +85,14 @@ pub async fn authenticate<B: BlobStore>(
                 .and_then(|v| v.strip_prefix("Bearer "))
                 .ok_or_else(refused)?;
             let token = ApiKeyToken::parse(bearer).map_err(|_| refused())?;
-            let row = auth_repo::fetch_key(&state.store, &token.key_id)
-                .await?
-                .ok_or_else(refused)?;
+            let row = auth_repo::fetch_key(&state.store, &token.key_id).await?;
+            let Some(row) = row else {
+                // Burn the same hash-compare an existing key would
+                // cost, so "unknown id" and "wrong secret" are
+                // indistinguishable by timing as well as by message.
+                let _ = copal_sign::verify_secret(&token.secret, DUMMY_HASH);
+                return Err(refused());
+            };
             if !copal_sign::verify_secret(&token.secret, &row.key_hash) {
                 return Err(refused());
             }

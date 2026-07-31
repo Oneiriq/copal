@@ -31,7 +31,7 @@ Every value comes from the environment. Defaults target local development.
 | `COPAL_TUS_SESSION_TTL_SECS` | `86400` | Resumable-upload and S3 multipart sessions older than this are swept with their staged bytes. |
 | `COPAL_CORS_ORIGINS` | unset | Comma-separated browser-origin allowlist. Unset attaches no CORS layer at all. |
 | `COPAL_WEBHOOK_ALLOW_PRIVATE_TARGETS` | `false` | Permit webhook endpoints resolving to private, loopback, or link-local addresses. Off by default: tenant-supplied URLs pointing inside the deployment are server-side request forgery. Turn on only when receivers are genuinely internal and tenants are trusted. |
-| `COPAL_RESIDENCIES` | unset | JSON map of named storage residencies beyond `local`, e.g. `{"eu": {"scheme": "s3", "bucket": "...", "endpoint": "...", "region": "...", "access_key_id": "...", "secret_access_key": "..."}}`. Filesystem residencies use `{"scheme": "fs", "root": "..."}`. Names are lowercase alphanumeric. |
+| `COPAL_RESIDENCIES` | unset | JSON map of named storage residencies beyond `local`, e.g. `{"eu": {"scheme": "s3", "bucket": "...", "endpoint": "...", "region": "...", "access_key_id": "...", "secret_access_key": "...", "encryption_key": "<64 hex>"}}`. Filesystem residencies use `{"scheme": "fs", "root": "...", "encryption_key": "<64 hex>"}`. `encryption_key` is optional and seals that residency's objects under its own key instead of the master. Names are lowercase alphanumeric. |
 
 ## Key custody
 
@@ -130,6 +130,15 @@ residency means. The blob master key, when configured, seals content
 in every residency. Resumable-upload staging always lives on the
 local backend; completed sessions stream into the tenant's residency
 at promotion.
+
+A residency may carry its own `encryption_key`, which seals its
+objects instead of the master key and is what gives a tenant data
+nobody else's key can open. Keys attach to residencies rather than to
+tenants because a key boundary scopes deduplication exactly as a
+backend boundary does, and residencies already carry that scope: a
+tenant that needs its own key gets its own residency, with its own
+bucket and credentials to match. Losing a residency key loses that
+residency's objects; the master key cannot open them.
 
 Every instance that runs sweeps must configure the residencies whose
 rows it may collect; a row whose residency is unknown to the instance

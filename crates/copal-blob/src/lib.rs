@@ -23,7 +23,13 @@ use copal_core::{ContentDigest, CopalError, DigestBuilder};
 #[serde(tag = "scheme", rename_all = "lowercase")]
 pub enum BackendConfig {
     /// Local filesystem under a root directory.
-    Fs { root: String },
+    Fs {
+        root: String,
+        /// Optional 64-hex key sealing this residency's objects. Unset
+        /// falls back to the deployment master key.
+        #[serde(default)]
+        encryption_key: Option<String>,
+    },
     /// An S3-compatible service. `endpoint` covers MinIO-style and
     /// other compatible targets; unset means AWS itself.
     S3 {
@@ -36,7 +42,21 @@ pub enum BackendConfig {
         region: Option<String>,
         access_key_id: String,
         secret_access_key: String,
+        /// Optional 64-hex key sealing this residency's objects.
+        #[serde(default)]
+        encryption_key: Option<String>,
     },
+}
+
+impl BackendConfig {
+    /// The residency's own sealing key, when it carries one.
+    pub fn encryption_key(&self) -> Option<&str> {
+        match self {
+            Self::Fs { encryption_key, .. } | Self::S3 { encryption_key, .. } => {
+                encryption_key.as_deref()
+            }
+        }
+    }
 }
 
 /// Outcome of a finalized streaming upload.
@@ -167,6 +187,7 @@ impl ObjectStore {
     pub fn open(root: &str) -> copal_core::Result<Self> {
         Self::open_backend(&BackendConfig::Fs {
             root: root.to_owned(),
+            encryption_key: None,
         })
     }
 
@@ -181,7 +202,7 @@ impl ObjectStore {
     /// Open any configured backend.
     pub fn open_backend(config: &BackendConfig) -> copal_core::Result<Self> {
         let op = match config {
-            BackendConfig::Fs { root } => Operator::new(Fs::default().root(root))
+            BackendConfig::Fs { root, .. } => Operator::new(Fs::default().root(root))
                 .map_err(|e| CopalError::Blob(format!("open fs root: {e}")))?,
             BackendConfig::S3 {
                 bucket,
@@ -190,6 +211,7 @@ impl ObjectStore {
                 region,
                 access_key_id,
                 secret_access_key,
+                ..
             } => {
                 let mut builder = S3::default()
                     .bucket(bucket)
@@ -208,13 +230,32 @@ impl ObjectStore {
                     .map_err(|e| CopalError::Blob(format!("open s3 backend: {e}")))?
             }
         };
-        Ok(Self { op, cipher: None })
+        // A residency's own key seals its objects; deployments
+        // without one inherit the master key from the caller. Keys are
+        // per residency rather than per tenant because a key change
+        // scopes deduplication exactly the way a backend change does,
+        // and residencies already carry that scope: a tenant that
+        // needs its own key gets its own residency.
+        let cipher = match config.encryption_key() {
+            Some(key) => Some(crypto::BlobCipher::from_hex(key)?),
+            None => None,
+        };
+        Ok(Self { op, cipher })
     }
 
     /// Attach the encryption-at-rest cipher to any opened backend.
+    /// A key the backend config already carries wins: the residency's
+    /// own key is more specific than the deployment master.
     pub fn with_cipher(mut self, key_hex: &str) -> copal_core::Result<Self> {
-        self.cipher = Some(crypto::BlobCipher::from_hex(key_hex)?);
+        if self.cipher.is_none() {
+            self.cipher = Some(crypto::BlobCipher::from_hex(key_hex)?);
+        }
         Ok(self)
+    }
+
+    /// Whether this store seals what it writes.
+    pub fn is_encrypted(&self) -> bool {
+        self.cipher.is_some()
     }
 
     /// Move a finished object onto its address. Filesystem backends
@@ -735,6 +776,44 @@ mod tests {
             store.read(&absent).await.unwrap_err(),
             CopalError::NotFound(_)
         ));
+    }
+
+    #[tokio::test]
+    async fn residency_keys_seal_independently() {
+        // A residency carrying its own key seals with it, and a store
+        // holding a different key cannot open those bytes: key
+        // separation is what makes a residency's data its own.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_str().unwrap().to_owned();
+        let own_key = "a".repeat(64);
+        let other_key = "b".repeat(64);
+
+        let config = BackendConfig::Fs {
+            root: root.clone(),
+            encryption_key: Some(own_key.clone()),
+        };
+        let store = ObjectStore::open_backend(&config).unwrap();
+        assert!(store.is_encrypted(), "the residency key applies");
+        // A master key does not override a residency's own key.
+        let store = store.with_cipher(&other_key).unwrap();
+        let stored = store
+            .put_streamed(body(&[b"residency bytes"]))
+            .await
+            .unwrap();
+        assert_eq!(
+            store.read(&stored.digest).await.unwrap(),
+            &b"residency bytes"[..],
+        );
+
+        let foreign = ObjectStore::open_backend(&BackendConfig::Fs {
+            root,
+            encryption_key: Some(other_key),
+        })
+        .unwrap();
+        assert!(
+            foreign.read(&stored.digest).await.is_err(),
+            "another key cannot open this residency's objects",
+        );
     }
 
     #[tokio::test]

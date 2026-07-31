@@ -39,9 +39,9 @@ The items that gate running Copal anywhere real.
    during a rotation window.
 3. Audit forensics: record the forwarded origin on audit rows when
    the proxy provides one.
-4. Per-tenant blob keys, building on the shipped encryption at rest
-   (chunked AEAD, plaintext digests, non-destructive enablement).
-   The data-residency story below depends on this.
+4. Per-residency encryption keys shipped on top of encryption at
+   rest (chunked AEAD, plaintext digests, non-destructive
+   enablement); a residency's own key seals its objects.
 5. Per-tenant byte quotas and usage accounting shipped (logical
    usage, pre-flight refusals, in-stream headroom clamps on every
    upload face). Request-rate limits remain at the proxy.
@@ -82,7 +82,9 @@ From the July 2026 audit, in the order they matter:
 2. S3 multipart upload (shipped): the aws CLI needs it above 8 MiB.
 3. Signed upload URLs shipped: write capabilities in the `cg1`
    family, single-use, op-scoped so a read token cannot write.
-4. Per-tenant blob keys (the sealed-object header names its key).
+4. Per-residency encryption keys shipped: a residency seals with its
+   own key, so a tenant needing key separation takes its own
+   residency (which already scopes dedupe and backends).
 5. GraphQL parity for renditions, events, webhooks, usage, and edge
    tokens, plus subscriptions over the outbox.
 6. Metrics and traces, then cached usage counters for large tenants.

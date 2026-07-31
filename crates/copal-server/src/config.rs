@@ -81,6 +81,7 @@ impl Config {
                     .and_then(|raw| crate::auth::AuthMode::parse(&raw))
                     .unwrap_or_default(),
                 admin_token: std::env::var("COPAL_ADMIN_TOKEN").ok(),
+                admin_token_previous: std::env::var("COPAL_ADMIN_TOKEN_PREVIOUS").ok(),
             },
             request_timeout_secs: env_parse("COPAL_REQUEST_TIMEOUT_SECS", 30),
             transfer_timeout_secs: env_parse("COPAL_TRANSFER_TIMEOUT_SECS", 3_600),

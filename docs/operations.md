@@ -16,6 +16,7 @@ Every value comes from the environment. Defaults target local development.
 | `COPAL_UPLOAD_LEASE_SECS` | `900` | Upload claim lease. Expired claims are stealable and reaped. |
 | `COPAL_AUTH_MODE` | `header` | `header` (development) or `keys`. The default flips to `keys` at 1.0. |
 | `COPAL_ADMIN_TOKEN` | unset | Operator token. Unset disables the admin surface entirely. |
+| `COPAL_ADMIN_TOKEN_PREVIOUS` | unset | Outgoing operator token during a rotation window; accepted beside the current one, then unset. |
 | `COPAL_BLOCKED_EXTENSIONS` | built-in list | Comma-separated denylist for the upload pipeline. |
 | `COPAL_ENFORCE_TYPE_MATCH` | `false` | Quarantine declared-type lies instead of annotating them. |
 | `COPAL_SWEEP_INTERVAL_SECS` | `60` | Maintenance cadence. |
@@ -44,7 +45,12 @@ the hash. Key names are unique per tenant, so rotation reads as revoke old,
 mint new under the next name. Listings never include hash material.
 
 Custody and lifecycle actions land in the audit trail: `key.minted`,
-`key.revoked`, `grant.issued`, `grant.revoked`, `file.removed`. Audit rows
+`key.revoked`, `grant.issued`, `grant.revoked`, `file.removed`. When
+the proxy forwards a client origin (`x-forwarded-for`), the first hop
+is recorded on the row for forensics; it plays no part in
+authorization. Rotate the operator token with zero downtime by moving
+the old value to `COPAL_ADMIN_TOKEN_PREVIOUS`, deploying the new one,
+and unsetting the previous once callers have moved. Audit rows
 are immutable inside the engine; an UPDATE or DELETE against one aborts in
 SurrealDB itself.
 

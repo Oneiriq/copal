@@ -281,6 +281,7 @@ async fn mint_key<B: BlobStore>(
         "admin",
         "key.minted",
         &row.key_id(),
+        forwarded_origin(&headers).as_deref(),
         Some(json!({ "name": row.name })),
     )
     .await?;
@@ -325,6 +326,7 @@ async fn revoke_key<B: BlobStore>(
         "admin",
         "key.revoked",
         &key_id,
+        forwarded_origin(&headers).as_deref(),
         None,
     )
     .await?;
@@ -350,6 +352,17 @@ async fn list_audit<B: BlobStore>(
     let limit = params.limit.unwrap_or(200).clamp(1, 1_000);
     let events = copal_store::repo::auth::list_audit(&state.store, &tenant, limit).await?;
     Ok(Json(json!({ "items": events })))
+}
+
+/// The proxy-forwarded client origin, first hop only, for audit
+/// forensics. Never used for authorization.
+pub(crate) fn forwarded_origin(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|raw| raw.split(',').next())
+        .map(|first| first.trim().to_owned())
+        .filter(|first| !first.is_empty())
 }
 
 fn parse_id(raw: &str) -> Result<FileId, ApiError> {
@@ -498,7 +511,7 @@ async fn delete_file<B: BlobStore>(
 ) -> Result<StatusCode, ApiError> {
     let tenant = crate::auth::authenticate(&state, &headers).await?;
     let id = parse_id(&id)?;
-    remove_file_core(&state, &tenant, &id).await?;
+    remove_file_core(&state, &tenant, &id, forwarded_origin(&headers).as_deref()).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -508,6 +521,7 @@ pub(crate) async fn remove_file_core<B: BlobStore>(
     state: &AppState<B>,
     tenant: &TenantId,
     id: &FileId,
+    origin: Option<&str>,
 ) -> Result<(), ApiError> {
     file_repo::soft_delete(&state.store, tenant, id).await?;
     copal_store::repo::auth::record_audit(
@@ -516,6 +530,7 @@ pub(crate) async fn remove_file_core<B: BlobStore>(
         tenant.as_str(),
         "file.removed",
         id.as_str(),
+        origin,
         None,
     )
     .await?;
@@ -812,6 +827,7 @@ pub(crate) async fn issue_grant_core<B: BlobStore>(
     id: &FileId,
     ttl_secs: u32,
     max_uses: Option<u32>,
+    origin: Option<&str>,
 ) -> Result<serde_json::Value, ApiError> {
     if ttl_secs == 0 || ttl_secs > 31_536_000 {
         return Err(CopalError::validation("ttl_secs must be between 1 and 31536000").into());
@@ -853,6 +869,7 @@ pub(crate) async fn issue_grant_core<B: BlobStore>(
         tenant.as_str(),
         "grant.issued",
         &token.grant_id,
+        origin,
         Some(json!({ "file": id.as_str(), "ttl_secs": ttl_secs, "max_uses": max_uses })),
     )
     .await?;
@@ -874,7 +891,15 @@ async fn issue_grant<B: BlobStore>(
 ) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
     let tenant = crate::auth::authenticate(&state, &headers).await?;
     let id = parse_id(&id)?;
-    let issued = issue_grant_core(&state, &tenant, &id, request.ttl_secs, request.max_uses).await?;
+    let issued = issue_grant_core(
+        &state,
+        &tenant,
+        &id,
+        request.ttl_secs,
+        request.max_uses,
+        forwarded_origin(&headers).as_deref(),
+    )
+    .await?;
     Ok((StatusCode::CREATED, Json(issued)))
 }
 
@@ -955,6 +980,7 @@ async fn revoke_grant<B: BlobStore>(
         tenant.as_str(),
         "grant.revoked",
         &grant_ref,
+        forwarded_origin(&headers).as_deref(),
         None,
     )
     .await?;

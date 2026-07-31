@@ -120,6 +120,7 @@ pub async fn record_audit(
     actor: &str,
     action: &str,
     subject: &str,
+    origin: Option<&str>,
     detail: Option<Value>,
 ) -> copal_core::Result<()> {
     let id = ulid::Ulid::new().to_string().to_ascii_lowercase();
@@ -130,6 +131,9 @@ pub async fn record_audit(
     payload.insert("actor".into(), json!(actor));
     payload.insert("action".into(), json!(action));
     payload.insert("subject".into(), json!(subject));
+    if let Some(origin) = origin {
+        payload.insert("origin".into(), json!(origin));
+    }
     if let Some(detail) = detail {
         payload.insert("detail".into(), detail);
     }

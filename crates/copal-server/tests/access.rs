@@ -24,6 +24,7 @@ async fn keyed_stack() -> (axum::Router, Store, tempfile::TempDir) {
     let state = AppState::new(store.clone(), blobs).with_auth(AuthConfig {
         mode: AuthMode::ApiKeys,
         admin_token: Some(ADMIN.into()),
+        admin_token_previous: None,
     });
     (build_router(state), store, dir)
 }
@@ -316,6 +317,7 @@ async fn the_admin_surface_splits_off_the_tenant_router() {
     let state = AppState::new(store, blobs).with_auth(AuthConfig {
         mode: AuthMode::ApiKeys,
         admin_token: Some(ADMIN.into()),
+        admin_token_previous: None,
     });
 
     // The tenant-facing router alone has NO admin routes at all.
@@ -469,4 +471,56 @@ async fn refused_serves_do_not_burn_grant_uses() {
         .unwrap()
         .unwrap();
     assert_eq!(row.uses, 0, "a refused serve must not burn a use");
+}
+
+#[tokio::test]
+async fn audit_rows_record_the_forwarded_origin() {
+    let (router, _store, _dir) = keyed_stack().await;
+    let token = mint(&router, "acme", "ci").await;
+    let id = seed(&router, &token, "traced.txt", "private").await;
+
+    // Delete with a proxy-forwarded origin on the request.
+    let mut remove = request(
+        "DELETE",
+        &format!("/v1/files/{id}"),
+        Some(&token),
+        None,
+        None,
+    );
+    remove
+        .headers_mut()
+        .insert("x-forwarded-for", "203.0.113.7, 10.0.0.1".parse().unwrap());
+    let response = router.clone().oneshot(remove).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    let response = router
+        .clone()
+        .oneshot(request(
+            "GET",
+            "/v1/admin/tenants/acme/audit",
+            None,
+            Some(ADMIN),
+            None,
+        ))
+        .await
+        .unwrap();
+    let body = json_body(response).await;
+    let removed = body["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["action"] == "file.removed")
+        .expect("file.removed audited");
+    assert_eq!(
+        removed["origin"], "203.0.113.7",
+        "first forwarded hop only: {removed}",
+    );
+    // Rows without a forwarded header carry no origin at all.
+    let minted = body["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["action"] == "key.minted")
+        .unwrap();
+    assert!(minted["origin"].is_null(), "{minted}");
 }

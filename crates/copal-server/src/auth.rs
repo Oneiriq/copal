@@ -52,6 +52,10 @@ pub struct AuthConfig {
     pub mode: AuthMode,
     /// Operator token guarding the admin surface; absent = disabled.
     pub admin_token: Option<String>,
+    /// The outgoing operator token during a rotation window: accepted
+    /// beside the current one, so rotation needs no restart and no
+    /// moment where neither token works. Unset outside rotations.
+    pub admin_token_previous: Option<String>,
 }
 
 /// A fixed 64-hex compare target (matching no real key) burned on
@@ -104,7 +108,10 @@ pub async fn authenticate<B: BlobStore>(
     }
 }
 
-/// Gate an admin route on the operator token, constant-time.
+/// Gate an admin route on the operator token, constant-time. During a
+/// rotation window the previous token is accepted as well; both
+/// candidates are always compared, so the answer's timing does not
+/// reveal which one matched.
 pub fn require_admin<B: BlobStore>(
     state: &AppState<B>,
     headers: &HeaderMap,
@@ -118,7 +125,12 @@ pub fn require_admin<B: BlobStore>(
         .unwrap_or_default();
     // Hash both sides, then compare in constant time: no length leak,
     // no prefix leak.
-    if copal_sign::verify_secret(presented, &copal_sign::hash_secret(configured)) {
+    let current = copal_sign::verify_secret(presented, &copal_sign::hash_secret(configured));
+    let previous = match state.auth.admin_token_previous.as_deref() {
+        Some(prior) => copal_sign::verify_secret(presented, &copal_sign::hash_secret(prior)),
+        None => false,
+    };
+    if current || previous {
         Ok(())
     } else {
         Err(CopalError::unauthorized("missing or invalid admin token").into())

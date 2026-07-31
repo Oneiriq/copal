@@ -33,6 +33,9 @@ fn audit_event_table() -> TableDefinition {
             built(string_field("action").assertion("$value != ''")),
             // What it acted on (key id, grant id, file id).
             built(string_field("subject")),
+            // Forwarded origin (proxy-provided), when the deployment
+            // passes one; forensic value only, never authorization.
+            built(string_field("origin").nullable(true)),
             built(object_field("detail").nullable(true)),
             built(
                 datetime_field("created_at")

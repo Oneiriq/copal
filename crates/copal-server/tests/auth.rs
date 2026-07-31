@@ -24,6 +24,7 @@ async fn keyed_router() -> (axum::Router, tempfile::TempDir) {
     let state = AppState::new(store, blobs).with_auth(AuthConfig {
         mode: AuthMode::ApiKeys,
         admin_token: Some(ADMIN.into()),
+        admin_token_previous: None,
     });
     (build_router(state), dir)
 }
@@ -251,6 +252,7 @@ async fn the_admin_surface_is_gated_and_disableable() {
     let state = AppState::new(store, blobs).with_auth(AuthConfig {
         mode: AuthMode::ApiKeys,
         admin_token: None,
+        admin_token_previous: None,
     });
     let disabled = build_router(state);
     let response = disabled
@@ -264,4 +266,36 @@ async fn the_admin_surface_is_gated_and_disableable() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn admin_token_rotation_window_accepts_both() {
+    let store = Store::connect(StoreConfig::memory()).await.unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let blobs = FsBlobStore::open(dir.path().to_str().unwrap()).unwrap();
+    let state = AppState::new(store, blobs).with_auth(AuthConfig {
+        mode: AuthMode::ApiKeys,
+        admin_token: Some("new-token".into()),
+        admin_token_previous: Some("old-token".into()),
+    });
+    let router = build_router(state);
+
+    for (token, expected) in [
+        ("new-token", StatusCode::CREATED),
+        ("old-token", StatusCode::CREATED),
+        ("neither", StatusCode::UNAUTHORIZED),
+    ] {
+        let response = router
+            .clone()
+            .oneshot(request(
+                "POST",
+                "/v1/admin/tenants/acme/keys",
+                None,
+                Some(token),
+                Some(json!({ "name": format!("k-{token}") })),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), expected, "{token}");
+    }
 }

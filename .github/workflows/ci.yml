@@ -55,3 +55,8 @@ jobs:
 
       - name: cargo test
         run: cargo test --workspace
+
+      - name: Dependency audit
+        run: |
+          command -v cargo-audit >/dev/null 2>&1 || cargo install --locked cargo-audit
+          cargo audit

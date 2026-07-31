@@ -36,6 +36,10 @@ use crate::wire::{wire_file, wire_run};
 #[derive(Debug, Clone)]
 pub struct Tenant(pub TenantId);
 
+/// The proxy-forwarded client origin, seeded for audit forensics.
+#[derive(Debug, Clone)]
+pub struct RequestOrigin(pub String);
+
 /// Every contract operation requires a tenant; fail closed without one.
 struct RequireTenant;
 
@@ -181,7 +185,8 @@ fn dispatcher<B: BlobStore + 'static>(
                     .get("max_uses")
                     .and_then(|v| v.as_u64())
                     .and_then(|v| u32::try_from(v).ok());
-                issue_grant_core(&state, &tenant, &id, ttl_secs, max_uses)
+                let origin = ctx.get::<RequestOrigin>().map(|o| o.0.clone());
+                issue_grant_core(&state, &tenant, &id, ttl_secs, max_uses, origin.as_deref())
                     .await
                     .map(Some)
                     .map_err(|e| to_janus_error(e.0))
@@ -192,7 +197,8 @@ fn dispatcher<B: BlobStore + 'static>(
             async move {
                 let tenant = tenant_of(&ctx)?;
                 let id = parse_file_id(args.id.as_deref().unwrap_or_default())?;
-                crate::app::remove_file_core(&state, &tenant, &id)
+                let origin = ctx.get::<RequestOrigin>().map(|o| o.0.clone());
+                crate::app::remove_file_core(&state, &tenant, &id, origin.as_deref())
                     .await
                     .map_err(|e| to_janus_error(e.0))?;
                 Ok(None)
@@ -379,6 +385,9 @@ async fn execute<B: BlobStore>(
     let mut ctx = JanusContext::new();
     if let Ok(tenant) = crate::auth::authenticate(&gql.app, &headers).await {
         ctx.insert(Tenant(tenant));
+    }
+    if let Some(origin) = crate::app::forwarded_origin(&headers) {
+        ctx.insert(RequestOrigin(origin));
     }
     let response = gql.schema.execute(request.data(ctx)).await;
     Json(serde_json::to_value(response).expect("graphql response serializes"))

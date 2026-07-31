@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 use tower::ServiceExt as _;
 
 use copal_blob::crypto;
-use copal_blob::FsBlobStore;
+use copal_blob::ObjectStore;
 use copal_server::{build_router, AppState};
 use copal_store::{Store, StoreConfig};
 
@@ -18,7 +18,7 @@ const KEY: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abc
 async fn encrypted_stack() -> (axum::Router, tempfile::TempDir) {
     let store = Store::connect(StoreConfig::memory()).await.unwrap();
     let dir = tempfile::tempdir().unwrap();
-    let blobs = FsBlobStore::open_encrypted(dir.path().to_str().unwrap(), KEY).unwrap();
+    let blobs = ObjectStore::open_encrypted(dir.path().to_str().unwrap(), KEY).unwrap();
     (build_router(AppState::new(store, blobs)), dir)
 }
 
@@ -124,7 +124,7 @@ async fn legacy_plaintext_objects_keep_serving_after_enablement() {
     // Write through a PLAIN store, then reopen the same root encrypted.
     let store = Store::connect(StoreConfig::memory()).await.unwrap();
     let dir = tempfile::tempdir().unwrap();
-    let plain = FsBlobStore::open(dir.path().to_str().unwrap()).unwrap();
+    let plain = ObjectStore::open(dir.path().to_str().unwrap()).unwrap();
     let router = build_router(AppState::new(store.clone(), plain));
 
     let create = req(
@@ -141,7 +141,7 @@ async fn legacy_plaintext_objects_keep_serving_after_enablement() {
     );
     router.clone().oneshot(upload).await.unwrap();
 
-    let encrypted = FsBlobStore::open_encrypted(dir.path().to_str().unwrap(), KEY).unwrap();
+    let encrypted = ObjectStore::open_encrypted(dir.path().to_str().unwrap(), KEY).unwrap();
     let router = build_router(AppState::new(store, encrypted));
     let download = req("GET", &format!("/v1/files/{id}/content"), Body::empty());
     let response = router.clone().oneshot(download).await.unwrap();

@@ -6,16 +6,16 @@ use http_body_util::BodyExt as _;
 use serde_json::{json, Value};
 use tower::ServiceExt as _;
 
-use copal_blob::FsBlobStore;
+use copal_blob::ObjectStore;
 use copal_server::sweeps::{run_pass, SweepConfig};
 use copal_server::{build_router, AppState};
 use copal_store::repo::blob as blob_repo;
 use copal_store::{Store, StoreConfig};
 
-async fn stack() -> (axum::Router, Store, FsBlobStore, tempfile::TempDir) {
+async fn stack() -> (axum::Router, Store, ObjectStore, tempfile::TempDir) {
     let store = Store::connect(StoreConfig::memory()).await.unwrap();
     let dir = tempfile::tempdir().unwrap();
-    let blobs = FsBlobStore::open(dir.path().to_str().unwrap()).unwrap();
+    let blobs = ObjectStore::open(dir.path().to_str().unwrap()).unwrap();
     let state = AppState::new(store.clone(), blobs.clone());
     (build_router(state), store, blobs, dir)
 }
@@ -333,7 +333,7 @@ async fn a_live_run_shields_its_scanning_file_from_the_stale_sweep() {
 
     let store = Store::connect(StoreConfig::memory()).await.unwrap();
     let dir = tempfile::tempdir().unwrap();
-    let blobs = FsBlobStore::open(dir.path().to_str().unwrap()).unwrap();
+    let blobs = ObjectStore::open(dir.path().to_str().unwrap()).unwrap();
     let registry = standard_registry(
         store.clone(),
         blobs.clone(),

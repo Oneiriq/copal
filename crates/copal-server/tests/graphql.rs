@@ -11,14 +11,14 @@ use http_body_util::BodyExt as _;
 use serde_json::{json, Value};
 use tower::ServiceExt as _;
 
-use copal_blob::FsBlobStore;
+use copal_blob::ObjectStore;
 use copal_server::{build_router, AppState};
 use copal_store::{Store, StoreConfig};
 
 async fn test_router() -> (axum::Router, tempfile::TempDir) {
     let store = Store::connect(StoreConfig::memory()).await.unwrap();
     let dir = tempfile::tempdir().unwrap();
-    let blobs = FsBlobStore::open(dir.path().to_str().unwrap()).unwrap();
+    let blobs = ObjectStore::open(dir.path().to_str().unwrap()).unwrap();
     (build_router(AppState::new(store, blobs)), dir)
 }
 

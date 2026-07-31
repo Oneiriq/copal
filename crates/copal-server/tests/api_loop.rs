@@ -11,7 +11,7 @@ use http_body_util::BodyExt as _;
 use serde_json::{json, Value};
 use tower::ServiceExt as _;
 
-use copal_blob::FsBlobStore;
+use copal_blob::ObjectStore;
 use copal_server::app::Limits;
 use copal_server::{build_router, AppState};
 use copal_store::{Store, StoreConfig};
@@ -19,7 +19,7 @@ use copal_store::{Store, StoreConfig};
 async fn test_router_with(limits: Limits) -> (axum::Router, tempfile::TempDir) {
     let store = Store::connect(StoreConfig::memory()).await.unwrap();
     let dir = tempfile::tempdir().unwrap();
-    let blobs = FsBlobStore::open(dir.path().to_str().unwrap()).unwrap();
+    let blobs = ObjectStore::open(dir.path().to_str().unwrap()).unwrap();
     let mut state = AppState::new(store, blobs);
     state.limits = limits;
     (build_router(state), dir)
@@ -568,7 +568,7 @@ async fn runs_api_executes_workflows() {
         .await
         .unwrap();
     let dir = tempfile::tempdir().unwrap();
-    let blobs = copal_blob::FsBlobStore::open(dir.path().to_str().unwrap()).unwrap();
+    let blobs = copal_blob::ObjectStore::open(dir.path().to_str().unwrap()).unwrap();
     let registry = FlowRegistry::new()
         .activity("stamp", |input: serde_json::Value| async move {
             let mut out = input;
@@ -802,7 +802,7 @@ async fn runs_listing_walks_by_cursor_in_both_directions() {
     // without workers ever claiming them.
     let store = Store::connect(StoreConfig::memory()).await.unwrap();
     let _dir = tempfile::tempdir().unwrap();
-    let blobs = FsBlobStore::open(_dir.path().to_str().unwrap()).unwrap();
+    let blobs = ObjectStore::open(_dir.path().to_str().unwrap()).unwrap();
     let registry = copal_flow::FlowRegistry::new()
         .activity("noop", |input| async move { Ok(input) })
         .workflow("wf", &["noop"], 1);
@@ -954,7 +954,7 @@ async fn hardening_surfaces_answer_correctly() {
     // origin does. Unconfigured routers send none at all.
     let store = Store::connect(StoreConfig::memory()).await.unwrap();
     let dir3 = tempfile::tempdir().unwrap();
-    let blobs = FsBlobStore::open(dir3.path().to_str().unwrap()).unwrap();
+    let blobs = ObjectStore::open(dir3.path().to_str().unwrap()).unwrap();
     let state = AppState::new(store, blobs);
     let allowed = ["https://app.example.com".to_owned()];
     let cors_router = copal_server::app::build_router_with_cors(state, Some(&allowed));

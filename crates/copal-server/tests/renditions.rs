@@ -7,7 +7,7 @@ use http_body_util::BodyExt as _;
 use serde_json::{json, Value};
 use tower::ServiceExt as _;
 
-use copal_blob::FsBlobStore;
+use copal_blob::ObjectStore;
 use copal_core::ExtensionPolicy;
 use copal_flow::FlowEngine;
 use copal_server::pipeline::standard_registry;
@@ -17,7 +17,7 @@ use copal_store::{Store, StoreConfig};
 async fn stack() -> (axum::Router, FlowEngine, tempfile::TempDir) {
     let store = Store::connect(StoreConfig::memory()).await.unwrap();
     let dir = tempfile::tempdir().unwrap();
-    let blobs = FsBlobStore::open(dir.path().to_str().unwrap()).unwrap();
+    let blobs = ObjectStore::open(dir.path().to_str().unwrap()).unwrap();
     let registry = standard_registry(
         store.clone(),
         blobs.clone(),

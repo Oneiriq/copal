@@ -1,6 +1,6 @@
 //! Copal server binary.
 
-use copal_blob::FsBlobStore;
+use copal_blob::ObjectStore;
 use copal_server::{AppState, Config};
 use copal_store::Store;
 
@@ -18,8 +18,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let store = Store::connect(config.store.clone()).await?;
     let open_blobs = || match &config.blob_encryption_key {
-        Some(key) => FsBlobStore::open_encrypted(&config.blob_root, key),
-        None => FsBlobStore::open(&config.blob_root),
+        Some(key) => ObjectStore::open_encrypted(&config.blob_root, key),
+        None => ObjectStore::open(&config.blob_root),
     };
     let blobs = open_blobs()?;
     let policy = match &config.blocked_extensions {

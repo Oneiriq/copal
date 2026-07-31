@@ -10,7 +10,7 @@ use http_body_util::BodyExt as _;
 use serde_json::{json, Value};
 use tower::ServiceExt as _;
 
-use copal_blob::FsBlobStore;
+use copal_blob::ObjectStore;
 use copal_server::auth::{AuthConfig, AuthMode};
 use copal_server::{build_router, AppState};
 use copal_store::{Store, StoreConfig};
@@ -20,7 +20,7 @@ const ADMIN: &str = "operator-secret";
 async fn keyed_router() -> (axum::Router, tempfile::TempDir) {
     let store = Store::connect(StoreConfig::memory()).await.unwrap();
     let dir = tempfile::tempdir().unwrap();
-    let blobs = FsBlobStore::open(dir.path().to_str().unwrap()).unwrap();
+    let blobs = ObjectStore::open(dir.path().to_str().unwrap()).unwrap();
     let state = AppState::new(store, blobs).with_auth(AuthConfig {
         mode: AuthMode::ApiKeys,
         admin_token: Some(ADMIN.into()),
@@ -248,7 +248,7 @@ async fn the_admin_surface_is_gated_and_disableable() {
     // No admin token configured = the admin surface does not exist.
     let store = Store::connect(StoreConfig::memory()).await.unwrap();
     let dir = tempfile::tempdir().unwrap();
-    let blobs = FsBlobStore::open(dir.path().to_str().unwrap()).unwrap();
+    let blobs = ObjectStore::open(dir.path().to_str().unwrap()).unwrap();
     let state = AppState::new(store, blobs).with_auth(AuthConfig {
         mode: AuthMode::ApiKeys,
         admin_token: None,
@@ -272,7 +272,7 @@ async fn the_admin_surface_is_gated_and_disableable() {
 async fn admin_token_rotation_window_accepts_both() {
     let store = Store::connect(StoreConfig::memory()).await.unwrap();
     let dir = tempfile::tempdir().unwrap();
-    let blobs = FsBlobStore::open(dir.path().to_str().unwrap()).unwrap();
+    let blobs = ObjectStore::open(dir.path().to_str().unwrap()).unwrap();
     let state = AppState::new(store, blobs).with_auth(AuthConfig {
         mode: AuthMode::ApiKeys,
         admin_token: Some("new-token".into()),

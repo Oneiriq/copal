@@ -12,7 +12,7 @@ use sha2::{Digest as _, Sha256};
 use tower::ServiceExt as _;
 
 use copal_blob::crypto::BlobCipher;
-use copal_blob::FsBlobStore;
+use copal_blob::ObjectStore;
 use copal_server::app::AppState;
 use copal_server::auth::AuthConfig;
 use copal_server::s3::{s3_admin_router, s3_router};
@@ -23,7 +23,7 @@ const MASTER_KEY: &str = "6f2a1c9d8e7b64530f1e2d3c4b5a69788796a5b4c3d2e1f0011223
 async fn stack() -> (axum::Router, axum::Router, tempfile::TempDir) {
     let store = Store::connect(StoreConfig::memory()).await.unwrap();
     let dir = tempfile::tempdir().unwrap();
-    let blobs = FsBlobStore::open(dir.path().to_str().unwrap()).unwrap();
+    let blobs = ObjectStore::open(dir.path().to_str().unwrap()).unwrap();
     let state = AppState::new(store, blobs).with_auth(AuthConfig {
         admin_token: Some("root".to_owned()),
         ..AuthConfig::default()

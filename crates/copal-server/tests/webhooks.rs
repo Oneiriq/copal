@@ -15,7 +15,7 @@ use tokio::sync::mpsc;
 use tower::ServiceExt as _;
 
 use copal_blob::crypto::BlobCipher;
-use copal_blob::FsBlobStore;
+use copal_blob::ObjectStore;
 use copal_server::app::{build_router, AppState};
 use copal_server::webhooks::{run_pass, sign_body, webhook_router};
 use copal_store::repo::eventing;
@@ -32,7 +32,7 @@ async fn stack() -> (
 ) {
     let store = Store::connect(StoreConfig::memory()).await.unwrap();
     let dir = tempfile::tempdir().unwrap();
-    let blobs = FsBlobStore::open(dir.path().to_str().unwrap()).unwrap();
+    let blobs = ObjectStore::open(dir.path().to_str().unwrap()).unwrap();
     let state = AppState::new(store.clone(), blobs);
     let cipher = BlobCipher::from_hex(MASTER_KEY).unwrap();
     let api = build_router(state.clone());

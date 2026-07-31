@@ -6,17 +6,38 @@
 //! cannot be known until the last byte, and a crash mid-upload leaves
 //! only staging garbage, never a half-written addressed object.
 //!
-//! [`FsBlobStore`] is the OpenDAL filesystem backend; S3-compatible,
-//! Azure, and GCS backends are additional OpenDAL services behind the
-//! same port.
+//! [`ObjectStore`] speaks any configured OpenDAL backend through one
+//! type: the local filesystem and S3-compatible services today, with
+//! Azure and GCS as further services behind the same port.
 
 pub mod crypto;
 
 use futures::Stream;
 use futures::StreamExt as _;
-use opendal::{services::Fs, Operator};
+use opendal::{services::Fs, services::S3, Operator};
 
 use copal_core::{ContentDigest, CopalError, DigestBuilder};
+
+/// One backend's connection parameters, as a residency configures it.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(tag = "scheme", rename_all = "lowercase")]
+pub enum BackendConfig {
+    /// Local filesystem under a root directory.
+    Fs { root: String },
+    /// An S3-compatible service. `endpoint` covers MinIO-style and
+    /// other compatible targets; unset means AWS itself.
+    S3 {
+        bucket: String,
+        #[serde(default)]
+        root: Option<String>,
+        #[serde(default)]
+        endpoint: Option<String>,
+        #[serde(default)]
+        region: Option<String>,
+        access_key_id: String,
+        secret_access_key: String,
+    },
+}
 
 /// Outcome of a finalized streaming upload.
 #[derive(Debug, Clone)]
@@ -125,21 +146,20 @@ pub trait BlobStore: Clone + Send + Sync + 'static {
     ) -> impl std::future::Future<Output = copal_core::Result<u64>> + Send;
 }
 
-/// Filesystem-backed blob store via OpenDAL, with optional
-/// encryption at rest (see [`crypto`]).
+/// The OpenDAL-backed blob store: one type over every configured
+/// backend, with optional encryption at rest (see [`crypto`]).
 #[derive(Clone)]
-pub struct FsBlobStore {
+pub struct ObjectStore {
     op: Operator,
     cipher: Option<crypto::BlobCipher>,
 }
 
-impl FsBlobStore {
+impl ObjectStore {
     /// Open (creating if needed) a store rooted at `root`.
     pub fn open(root: &str) -> copal_core::Result<Self> {
-        let builder = Fs::default().root(root);
-        let op =
-            Operator::new(builder).map_err(|e| CopalError::Blob(format!("open fs root: {e}")))?;
-        Ok(Self { op, cipher: None })
+        Self::open_backend(&BackendConfig::Fs {
+            root: root.to_owned(),
+        })
     }
 
     /// Open with encryption at rest: new objects seal under the master
@@ -148,6 +168,66 @@ impl FsBlobStore {
         let mut store = Self::open(root)?;
         store.cipher = Some(crypto::BlobCipher::from_hex(key_hex)?);
         Ok(store)
+    }
+
+    /// Open any configured backend.
+    pub fn open_backend(config: &BackendConfig) -> copal_core::Result<Self> {
+        let op = match config {
+            BackendConfig::Fs { root } => Operator::new(Fs::default().root(root))
+                .map_err(|e| CopalError::Blob(format!("open fs root: {e}")))?,
+            BackendConfig::S3 {
+                bucket,
+                root,
+                endpoint,
+                region,
+                access_key_id,
+                secret_access_key,
+            } => {
+                let mut builder = S3::default()
+                    .bucket(bucket)
+                    .access_key_id(access_key_id)
+                    .secret_access_key(secret_access_key);
+                if let Some(root) = root {
+                    builder = builder.root(root);
+                }
+                if let Some(endpoint) = endpoint {
+                    builder = builder.endpoint(endpoint);
+                }
+                if let Some(region) = region {
+                    builder = builder.region(region);
+                }
+                Operator::new(builder)
+                    .map_err(|e| CopalError::Blob(format!("open s3 backend: {e}")))?
+            }
+        };
+        Ok(Self { op, cipher: None })
+    }
+
+    /// Attach the encryption-at-rest cipher to any opened backend.
+    pub fn with_cipher(mut self, key_hex: &str) -> copal_core::Result<Self> {
+        self.cipher = Some(crypto::BlobCipher::from_hex(key_hex)?);
+        Ok(self)
+    }
+
+    /// Move a finished object onto its address. Filesystem backends
+    /// rename; backends without rename (S3) copy server-side and drop
+    /// the source.
+    async fn land(&self, from: &str, to: &str) -> copal_core::Result<()> {
+        if self.op.info().capability().rename {
+            return self
+                .op
+                .rename(from, to)
+                .await
+                .map_err(|e| CopalError::Blob(format!("finalize {to}: {e}")));
+        }
+        self.op
+            .copy(from, to)
+            .await
+            .map_err(|e| CopalError::Blob(format!("finalize {to}: {e}")))?;
+        self.op
+            .delete(from)
+            .await
+            .map_err(|e| CopalError::Blob(format!("drop staging {from}: {e}")))
     }
 
     /// A plaintext stream over a sealed object's frames covering
@@ -237,7 +317,7 @@ impl FsBlobStore {
     }
 }
 
-impl BlobStore for FsBlobStore {
+impl BlobStore for ObjectStore {
     async fn put_streamed<S, E>(&self, mut body: S) -> copal_core::Result<StoredBlob>
     where
         S: Stream<Item = Result<bytes::Bytes, E>> + Send + Unpin,
@@ -311,13 +391,10 @@ impl BlobStore for FsBlobStore {
 
         let (digest, size_bytes) = hasher.finish();
         let target = Self::addressed(&digest);
-        // Rename onto the address. If identical content already lives
+        // Land onto the address. If identical content already lives
         // there the overwrite is byte-identical, so a dedupe race is
         // harmless.
-        self.op
-            .rename(&staging, &target)
-            .await
-            .map_err(|e| CopalError::Blob(format!("finalize {target}: {e}")))?;
+        self.land(&staging, &target).await?;
 
         Ok(StoredBlob {
             digest,
@@ -418,10 +495,7 @@ impl BlobStore for FsBlobStore {
 
         match &self.cipher {
             None => {
-                self.op
-                    .rename(key, &target)
-                    .await
-                    .map_err(|e| CopalError::Blob(format!("finalize {target}: {e}")))?;
+                self.land(key, &target).await?;
             }
             Some(_) => {
                 // Seal through the ordinary write path into a second
@@ -595,7 +669,7 @@ mod tests {
     #[tokio::test]
     async fn streamed_put_lands_at_the_content_address() {
         let dir = tempfile::tempdir().unwrap();
-        let store = FsBlobStore::open(dir.path().to_str().unwrap()).unwrap();
+        let store = ObjectStore::open(dir.path().to_str().unwrap()).unwrap();
 
         let stored = store
             .put_streamed(body(&[b"hello ", b"world"]))
@@ -619,7 +693,7 @@ mod tests {
     #[tokio::test]
     async fn duplicate_content_is_one_object() {
         let dir = tempfile::tempdir().unwrap();
-        let store = FsBlobStore::open(dir.path().to_str().unwrap()).unwrap();
+        let store = ObjectStore::open(dir.path().to_str().unwrap()).unwrap();
         let a = store.put_streamed(body(&[b"same bytes"])).await.unwrap();
         let b = store.put_streamed(body(&[b"same bytes"])).await.unwrap();
         assert_eq!(a.digest, b.digest);
@@ -629,12 +703,41 @@ mod tests {
     #[tokio::test]
     async fn missing_blob_reads_as_not_found() {
         let dir = tempfile::tempdir().unwrap();
-        let store = FsBlobStore::open(dir.path().to_str().unwrap()).unwrap();
+        let store = ObjectStore::open(dir.path().to_str().unwrap()).unwrap();
         let absent = ContentDigest::of_bytes(b"never stored");
         assert!(!store.exists(&absent).await.unwrap());
         assert!(matches!(
             store.read(&absent).await.unwrap_err(),
             CopalError::NotFound(_)
         ));
+    }
+
+    #[tokio::test]
+    async fn backend_configs_parse_and_open() {
+        // The tagged form residencies configure with.
+        let dir = tempfile::tempdir().unwrap();
+        let raw = format!(
+            "{{\"scheme\": \"fs\", \"root\": {}}}",
+            serde_json::Value::from(dir.path().to_str().unwrap()),
+        );
+        let config: BackendConfig = serde_json::from_str(&raw).unwrap();
+        let store = ObjectStore::open_backend(&config).unwrap();
+        let stored = store.put_streamed(body(&[b"via config"])).await.unwrap();
+        assert_eq!(
+            store.read(&stored.digest).await.unwrap(),
+            &b"via config"[..]
+        );
+
+        // The s3 form constructs without contacting anything.
+        let raw = r#"{
+            "scheme": "s3",
+            "bucket": "tenant-bytes",
+            "endpoint": "http://127.0.0.1:9000",
+            "region": "us-east-1",
+            "access_key_id": "ak",
+            "secret_access_key": "sk"
+        }"#;
+        let config: BackendConfig = serde_json::from_str(raw).unwrap();
+        assert!(ObjectStore::open_backend(&config).is_ok());
     }
 }

@@ -1,0 +1,45 @@
+//! Server configuration from environment variables.
+//!
+//! Defaults target the docker-compose development topology; every value
+//! is overridable, none are required.
+
+use copal_store::StoreConfig;
+
+/// Runtime configuration.
+#[derive(Debug, Clone)]
+pub struct Config {
+    /// Bind address, e.g. `127.0.0.1:8080`.
+    pub bind: String,
+    /// Metadata plane connection.
+    pub store: StoreConfig,
+    /// Root directory of the filesystem blob store.
+    pub blob_root: String,
+}
+
+fn env_or(key: &str, default: &str) -> String {
+    std::env::var(key).unwrap_or_else(|_| default.to_owned())
+}
+
+impl Config {
+    /// Read configuration from `COPAL_*` environment variables.
+    pub fn from_env() -> Self {
+        let username = std::env::var("COPAL_DB_USER").ok();
+        let password = std::env::var("COPAL_DB_PASS").ok();
+        // Development default: the compose SurrealDB with root/root.
+        let (username, password) = match (username, password) {
+            (None, None) => (Some("root".to_owned()), Some("root".to_owned())),
+            pair => pair,
+        };
+        Self {
+            bind: env_or("COPAL_BIND", "127.0.0.1:8080"),
+            store: StoreConfig {
+                url: env_or("COPAL_DB_URL", "ws://127.0.0.1:8000"),
+                namespace: env_or("COPAL_DB_NS", "copal"),
+                database: env_or("COPAL_DB_NAME", "copal"),
+                username,
+                password,
+            },
+            blob_root: env_or("COPAL_BLOB_ROOT", "./data/blobs"),
+        }
+    }
+}

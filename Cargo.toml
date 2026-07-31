@@ -1,0 +1,45 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/copal-core",
+    "crates/copal-store",
+    "crates/copal-blob",
+    "crates/copal-server",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.90"
+license = "AGPL-3.0-only"
+repository = "https://github.com/Oneiriq/copal"
+authors = ["Shon Thomas <shonpt@outlook.com>"]
+
+[workspace.dependencies]
+copal-core = { path = "crates/copal-core" }
+copal-store = { path = "crates/copal-store" }
+copal-blob = { path = "crates/copal-blob" }
+
+# Schema, query building, and the SurrealDB client all come from surql-rs.
+# Pinned to the rolling feature branch that accumulates every capability
+# Copal needs; the batch release replaces this with a plain version once
+# the pair stabilises.
+oneiriq-surql = { version = "0.31", default-features = false, features = ["client-rustls"] }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-util", "fs"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+ulid = "1"
+sha2 = "0.10"
+hex = "0.4"
+opendal = { version = "0.54", default-features = false, features = ["services-fs"] }
+axum = "0.8"
+tempfile = "3"
+futures = "0.3"
+bytes = "1"
+
+[patch.crates-io]
+oneiriq-surql = { git = "https://github.com/Oneiriq/surql-rs", branch = "feat/copal-janus" }

@@ -1,0 +1,21 @@
+[package]
+name = "copal-blob"
+description = "Copal blob plane: content-addressed storage behind one port, OpenDAL backends."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+copal-core = { workspace = true }
+opendal = { workspace = true }
+tokio = { workspace = true }
+futures = { workspace = true }
+bytes = { workspace = true }
+ulid = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true }

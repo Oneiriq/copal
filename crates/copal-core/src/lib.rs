@@ -1,0 +1,21 @@
+//! Copal domain types.
+//!
+//! Everything here is pure data and pure functions: identifiers, content
+//! digests, the file state machine, and the error taxonomy. No IO, no
+//! database, no async. The store, blob, and server crates depend on this
+//! crate; it depends on nothing of theirs.
+
+pub mod digest;
+pub mod error;
+pub mod file;
+pub mod id;
+pub mod state;
+
+pub use digest::{ContentDigest, DigestBuilder};
+pub use error::CopalError;
+pub use file::{FileRecord, FileSpec};
+pub use id::{FileId, TenantId};
+pub use state::{AccessLevel, FileState};
+
+/// Convenience result alias used across the workspace.
+pub type Result<T> = std::result::Result<T, CopalError>;

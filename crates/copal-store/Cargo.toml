@@ -1,0 +1,24 @@
+[package]
+name = "copal-store"
+description = "Copal metadata plane: SurrealDB schema-as-code and repositories via surql-rs."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+copal-core = { workspace = true }
+oneiriq-surql = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+# Embedded engines are feature-gated on the surrealdb crate itself and
+# surql-rs deliberately does not pull them. Declaring kv-mem here wires
+# the mem:// engine into test builds only, via Cargo feature unification.
+surrealdb = { version = "3", default-features = false, features = ["kv-mem"] }

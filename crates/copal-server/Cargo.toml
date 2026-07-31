@@ -23,6 +23,7 @@ tracing-subscriber = { workspace = true }
 futures = { workspace = true }
 ulid = { workspace = true }
 hex = { workspace = true }
+bytes = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

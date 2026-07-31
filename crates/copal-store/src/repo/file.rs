@@ -205,6 +205,9 @@ pub struct TransitionSets {
     pub size_bytes: Option<u64>,
     /// Digest of the blob to link; rendered as a record literal.
     pub link_blob: Option<ContentDigest>,
+    /// Additional column writes (dot paths reach into objects, e.g.
+    /// `metadata.processing`), applied atomically with the transition.
+    pub set_json: Vec<(String, Value)>,
 }
 
 /// The raw SurrealQL fragment selecting an expired lease. A fragment
@@ -361,7 +364,15 @@ pub async fn complete_upload(
     digest: &ContentDigest,
     size_bytes: u64,
     created_by: &str,
+    final_state: FileState,
 ) -> copal_core::Result<FileRecord> {
+    // Completion lands in ready (no pipeline) or scanning (a pipeline
+    // will finalize); anything else is a caller bug.
+    if !matches!(final_state, FileState::Ready | FileState::Scanning) {
+        return Err(CopalError::validation(
+            "completion must land in ready or scanning",
+        ));
+    }
     let blob_rid =
         RecordID::<()>::new("blob", digest.as_str()).map_err(|e| map_store_err("complete", e))?;
     let row = transition_with(
@@ -369,7 +380,7 @@ pub async fn complete_upload(
         tenant,
         id,
         FileState::Uploading,
-        FileState::Ready,
+        final_state,
         |query| {
             query
                 .set("digest", Value::from(digest.as_str()))
@@ -401,7 +412,7 @@ pub async fn complete_upload(
         .set_expr("current_version", raw(version_id))
         .map_err(|e| map_store_err("link_version", e))?
         .where_(eq("tenant_id", tenant.as_str()))
-        .where_(eq("state", FileState::Ready.as_str()))
+        .where_(eq("state", final_state.as_str()))
         .return_after();
     let rows: Vec<FileRow> = query_records(store.client(), &link)
         .await
@@ -437,6 +448,11 @@ pub async fn transition(
         if let Some(size) = sets.size_bytes {
             query = query
                 .set("size_bytes", Value::from(size))
+                .map_err(|e| map_store_err("transition", e))?;
+        }
+        for (field, value) in &sets.set_json {
+            query = query
+                .set(field.clone(), value.clone())
                 .map_err(|e| map_store_err("transition", e))?;
         }
         if let Some(blob_digest) = &sets.link_blob {

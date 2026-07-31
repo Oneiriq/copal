@@ -9,12 +9,14 @@ pub mod digest;
 pub mod error;
 pub mod file;
 pub mod id;
+pub mod inspect;
 pub mod state;
 
 pub use digest::{ContentDigest, DigestBuilder};
 pub use error::CopalError;
 pub use file::{CreatedFile, FileRecord, FileSpec, FileVersion};
 pub use id::{FileId, TenantId};
+pub use inspect::{sniff_content_type, ExtensionPolicy};
 pub use state::{AccessLevel, FileState};
 
 /// Convenience result alias used across the workspace.

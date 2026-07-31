@@ -18,7 +18,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let store = Store::connect(config.store.clone()).await?;
     let blobs = FsBlobStore::open(&config.blob_root)?;
-    let mut state = AppState::new(store.clone(), blobs);
+    let policy = match &config.blocked_extensions {
+        Some(list) => copal_core::ExtensionPolicy::from_list(list),
+        None => copal_core::ExtensionPolicy::standard(),
+    };
+    let registry = copal_server::pipeline::standard_registry(store.clone(), blobs.clone(), policy);
+    let mut state = AppState::new(store.clone(), blobs).with_flow(registry.clone());
     state.limits = copal_server::app::Limits {
         max_upload_bytes: config.max_upload_bytes,
         upload_lease_secs: config.upload_lease_secs,
@@ -38,7 +43,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // over the journal. The production registry starts empty until the
     // processing activities land; the worker idles harmlessly.
     tokio::spawn(copal_flow::run_worker(
-        copal_flow::FlowEngine::new(store.clone(), copal_flow::FlowRegistry::new()),
+        copal_flow::FlowEngine::new(store.clone(), registry),
         format!(
             "worker-{}",
             ulid::Ulid::new().to_string().to_ascii_lowercase()

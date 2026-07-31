@@ -124,6 +124,11 @@ impl FlowEngine {
         }
     }
 
+    /// Whether a workflow key is registered.
+    pub fn has_workflow(&self, key: &str) -> bool {
+        self.registry.workflows.contains_key(key)
+    }
+
     /// Enqueue a run for a worker. Unknown workflows are refused at the
     /// door, not at claim time.
     pub async fn enqueue(

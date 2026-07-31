@@ -20,6 +20,8 @@ pub struct Config {
     pub upload_lease_secs: u32,
     /// Background maintenance cadence and retention.
     pub sweeps: crate::sweeps::SweepConfig,
+    /// Comma-separated blocked extension list for the upload pipeline.
+    pub blocked_extensions: Option<String>,
 }
 
 fn env_or(key: &str, default: &str) -> String {
@@ -55,6 +57,7 @@ impl Config {
             blob_root: env_or("COPAL_BLOB_ROOT", "./data/blobs"),
             max_upload_bytes: env_parse("COPAL_MAX_UPLOAD_BYTES", 1 << 30),
             upload_lease_secs: env_parse("COPAL_UPLOAD_LEASE_SECS", 900),
+            blocked_extensions: std::env::var("COPAL_BLOCKED_EXTENSIONS").ok(),
             sweeps: crate::sweeps::SweepConfig {
                 interval_secs: env_parse("COPAL_SWEEP_INTERVAL_SECS", 60),
                 staging_ttl_secs: env_parse("COPAL_STAGING_TTL_SECS", 86_400),

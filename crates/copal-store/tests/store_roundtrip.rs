@@ -294,6 +294,7 @@ async fn completion_links_blob_and_recount_derives_references() {
                 digest: Some(digest.clone()),
                 size_bytes: Some(11),
                 link_blob: Some(digest.clone()),
+                ..Default::default()
             },
         )
         .await

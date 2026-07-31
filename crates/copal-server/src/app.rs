@@ -307,9 +307,49 @@ async fn upload_content<B: BlobStore>(
     blob_repo::record_sighting(&state.store, &digest, size_bytes, "local", &storage_path).await?;
 
     // One CAS finishes the upload and mints the version number; the
-    // frozen version row and current_version link follow inside.
-    let record =
-        file_repo::complete_upload(&state.store, &tenant, &id, &digest, size_bytes, "api").await?;
+    // frozen version row and current_version link follow inside. With a
+    // processing pipeline configured, completion lands in scanning and
+    // the pipeline's finalize step performs the ready/quarantine call.
+    let pipelined = state.flow.has_workflow(crate::pipeline::UPLOAD_WORKFLOW);
+    let final_state = if pipelined {
+        FileState::Scanning
+    } else {
+        FileState::Ready
+    };
+    let record = file_repo::complete_upload(
+        &state.store,
+        &tenant,
+        &id,
+        &digest,
+        size_bytes,
+        "api",
+        final_state,
+    )
+    .await?;
+
+    if pipelined {
+        // Deterministic idempotency key: a crashed or repeated enqueue
+        // dedupes instead of double-processing this content.
+        let input = json!({
+            "tenant": tenant.as_str(),
+            "file": id.as_str(),
+            "digest": record.digest.as_ref().map(|d| d.as_str()),
+            "declared_type": record.content_type,
+            "path": record.path,
+        });
+        state
+            .flow
+            .enqueue(
+                &tenant,
+                crate::pipeline::UPLOAD_WORKFLOW,
+                RunSpec {
+                    input,
+                    subject: Some(id.clone()),
+                    idempotency_key: Some(crate::pipeline::upload_run_key(&id, &digest)),
+                },
+            )
+            .await?;
+    }
     Ok(Json(record))
 }
 

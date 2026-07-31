@@ -6,6 +6,7 @@
 pub mod app;
 pub mod config;
 pub mod error;
+pub mod pipeline;
 pub mod sweeps;
 
 pub use app::{build_router, AppState};

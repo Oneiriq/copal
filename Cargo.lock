@@ -711,6 +711,7 @@ name = "copal-server"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "bytes",
  "copal-blob",
  "copal-core",
  "copal-flow",
@@ -2591,7 +2592,7 @@ dependencies = [
 [[package]]
 name = "oneiriq-surql"
 version = "0.31.0"
-source = "git+https://github.com/Oneiriq/surql-rs?branch=feat%2Fcopal-janus#f536b22fb0b9907672ba25f3d3b3c72ae5615cf2"
+source = "git+https://github.com/Oneiriq/surql-rs?branch=feat%2Fcopal-janus#21d3a8a95e483f393cbb2de4a93244f5784f33db"
 dependencies = [
  "chrono",
  "futures",

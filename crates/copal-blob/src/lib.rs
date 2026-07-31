@@ -10,6 +10,8 @@
 //! Azure, and GCS backends are additional OpenDAL services behind the
 //! same port.
 
+pub mod crypto;
+
 use futures::Stream;
 use futures::StreamExt as _;
 use opendal::{services::Fs, Operator};
@@ -90,10 +92,12 @@ pub trait BlobStore: Clone + Send + Sync + 'static {
     ) -> impl std::future::Future<Output = copal_core::Result<u64>> + Send;
 }
 
-/// Filesystem-backed blob store via OpenDAL.
+/// Filesystem-backed blob store via OpenDAL, with optional
+/// encryption at rest (see [`crypto`]).
 #[derive(Clone)]
 pub struct FsBlobStore {
     op: Operator,
+    cipher: Option<crypto::BlobCipher>,
 }
 
 impl FsBlobStore {
@@ -102,7 +106,97 @@ impl FsBlobStore {
         let builder = Fs::default().root(root);
         let op =
             Operator::new(builder).map_err(|e| CopalError::Blob(format!("open fs root: {e}")))?;
-        Ok(Self { op })
+        Ok(Self { op, cipher: None })
+    }
+
+    /// Open with encryption at rest: new objects seal under the master
+    /// key (64-hex); existing plaintext objects keep serving.
+    pub fn open_encrypted(root: &str, key_hex: &str) -> copal_core::Result<Self> {
+        let mut store = Self::open(root)?;
+        store.cipher = Some(crypto::BlobCipher::from_hex(key_hex)?);
+        Ok(store)
+    }
+
+    /// A plaintext stream over a sealed object's frames covering
+    /// `[start, end)`: one ciphertext read and one decrypt per frame,
+    /// so memory stays one frame regardless of object size.
+    fn sealed_stream(
+        &self,
+        path: &str,
+        prefix: &[u8],
+        disk_len: u64,
+        start: u64,
+        end: u64,
+    ) -> copal_core::Result<ByteStream> {
+        let Some(master) = &self.cipher else {
+            return Err(CopalError::Blob(
+                "object is sealed but no encryption key is configured".into(),
+            ));
+        };
+        let salt = crypto::parse_header(prefix)?;
+        let object = master.object_cipher(&salt)?;
+        let logical = crypto::plaintext_len(disk_len as usize)? as u64;
+        let total_frames = crypto::frame_count(logical as usize) as u32;
+        let frame = crypto::FRAME as u64;
+        let first = (start / frame) as u32;
+        let last_frame = (end.saturating_sub(1) / frame) as u32;
+
+        let op = self.op.clone();
+        let path = path.to_owned();
+        let stream = futures::stream::unfold(first, move |index| {
+            let op = op.clone();
+            let path = path.clone();
+            let object = object.clone();
+            async move {
+                if index > last_frame {
+                    return None;
+                }
+                let ct_start =
+                    crypto::HEADER as u64 + u64::from(index) * crypto::SEALED_FRAME as u64;
+                let ct_end = (ct_start + crypto::SEALED_FRAME as u64).min(disk_len);
+                let result = async {
+                    let buffer = op
+                        .read_with(&path)
+                        .range(ct_start..ct_end)
+                        .await
+                        .map_err(|e| CopalError::Blob(format!("read frame {index}: {e}")))?;
+                    let mut plain =
+                        crypto::open_frames(&object, &buffer.to_vec(), index, total_frames)?;
+                    // Trim the window edges on the first and last frames.
+                    let frame_base = u64::from(index) * frame;
+                    let keep_from = start.saturating_sub(frame_base) as usize;
+                    let keep_to = ((end - frame_base).min(frame)) as usize;
+                    if keep_from > 0 || keep_to < plain.len() {
+                        plain = plain[keep_from..keep_to].to_vec();
+                    }
+                    Ok::<bytes::Bytes, CopalError>(bytes::Bytes::from(plain))
+                }
+                .await;
+                Some((result, index + 1))
+            }
+        })
+        .boxed();
+        Ok(stream)
+    }
+
+    /// Read the first bytes of an object, enough to classify it. The
+    /// range clamps to the object length so tiny legacy objects read
+    /// cleanly.
+    async fn read_prefix(&self, path: &str, disk_len: u64) -> copal_core::Result<Vec<u8>> {
+        let end = disk_len.min(crypto::HEADER as u64);
+        if end == 0 {
+            return Ok(Vec::new());
+        }
+        let buffer = self
+            .op
+            .read_with(path)
+            .range(0..end)
+            .await
+            .map_err(|e| match e.kind() {
+                opendal::ErrorKind::NotFound => CopalError::not_found("blob".to_owned()),
+                _ => CopalError::Blob(format!("read prefix: {e}")),
+            })?;
+        Ok(buffer.to_vec())
     }
 
     fn addressed(digest: &ContentDigest) -> String {
@@ -124,13 +218,58 @@ impl BlobStore for FsBlobStore {
             .map_err(|e| CopalError::Blob(format!("open staging writer: {e}")))?;
 
         let mut hasher = DigestBuilder::new();
-        while let Some(chunk) = body.next().await {
-            let chunk = chunk.map_err(|e| CopalError::Blob(format!("read body: {e}")))?;
-            hasher.update(&chunk);
-            writer
-                .write(chunk)
-                .await
-                .map_err(|e| CopalError::Blob(format!("write staging: {e}")))?;
+        match &self.cipher {
+            None => {
+                while let Some(chunk) = body.next().await {
+                    let chunk = chunk.map_err(|e| CopalError::Blob(format!("read body: {e}")))?;
+                    hasher.update(&chunk);
+                    writer
+                        .write(chunk)
+                        .await
+                        .map_err(|e| CopalError::Blob(format!("write staging: {e}")))?;
+                }
+            }
+            Some(master) => {
+                // Seal frame by frame while the digest accumulates over
+                // the PLAINTEXT. A frame seals with the non-final nonce
+                // only while more than one frame's bytes are buffered,
+                // so the final frame (sealed after the stream ends) is
+                // the only one carrying the final flag.
+                let mut salt = [0u8; 16];
+                rand::RngCore::fill_bytes(&mut rand::rng(), &mut salt);
+                let object = master.object_cipher(&salt)?;
+                let mut header = Vec::with_capacity(crypto::HEADER);
+                header.extend_from_slice(crypto::MAGIC);
+                header.extend_from_slice(&salt);
+                writer
+                    .write(header)
+                    .await
+                    .map_err(|e| CopalError::Blob(format!("write staging: {e}")))?;
+
+                let mut pending: Vec<u8> = Vec::with_capacity(2 * crypto::FRAME);
+                let mut index: u32 = 0;
+                while let Some(chunk) = body.next().await {
+                    let chunk = chunk.map_err(|e| CopalError::Blob(format!("read body: {e}")))?;
+                    hasher.update(&chunk);
+                    pending.extend_from_slice(&chunk);
+                    while pending.len() > crypto::FRAME {
+                        let frame: Vec<u8> = pending.drain(..crypto::FRAME).collect();
+                        let sealed = crypto::seal_one(&object, index, false, &frame)?;
+                        index = index
+                            .checked_add(1)
+                            .ok_or_else(|| CopalError::Blob("object exceeds frame count".into()))?;
+                        writer
+                            .write(sealed)
+                            .await
+                            .map_err(|e| CopalError::Blob(format!("write staging: {e}")))?;
+                    }
+                }
+                let sealed = crypto::seal_one(&object, index, true, &pending)?;
+                writer
+                    .write(sealed)
+                    .await
+                    .map_err(|e| CopalError::Blob(format!("write staging: {e}")))?;
+            }
         }
         writer
             .close()
@@ -163,7 +302,16 @@ impl BlobStore for FsBlobStore {
                 opendal::ErrorKind::NotFound => CopalError::not_found(format!("blob {digest}")),
                 _ => CopalError::Blob(format!("read {digest}: {e}")),
             })?;
-        Ok(buffer.to_bytes())
+        let bytes = buffer.to_bytes();
+        if crypto::is_sealed(&bytes) {
+            let Some(master) = &self.cipher else {
+                return Err(CopalError::Blob(
+                    "object is sealed but no encryption key is configured".into(),
+                ));
+            };
+            return Ok(bytes::Bytes::from(master.open(&bytes)?));
+        }
+        Ok(bytes)
     }
 
     async fn exists(&self, digest: &ContentDigest) -> copal_core::Result<bool> {
@@ -225,7 +373,15 @@ impl BlobStore for FsBlobStore {
                 CopalError::Blob(format!("stat {digest}: {e}"))
             }
         })?;
-        let len = stat.content_length();
+        let disk_len = stat.content_length();
+
+        let prefix = self.read_prefix(&path, disk_len).await?;
+        if crypto::is_sealed(&prefix) {
+            let logical = crypto::plaintext_len(disk_len as usize)? as u64;
+            let stream = self.sealed_stream(&path, &prefix, disk_len, 0, logical)?;
+            return Ok((logical, stream));
+        }
+
         let reader = self
             .op
             .reader(&path)
@@ -233,12 +389,12 @@ impl BlobStore for FsBlobStore {
             .map_err(|e| CopalError::Blob(format!("open {digest}: {e}")))?;
         let owned = digest.clone();
         let stream = reader
-            .into_bytes_stream(0..len)
+            .into_bytes_stream(0..disk_len)
             .await
             .map_err(|e| CopalError::Blob(format!("stream {digest}: {e}")))?
             .map(move |chunk| chunk.map_err(|e| CopalError::Blob(format!("stream {owned}: {e}"))))
             .boxed();
-        Ok((len, stream))
+        Ok((disk_len, stream))
     }
 
     async fn open_range(
@@ -256,10 +412,23 @@ impl BlobStore for FsBlobStore {
                 CopalError::Blob(format!("stat {digest}: {e}"))
             }
         })?;
-        let len = stat.content_length();
-        if start >= end || end > len {
+        let disk_len = stat.content_length();
+
+        let prefix = self.read_prefix(&path, disk_len).await?;
+        if crypto::is_sealed(&prefix) {
+            let logical = crypto::plaintext_len(disk_len as usize)? as u64;
+            if start >= end || end > logical {
+                return Err(CopalError::validation(format!(
+                    "range {start}..{end} exceeds object length {logical}",
+                )));
+            }
+            let stream = self.sealed_stream(&path, &prefix, disk_len, start, end)?;
+            return Ok((logical, stream));
+        }
+
+        if start >= end || end > disk_len {
             return Err(CopalError::validation(format!(
-                "range {start}..{end} exceeds object length {len}",
+                "range {start}..{end} exceeds object length {disk_len}",
             )));
         }
         let reader = self
@@ -274,7 +443,7 @@ impl BlobStore for FsBlobStore {
             .map_err(|e| CopalError::Blob(format!("stream {digest}: {e}")))?
             .map(move |chunk| chunk.map_err(|e| CopalError::Blob(format!("stream {owned}: {e}"))))
             .boxed();
-        Ok((len, stream))
+        Ok((disk_len, stream))
     }
 }
 

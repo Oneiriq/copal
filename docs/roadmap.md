@@ -39,9 +39,9 @@ The items that gate running Copal anywhere real.
    during a rotation window.
 3. Audit forensics: record the forwarded origin on audit rows when
    the proxy provides one.
-4. Blob encryption at rest: chunked AEAD per object, digest computed
-   over plaintext so content addressing survives, per-tenant keys as
-   the follow-on. This also unlocks the data-residency story below.
+4. Per-tenant blob keys, building on the shipped encryption at rest
+   (chunked AEAD, plaintext digests, non-destructive enablement).
+   This unlocks the data-residency story below.
 5. Per-tenant quotas and usage accounting (bytes stored, request
    rates), replacing the documented proxy-level interim.
 

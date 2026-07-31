@@ -17,7 +17,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!(bind = %config.bind, db = %config.store.url, "starting copal");
 
     let store = Store::connect(config.store.clone()).await?;
-    let blobs = FsBlobStore::open(&config.blob_root)?;
+    let open_blobs = || match &config.blob_encryption_key {
+        Some(key) => FsBlobStore::open_encrypted(&config.blob_root, key),
+        None => FsBlobStore::open(&config.blob_root),
+    };
+    let blobs = open_blobs()?;
     let policy = match &config.blocked_extensions {
         Some(list) => copal_core::ExtensionPolicy::from_list(list),
         None => copal_core::ExtensionPolicy::standard(),
@@ -67,7 +71,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // interval loop; each sweep is failure-isolated inside it.
     tokio::spawn(copal_server::sweeps::run_forever(
         store.clone(),
-        FsBlobStore::open(&config.blob_root)?,
+        open_blobs()?,
         config.sweeps,
         instance_id,
     ));

@@ -18,6 +18,9 @@ pub struct Config {
     pub store: StoreConfig,
     /// Root directory of the filesystem blob store.
     pub blob_root: String,
+    /// Optional 64-hex master key enabling encryption at rest for new
+    /// objects; existing plaintext objects keep serving.
+    pub blob_encryption_key: Option<String>,
     /// Upload body ceiling in bytes.
     pub max_upload_bytes: usize,
     /// Upload claim lease TTL; expired claims are stealable and reaped.
@@ -70,6 +73,7 @@ impl Config {
                 password,
             },
             blob_root: env_or("COPAL_BLOB_ROOT", "./data/blobs"),
+            blob_encryption_key: std::env::var("COPAL_BLOB_ENCRYPTION_KEY").ok(),
             max_upload_bytes: env_parse("COPAL_MAX_UPLOAD_BYTES", 1 << 30),
             upload_lease_secs: env_parse("COPAL_UPLOAD_LEASE_SECS", 900),
             blocked_extensions: std::env::var("COPAL_BLOCKED_EXTENSIONS").ok(),

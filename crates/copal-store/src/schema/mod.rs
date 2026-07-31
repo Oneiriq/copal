@@ -11,6 +11,7 @@
 //! development and tests; versioned migration files are generated from
 //! the same definitions via the surql toolchain.
 
+pub mod auth;
 pub mod core;
 pub mod delivery;
 pub mod flow;
@@ -23,6 +24,7 @@ pub fn tables() -> Vec<TableDefinition> {
     let mut tables = core::tables();
     tables.extend(delivery::tables());
     tables.extend(flow::tables());
+    tables.extend(auth::tables());
     tables
 }
 

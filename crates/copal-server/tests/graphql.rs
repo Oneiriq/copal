@@ -230,7 +230,7 @@ async fn tenancy_is_enforced_by_janus_middleware() {
         error["message"]
             .as_str()
             .unwrap()
-            .contains("x-copal-tenant"),
+            .contains("no tenant identity"),
         "{body}",
     );
     assert_eq!(error["extensions"]["code"], "unauthorized");

@@ -24,6 +24,8 @@ pub struct Config {
     pub blocked_extensions: Option<String>,
     /// Quarantine declared-type lies instead of merely annotating them.
     pub enforce_type_match: bool,
+    /// Request authentication mode and the admin gate.
+    pub auth: crate::auth::AuthConfig,
 }
 
 fn env_or(key: &str, default: &str) -> String {
@@ -61,6 +63,14 @@ impl Config {
             upload_lease_secs: env_parse("COPAL_UPLOAD_LEASE_SECS", 900),
             blocked_extensions: std::env::var("COPAL_BLOCKED_EXTENSIONS").ok(),
             enforce_type_match: env_parse("COPAL_ENFORCE_TYPE_MATCH", false),
+            auth: crate::auth::AuthConfig {
+                // "header" (development default until 1.0) or "keys".
+                mode: std::env::var("COPAL_AUTH_MODE")
+                    .ok()
+                    .and_then(|raw| crate::auth::AuthMode::parse(&raw))
+                    .unwrap_or_default(),
+                admin_token: std::env::var("COPAL_ADMIN_TOKEN").ok(),
+            },
             sweeps: crate::sweeps::SweepConfig {
                 interval_secs: env_parse("COPAL_SWEEP_INTERVAL_SECS", 60),
                 staging_ttl_secs: env_parse("COPAL_STAGING_TTL_SECS", 86_400),

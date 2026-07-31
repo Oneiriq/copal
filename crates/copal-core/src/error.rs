@@ -15,6 +15,10 @@ pub enum CopalError {
     #[error("validation: {0}")]
     Validation(String),
 
+    /// No usable identity on the request.
+    #[error("unauthorized: {0}")]
+    Unauthorized(String),
+
     /// The target does not exist (or is soft-deleted).
     #[error("not found: {0}")]
     NotFound(String),
@@ -51,5 +55,10 @@ impl CopalError {
     /// Shorthand for a conflict failure.
     pub fn conflict(msg: impl Into<String>) -> Self {
         Self::Conflict(msg.into())
+    }
+
+    /// Shorthand for an authentication failure.
+    pub fn unauthorized(msg: impl Into<String>) -> Self {
+        Self::Unauthorized(msg.into())
     }
 }

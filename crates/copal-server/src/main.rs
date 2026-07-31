@@ -28,7 +28,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         policy,
         config.enforce_type_match,
     );
-    let mut state = AppState::new(store.clone(), blobs).with_flow(registry.clone());
+    if config.auth.mode == copal_server::auth::AuthMode::TrustedHeader {
+        tracing::warn!(
+            "auth mode is TRUSTED HEADER (x-copal-tenant): development only — \
+             set COPAL_AUTH_MODE=keys with COPAL_ADMIN_TOKEN for any exposed deployment",
+        );
+    }
+    let mut state = AppState::new(store.clone(), blobs)
+        .with_flow(registry.clone())
+        .with_auth(config.auth.clone());
     state.limits = copal_server::app::Limits {
         max_upload_bytes: config.max_upload_bytes,
         upload_lease_secs: config.upload_lease_secs,

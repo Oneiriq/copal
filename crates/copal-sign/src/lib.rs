@@ -45,32 +45,79 @@ impl GrantToken {
     /// Parse a wire token. Rejections are uniform — callers surface
     /// every failure identically so the token format is not an oracle.
     pub fn parse(raw: &str) -> copal_core::Result<Self> {
-        let mut parts = raw.split('.');
-        let (Some(prefix), Some(grant_id), Some(secret), None) =
-            (parts.next(), parts.next(), parts.next(), parts.next())
-        else {
-            return Err(CopalError::validation("malformed grant token"));
-        };
-        if prefix != PREFIX
-            || grant_id.is_empty()
-            || secret.len() != SECRET_BYTES * 2
-            || !grant_id
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-            || !secret.chars().all(|c| c.is_ascii_hexdigit())
-        {
-            return Err(CopalError::validation("malformed grant token"));
-        }
-        Ok(Self {
-            grant_id: grant_id.to_owned(),
-            secret: secret.to_ascii_lowercase(),
-        })
+        let (grant_id, secret) = parse_token(raw, PREFIX, "malformed grant token")?;
+        Ok(Self { grant_id, secret })
     }
 
     /// `sha256(secret)` in lowercase hex — the only form the store sees.
     pub fn secret_hash(&self) -> String {
         hash_secret(&self.secret)
     }
+}
+
+const KEY_PREFIX: &str = "ck1";
+
+/// A minted or parsed tenant API key. Same stateful-capability design
+/// as grant tokens — `ck1.<key id>.<secret>`, the store holds only
+/// `sha256(secret)`, revocation is an UPDATE, no signing key exists.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApiKeyToken {
+    /// The api_key record id (ULID, lowercase).
+    pub key_id: String,
+    /// The bearer secret, lowercase hex. Never stored server-side.
+    pub secret: String,
+}
+
+impl ApiKeyToken {
+    /// Mint a fresh key with a cryptographically random secret.
+    pub fn mint() -> Self {
+        let raw: [u8; SECRET_BYTES] = rand::rng().random();
+        Self {
+            key_id: ulid::Ulid::new().to_string().to_ascii_lowercase(),
+            secret: hex::encode(raw),
+        }
+    }
+
+    /// The wire form callers present as a bearer credential.
+    pub fn encode(&self) -> String {
+        format!("{KEY_PREFIX}.{}.{}", self.key_id, self.secret)
+    }
+
+    /// Parse a wire key; rejections are uniform.
+    pub fn parse(raw: &str) -> copal_core::Result<Self> {
+        let (key_id, secret) = parse_token(raw, KEY_PREFIX, "malformed api key")?;
+        Ok(Self { key_id, secret })
+    }
+
+    /// `sha256(secret)` in lowercase hex — the only form the store sees.
+    pub fn secret_hash(&self) -> String {
+        hash_secret(&self.secret)
+    }
+}
+
+/// Shared `<prefix>.<id>.<hex secret>` parsing for both token families.
+fn parse_token(
+    raw: &str,
+    expected_prefix: &str,
+    fault: &'static str,
+) -> copal_core::Result<(String, String)> {
+    let mut parts = raw.split('.');
+    let (Some(prefix), Some(id), Some(secret), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return Err(CopalError::validation(fault));
+    };
+    if prefix != expected_prefix
+        || id.is_empty()
+        || secret.len() != SECRET_BYTES * 2
+        || !id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        || !secret.chars().all(|c| c.is_ascii_hexdigit())
+    {
+        return Err(CopalError::validation(fault));
+    }
+    Ok((id.to_owned(), secret.to_ascii_lowercase()))
 }
 
 /// Hash a bearer secret for storage or comparison.
@@ -129,6 +176,16 @@ mod tests {
         ] {
             assert!(GrantToken::parse(bad).is_err(), "{bad:?} must not parse");
         }
+    }
+
+    #[test]
+    fn api_keys_round_trip_and_families_do_not_cross() {
+        let key = ApiKeyToken::mint();
+        let parsed = ApiKeyToken::parse(&key.encode()).unwrap();
+        assert_eq!(parsed, key);
+        // A grant token is not an api key and vice versa.
+        assert!(ApiKeyToken::parse(&GrantToken::mint().encode()).is_err());
+        assert!(GrantToken::parse(&key.encode()).is_err());
     }
 
     #[test]

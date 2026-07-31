@@ -5,8 +5,9 @@
 //! Janus runtime — resolvers below call the same repositories the REST
 //! handlers call, and the same wire mapper renders rows, so the two
 //! protocols cannot diverge. Tenancy is a Janus middleware: the HTTP
-//! layer seeds the per-request context from `x-copal-tenant`, and
-//! [`RequireTenant`] fails closed when it is missing.
+//! layer seeds the per-request context through the SAME authenticator
+//! REST uses (trusted header or `ck1` bearer key, per configuration),
+//! and [`RequireTenant`] fails closed when identity is missing.
 
 use std::sync::Arc;
 
@@ -49,7 +50,7 @@ impl Middleware for RequireTenant {
         Box::pin(async move {
             if ctx.get::<Tenant>().is_none() {
                 return Err(JanusError::Unauthorized(
-                    "missing or invalid x-copal-tenant header".into(),
+                    "no tenant identity on the request (missing or invalid credentials)".into(),
                 ));
             }
             next.run(operation, ctx, payload).await
@@ -58,9 +59,11 @@ impl Middleware for RequireTenant {
 }
 
 fn tenant_of(ctx: &JanusContext) -> Result<TenantId, JanusError> {
-    ctx.get::<Tenant>()
-        .map(|t| t.0.clone())
-        .ok_or_else(|| JanusError::Unauthorized("missing or invalid x-copal-tenant header".into()))
+    ctx.get::<Tenant>().map(|t| t.0.clone()).ok_or_else(|| {
+        JanusError::Unauthorized(
+            "no tenant identity on the request (missing or invalid credentials)".into(),
+        )
+    })
 }
 
 /// Domain errors in runtime vocabulary; infrastructure detail stays in
@@ -68,6 +71,7 @@ fn tenant_of(ctx: &JanusContext) -> Result<TenantId, JanusError> {
 fn to_janus_error(err: CopalError) -> JanusError {
     match err {
         CopalError::Validation(m) => JanusError::BadRequest(m),
+        CopalError::Unauthorized(m) => JanusError::Unauthorized(m),
         CopalError::NotFound(_) => JanusError::NotFound,
         CopalError::Conflict(m) => JanusError::Conflict(m),
         CopalError::PayloadTooLarge(m) => JanusError::BadRequest(m),
@@ -297,11 +301,13 @@ fn dispatcher<B: BlobStore + 'static>(
 }
 
 /// Shared state for the GraphQL routes: the executable schema plus the
-/// generated SDL document served for discovery.
+/// generated SDL document served for discovery, plus the app state the
+/// authenticator needs.
 #[derive(Clone)]
-struct GraphqlState {
+struct GraphqlState<B: BlobStore> {
     schema: async_graphql::dynamic::Schema,
     sdl: Arc<String>,
+    app: AppState<B>,
 }
 
 /// Build the `/graphql` router: POST executes, GET serves the SDL.
@@ -310,16 +316,20 @@ struct GraphqlState {
 /// construction-time bugs the contract tests catch first.
 pub fn graphql_router<B: BlobStore + 'static>(state: AppState<B>) -> Router {
     let tables = copal_store::schema::tables();
-    let schema = build_schema(&tables, dispatcher(state).expect("resolver completeness"))
-        .expect("contract builds a schema");
+    let schema = build_schema(
+        &tables,
+        dispatcher(state.clone()).expect("resolver completeness"),
+    )
+    .expect("contract builds a schema");
     let sdl =
         janus::generate_sdl(&crate::contract::contract(), &tables).expect("contract generates SDL");
     let gql = GraphqlState {
         schema,
         sdl: Arc::new(sdl),
+        app: state,
     };
     Router::new()
-        .route("/graphql", post(execute).get(sdl_document))
+        .route("/graphql", post(execute::<B>).get(sdl_document::<B>))
         .with_state(gql)
 }
 
@@ -333,8 +343,8 @@ struct GraphqlRequest {
     operation_name: Option<String>,
 }
 
-async fn execute(
-    State(gql): State<GraphqlState>,
+async fn execute<B: BlobStore>(
+    State(gql): State<GraphqlState<B>>,
     headers: HeaderMap,
     Json(body): Json<GraphqlRequest>,
 ) -> impl IntoResponse {
@@ -346,21 +356,19 @@ async fn execute(
         request = request.operation_name(operation);
     }
 
-    // Seed the per-request context. An absent or unparsable tenant
-    // seeds nothing; RequireTenant rejects any contract operation.
+    // Seed the per-request context through the SAME authenticator the
+    // REST face uses. A failed authentication seeds nothing, and the
+    // RequireTenant middleware rejects each operation with the coded
+    // error — GraphQL convention keeps auth failures in the body.
     let mut ctx = JanusContext::new();
-    if let Some(tenant) = headers
-        .get("x-copal-tenant")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|raw| TenantId::parse(raw).ok())
-    {
+    if let Ok(tenant) = crate::auth::authenticate(&gql.app, &headers).await {
         ctx.insert(Tenant(tenant));
     }
     let response = gql.schema.execute(request.data(ctx)).await;
     Json(serde_json::to_value(response).expect("graphql response serializes"))
 }
 
-async fn sdl_document(State(gql): State<GraphqlState>) -> impl IntoResponse {
+async fn sdl_document<B: BlobStore>(State(gql): State<GraphqlState<B>>) -> impl IntoResponse {
     (
         [(axum::http::header::CONTENT_TYPE, "application/graphql")],
         gql.sdl.as_str().to_owned(),

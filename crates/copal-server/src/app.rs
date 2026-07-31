@@ -55,11 +55,13 @@ pub struct AppState<B: BlobStore> {
     /// Identifies this process as an upload-claim owner, so stale
     /// leases name the instance that died holding them.
     pub instance_id: String,
+    /// How requests prove their tenant, plus the admin gate.
+    pub auth: crate::auth::AuthConfig,
 }
 
 impl<B: BlobStore> AppState<B> {
-    /// State with default limits, an empty flow registry, and a fresh
-    /// instance id.
+    /// State with default limits, an empty flow registry, a fresh
+    /// instance id, and trusted-header auth (the development default).
     pub fn new(store: Store, blobs: B) -> Self {
         Self {
             flow: FlowEngine::new(store.clone(), FlowRegistry::new()),
@@ -67,12 +69,19 @@ impl<B: BlobStore> AppState<B> {
             blobs,
             limits: Limits::default(),
             instance_id: ulid::Ulid::new().to_string().to_ascii_lowercase(),
+            auth: crate::auth::AuthConfig::default(),
         }
     }
 
     /// Install a populated activity/workflow registry.
     pub fn with_flow(mut self, registry: FlowRegistry) -> Self {
         self.flow = FlowEngine::new(self.store.clone(), registry);
+        self
+    }
+
+    /// Install authentication configuration.
+    pub fn with_auth(mut self, auth: crate::auth::AuthConfig) -> Self {
+        self.auth = auth;
         self
     }
 }
@@ -110,6 +119,16 @@ pub fn build_router<B: BlobStore + 'static>(state: AppState<B>) -> Router {
             "/v1/grants/{grant_ref}",
             get(redeem_grant::<B>).delete(revoke_grant::<B>),
         )
+        // Operator surface: key custody. Guarded by the admin token;
+        // disabled entirely when none is configured.
+        .route(
+            "/v1/admin/tenants/{tenant}/keys",
+            post(mint_key::<B>).get(list_keys::<B>),
+        )
+        .route(
+            "/v1/admin/tenants/{tenant}/keys/{key_id}",
+            axum::routing::delete(revoke_key::<B>),
+        )
         .with_state(state.clone())
         // The second face: /graphql, served by Janus from the same
         // contract, dispatching into the same repositories.
@@ -120,15 +139,67 @@ async fn healthz() -> &'static str {
     "ok"
 }
 
-/// Tenant comes from the `x-copal-tenant` header. This is the
-/// development seam where verified authentication plugs in; the header
-/// is validated as an identifier either way.
-fn tenant_from(headers: &HeaderMap) -> Result<TenantId, ApiError> {
-    let raw = headers
-        .get("x-copal-tenant")
-        .and_then(|v| v.to_str().ok())
-        .ok_or_else(|| CopalError::validation("missing x-copal-tenant header"))?;
-    Ok(TenantId::parse(raw)?)
+/// Request body for minting an API key.
+#[derive(Debug, Deserialize)]
+struct MintKeyRequest {
+    name: String,
+}
+
+/// Mint a tenant API key. The bearer token appears exactly once, in
+/// this response; the store keeps only its hash.
+async fn mint_key<B: BlobStore>(
+    State(state): State<AppState<B>>,
+    headers: HeaderMap,
+    Path(tenant): Path<String>,
+    Json(request): Json<MintKeyRequest>,
+) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
+    crate::auth::require_admin(&state, &headers)?;
+    let tenant = TenantId::parse(&tenant)?;
+    let token = copal_sign::ApiKeyToken::mint();
+    let row = copal_store::repo::auth::create_key(
+        &state.store,
+        &tenant,
+        &request.name,
+        &token.key_id,
+        &token.secret_hash(),
+    )
+    .await?;
+    Ok((
+        StatusCode::CREATED,
+        Json(json!({
+            "key_id": row.key_id(),
+            "name": row.name,
+            "token": token.encode(),
+            "created_at": row.created_at,
+        })),
+    ))
+}
+
+/// List a tenant's keys (never their hashes).
+async fn list_keys<B: BlobStore>(
+    State(state): State<AppState<B>>,
+    headers: HeaderMap,
+    Path(tenant): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    crate::auth::require_admin(&state, &headers)?;
+    let tenant = TenantId::parse(&tenant)?;
+    let keys = copal_store::repo::auth::list_keys(&state.store, &tenant).await?;
+    Ok(Json(json!({ "items": keys })))
+}
+
+/// Revoke a key; already-revoked and unknown both read as 404 so the
+/// admin surface is not a key-id oracle either.
+async fn revoke_key<B: BlobStore>(
+    State(state): State<AppState<B>>,
+    headers: HeaderMap,
+    Path((tenant, key_id)): Path<(String, String)>,
+) -> Result<StatusCode, ApiError> {
+    crate::auth::require_admin(&state, &headers)?;
+    let tenant = TenantId::parse(&tenant)?;
+    if !copal_store::repo::auth::revoke_key(&state.store, &tenant, &key_id).await? {
+        return Err(CopalError::not_found(format!("key {key_id}")).into());
+    }
+    Ok(StatusCode::NO_CONTENT)
 }
 
 fn parse_id(raw: &str) -> Result<FileId, ApiError> {
@@ -140,7 +211,7 @@ async fn create_file<B: BlobStore>(
     headers: HeaderMap,
     Json(spec): Json<FileSpec>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
-    let tenant = tenant_from(&headers)?;
+    let tenant = crate::auth::authenticate(&state, &headers).await?;
     let created = file_repo::create_file(&state.store, &tenant, &spec, "api").await?;
     // 201 for a fresh record, 200 for an idempotency-key replay that
     // returned the original — retries read as success, not conflict.
@@ -193,7 +264,7 @@ async fn list_files<B: BlobStore>(
     headers: HeaderMap,
     axum::extract::Query(params): axum::extract::Query<ListQuery>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let tenant = tenant_from(&headers)?;
+    let tenant = crate::auth::authenticate(&state, &headers).await?;
     let limit = params.limit.unwrap_or(100).clamp(1, 100);
     let after = params.cursor.as_deref().map(decode_cursor).transpose()?;
     let state_filter = params.state.as_deref().map(parse_state_param).transpose()?;
@@ -234,7 +305,7 @@ async fn get_file<B: BlobStore>(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let tenant = tenant_from(&headers)?;
+    let tenant = crate::auth::authenticate(&state, &headers).await?;
     let id = parse_id(&id)?;
     let record = file_repo::get_file(&state.store, &tenant, &id)
         .await?
@@ -250,7 +321,7 @@ async fn delete_file<B: BlobStore>(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    let tenant = tenant_from(&headers)?;
+    let tenant = crate::auth::authenticate(&state, &headers).await?;
     let id = parse_id(&id)?;
     file_repo::soft_delete(&state.store, &tenant, &id).await?;
     Ok(StatusCode::NO_CONTENT)
@@ -268,7 +339,7 @@ async fn upload_content<B: BlobStore>(
     Path(id): Path<String>,
     request: Request,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let tenant = tenant_from(request.headers())?;
+    let tenant = crate::auth::authenticate(&state, request.headers()).await?;
     let id = parse_id(&id)?;
 
     file_repo::claim_upload(
@@ -421,7 +492,7 @@ async fn download_content<B: BlobStore>(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Response, ApiError> {
-    let tenant = tenant_from(&headers)?;
+    let tenant = crate::auth::authenticate(&state, &headers).await?;
     let id = parse_id(&id)?;
     let record = file_repo::get_file(&state.store, &tenant, &id)
         .await?
@@ -535,7 +606,7 @@ async fn issue_grant<B: BlobStore>(
     Path(id): Path<String>,
     Json(request): Json<IssueGrantRequest>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
-    let tenant = tenant_from(&headers)?;
+    let tenant = crate::auth::authenticate(&state, &headers).await?;
     let id = parse_id(&id)?;
     let issued = issue_grant_core(&state, &tenant, &id, request.ttl_secs, request.max_uses).await?;
     Ok((StatusCode::CREATED, Json(issued)))
@@ -593,7 +664,7 @@ async fn revoke_grant<B: BlobStore>(
     headers: HeaderMap,
     Path(grant_ref): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    let tenant = tenant_from(&headers)?;
+    let tenant = crate::auth::authenticate(&state, &headers).await?;
     grant_repo::revoke(&state.store, &tenant, &grant_ref).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -604,7 +675,7 @@ async fn list_versions<B: BlobStore>(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<Vec<copal_core::FileVersion>>, ApiError> {
-    let tenant = tenant_from(&headers)?;
+    let tenant = crate::auth::authenticate(&state, &headers).await?;
     let id = parse_id(&id)?;
     // Tenancy and tombstone filtering ride the file fetch.
     file_repo::get_file(&state.store, &tenant, &id)
@@ -620,7 +691,7 @@ async fn download_version<B: BlobStore>(
     headers: HeaderMap,
     Path((id, number)): Path<(String, u64)>,
 ) -> Result<Response, ApiError> {
-    let tenant = tenant_from(&headers)?;
+    let tenant = crate::auth::authenticate(&state, &headers).await?;
     let id = parse_id(&id)?;
     let record = file_repo::get_file(&state.store, &tenant, &id)
         .await?
@@ -703,7 +774,7 @@ async fn start_run<B: BlobStore>(
     headers: HeaderMap,
     Json(request): Json<StartRunRequest>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
-    let tenant = tenant_from(&headers)?;
+    let tenant = crate::auth::authenticate(&state, &headers).await?;
     let (status, body) = start_run_core(&state, &tenant, request).await?;
     Ok((status, Json(body)))
 }
@@ -782,7 +853,7 @@ async fn retry_run<B: BlobStore>(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
-    let tenant = tenant_from(&headers)?;
+    let tenant = crate::auth::authenticate(&state, &headers).await?;
     let body = retry_run_core(&state, &tenant, &id).await?;
     Ok((StatusCode::ACCEPTED, Json(body)))
 }
@@ -823,7 +894,7 @@ async fn list_runs<B: BlobStore>(
     headers: HeaderMap,
     axum::extract::Query(params): axum::extract::Query<RunListQuery>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let tenant = tenant_from(&headers)?;
+    let tenant = crate::auth::authenticate(&state, &headers).await?;
     let limit = params.limit.unwrap_or(100).clamp(1, 100);
     let after = params
         .cursor
@@ -873,7 +944,7 @@ async fn get_run<B: BlobStore>(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let tenant = tenant_from(&headers)?;
+    let tenant = crate::auth::authenticate(&state, &headers).await?;
     let (run, steps) = state
         .flow
         .run_state(&tenant, &id)

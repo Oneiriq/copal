@@ -25,6 +25,10 @@ pub struct StoredBlob {
     pub storage_path: String,
 }
 
+/// A boxed byte stream from the blob plane.
+pub type ByteStream =
+    futures::stream::BoxStream<'static, std::result::Result<bytes::Bytes, CopalError>>;
+
 /// The blob-plane port: streaming writes to content-addressed keys,
 /// reads back by digest.
 pub trait BlobStore: Clone + Send + Sync + 'static {
@@ -38,11 +42,21 @@ pub trait BlobStore: Clone + Send + Sync + 'static {
         S: Stream<Item = Result<bytes::Bytes, E>> + Send + Unpin,
         E: std::fmt::Display + Send;
 
-    /// Read a blob's bytes by digest.
+    /// Read a blob's bytes by digest, fully buffered. Prefer
+    /// [`BlobStore::open_read`] for anything that might be large.
     fn read(
         &self,
         digest: &ContentDigest,
     ) -> impl std::future::Future<Output = copal_core::Result<bytes::Bytes>> + Send;
+
+    /// Open a blob for streaming: total length plus a byte stream.
+    /// The length is known up front (content-addressed objects are
+    /// immutable), so responses can carry Content-Length while the
+    /// body streams.
+    fn open_read(
+        &self,
+        digest: &ContentDigest,
+    ) -> impl std::future::Future<Output = copal_core::Result<(u64, ByteStream)>> + Send;
 
     /// Whether bytes exist at the digest's address.
     fn exists(
@@ -133,6 +147,32 @@ impl BlobStore for FsBlobStore {
             .exists(&Self::addressed(digest))
             .await
             .map_err(|e| CopalError::Blob(format!("stat {digest}: {e}")))
+    }
+
+    async fn open_read(&self, digest: &ContentDigest) -> copal_core::Result<(u64, ByteStream)> {
+        let path = Self::addressed(digest);
+        let not_found = |e: &opendal::Error| e.kind() == opendal::ErrorKind::NotFound;
+        let stat = self.op.stat(&path).await.map_err(|e| {
+            if not_found(&e) {
+                CopalError::not_found(format!("blob {digest}"))
+            } else {
+                CopalError::Blob(format!("stat {digest}: {e}"))
+            }
+        })?;
+        let len = stat.content_length();
+        let reader = self
+            .op
+            .reader(&path)
+            .await
+            .map_err(|e| CopalError::Blob(format!("open {digest}: {e}")))?;
+        let owned = digest.clone();
+        let stream = reader
+            .into_bytes_stream(0..len)
+            .await
+            .map_err(|e| CopalError::Blob(format!("stream {digest}: {e}")))?
+            .map(move |chunk| chunk.map_err(|e| CopalError::Blob(format!("stream {owned}: {e}"))))
+            .boxed();
+        Ok((len, stream))
     }
 }
 

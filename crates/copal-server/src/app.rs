@@ -10,6 +10,7 @@ use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
+use futures::StreamExt as _;
 
 use copal_blob::{BlobStore, StoredBlob};
 use copal_core::{CopalError, FileId, FileRecord, FileSpec, FileState, TenantId};
@@ -18,14 +19,52 @@ use copal_store::Store;
 
 use crate::error::ApiError;
 
+/// Request-shaping limits, separable from infrastructure config so
+/// tests can build a router with tiny ceilings.
+#[derive(Debug, Clone, Copy)]
+pub struct Limits {
+    pub max_upload_bytes: usize,
+    pub upload_lease_secs: u32,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            max_upload_bytes: 1 << 30,
+            upload_lease_secs: 900,
+        }
+    }
+}
+
 /// Shared application state.
 #[derive(Clone)]
 pub struct AppState<B: BlobStore> {
     pub store: Store,
     pub blobs: B,
+    pub limits: Limits,
+    /// Identifies this process as an upload-claim owner, so stale
+    /// leases name the instance that died holding them.
+    pub instance_id: String,
+}
+
+impl<B: BlobStore> AppState<B> {
+    /// State with default limits and a fresh instance id.
+    pub fn new(store: Store, blobs: B) -> Self {
+        Self {
+            store,
+            blobs,
+            limits: Limits::default(),
+            instance_id: ulid::Ulid::new().to_string().to_ascii_lowercase(),
+        }
+    }
 }
 
 /// Build the router over any blob backend.
+///
+/// The upload ceiling is enforced inside the upload handler's stream —
+/// `DefaultBodyLimit` guards extractor-based bodies only, and the
+/// upload path consumes the raw request stream. JSON routes keep axum's
+/// small built-in default limit.
 pub fn build_router<B: BlobStore>(state: AppState<B>) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
@@ -63,8 +102,15 @@ async fn create_file<B: BlobStore>(
     Json(spec): Json<FileSpec>,
 ) -> Result<(StatusCode, Json<FileRecord>), ApiError> {
     let tenant = tenant_from(&headers)?;
-    let record = file_repo::create_file(&state.store, &tenant, &spec, "api").await?;
-    Ok((StatusCode::CREATED, Json(record)))
+    let created = file_repo::create_file(&state.store, &tenant, &spec, "api").await?;
+    // 201 for a fresh record, 200 for an idempotency-key replay that
+    // returned the original — retries read as success, not conflict.
+    let status = if created.created {
+        StatusCode::CREATED
+    } else {
+        StatusCode::OK
+    };
+    Ok((status, Json(created.record)))
 }
 
 async fn list_files<B: BlobStore>(
@@ -91,10 +137,11 @@ async fn get_file<B: BlobStore>(
 
 /// Stream bytes in and finish the upload in one request.
 ///
-/// The record moves draft -> uploading (or failed -> uploading on a
-/// retry) before any byte lands, so a concurrent second uploader loses
-/// the CAS instead of interleaving writes. On success the record is
-/// ready, digest-verified, and linked to its deduped blob row.
+/// The claim (draft or failed-retry, or stealing an expired lease from
+/// a dead uploader) lands before any byte, so a concurrent second
+/// uploader loses the CAS instead of interleaving writes. On success
+/// the record is ready, digest-verified, and linked to its deduped
+/// blob row.
 async fn upload_content<B: BlobStore>(
     State(state): State<AppState<B>>,
     Path(id): Path<String>,
@@ -103,34 +150,35 @@ async fn upload_content<B: BlobStore>(
     let tenant = tenant_from(request.headers())?;
     let id = parse_id(&id)?;
 
-    // Claim the record. A fresh draft claims from Draft; a retry after
-    // failure claims from Failed.
-    let claim = file_repo::transition(
+    file_repo::claim_upload(
         &state.store,
         &tenant,
         &id,
-        FileState::Draft,
-        FileState::Uploading,
-        Default::default(),
+        &state.instance_id,
+        state.limits.upload_lease_secs,
     )
-    .await;
-    match claim {
-        Ok(_) => {}
-        Err(CopalError::Conflict(_)) => {
-            file_repo::transition(
-                &state.store,
-                &tenant,
-                &id,
-                FileState::Failed,
-                FileState::Uploading,
-                Default::default(),
-            )
-            .await?;
-        }
-        Err(other) => return Err(other.into()),
-    }
+    .await?;
 
-    let body = request.into_body().into_data_stream();
+    // Enforce the ceiling in the stream itself: past the limit the
+    // stream yields an error, the writer aborts, and only inert staging
+    // garbage remains. The sentinel message is what the error arm
+    // below maps to 413.
+    let max = state.limits.max_upload_bytes as u64;
+    let mut running_total = 0u64;
+    let body = request
+        .into_body()
+        .into_data_stream()
+        .map(move |chunk| match chunk {
+            Ok(bytes) => {
+                running_total += bytes.len() as u64;
+                if running_total > max {
+                    Err("length limit exceeded".to_owned())
+                } else {
+                    Ok(bytes)
+                }
+            }
+            Err(err) => Err(format!("body: {err}")),
+        });
     let stored = match state.blobs.put_streamed(body).await {
         Ok(stored) => stored,
         Err(err) => {
@@ -145,6 +193,17 @@ async fn upload_content<B: BlobStore>(
                 Default::default(),
             )
             .await;
+            // The body-limit layer surfaces as a stream error; report it
+            // as 413 rather than an internal failure. The record stays
+            // in `failed`, so retrying with a smaller payload is legal.
+            let text = err.to_string();
+            if text.contains("length limit") {
+                return Err(CopalError::PayloadTooLarge(format!(
+                    "upload exceeds {} bytes",
+                    state.limits.max_upload_bytes,
+                ))
+                .into());
+            }
             return Err(err.into());
         }
     };
@@ -193,14 +252,18 @@ async fn download_content<B: BlobStore>(
         .digest
         .as_ref()
         .ok_or_else(|| CopalError::Store("ready file without digest".into()))?;
-    let bytes = state.blobs.read(digest).await?;
+    // Stream: bytes never buffer in the server, while the length —
+    // known up front for immutable content-addressed objects — still
+    // rides Content-Length.
+    let (len, stream) = state.blobs.open_read(digest).await?;
 
     let response = (
         [
             (header::CONTENT_TYPE, record.content_type.clone()),
+            (header::CONTENT_LENGTH, len.to_string()),
             (header::ETAG, format!("\"{digest}\"")),
         ],
-        Body::from(bytes),
+        Body::from_stream(stream),
     );
     Ok(response.into_response())
 }

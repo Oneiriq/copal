@@ -20,9 +20,13 @@ pub enum CopalError {
     NotFound(String),
 
     /// The request lost a compare-and-swap race or violates uniqueness —
-    /// e.g. an illegal state transition or a duplicate idempotency key.
+    /// e.g. an illegal state transition or a duplicate live path.
     #[error("conflict: {0}")]
     Conflict(String),
+
+    /// The request body exceeds the configured size ceiling.
+    #[error("payload too large: {0}")]
+    PayloadTooLarge(String),
 
     /// The metadata plane failed.
     #[error("store: {0}")]

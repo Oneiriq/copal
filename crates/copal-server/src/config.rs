@@ -14,10 +14,23 @@ pub struct Config {
     pub store: StoreConfig,
     /// Root directory of the filesystem blob store.
     pub blob_root: String,
+    /// Upload body ceiling in bytes.
+    pub max_upload_bytes: usize,
+    /// Upload claim lease TTL; expired claims are stealable and reaped.
+    pub upload_lease_secs: u32,
+    /// How often the reaper sweeps expired claims to `failed`.
+    pub reaper_interval_secs: u64,
 }
 
 fn env_or(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_owned())
+}
+
+fn env_parse<T: std::str::FromStr>(key: &str, default: T) -> T {
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
 }
 
 impl Config {
@@ -40,6 +53,9 @@ impl Config {
                 password,
             },
             blob_root: env_or("COPAL_BLOB_ROOT", "./data/blobs"),
+            max_upload_bytes: env_parse("COPAL_MAX_UPLOAD_BYTES", 1 << 30),
+            upload_lease_secs: env_parse("COPAL_UPLOAD_LEASE_SECS", 900),
+            reaper_interval_secs: env_parse("COPAL_REAPER_INTERVAL_SECS", 60),
         }
     }
 }

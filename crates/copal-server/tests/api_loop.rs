@@ -12,14 +12,21 @@ use serde_json::{json, Value};
 use tower::ServiceExt as _;
 
 use copal_blob::FsBlobStore;
+use copal_server::app::Limits;
 use copal_server::{build_router, AppState};
 use copal_store::{Store, StoreConfig};
 
-async fn test_router() -> (axum::Router, tempfile::TempDir) {
+async fn test_router_with(limits: Limits) -> (axum::Router, tempfile::TempDir) {
     let store = Store::connect(StoreConfig::memory()).await.unwrap();
     let dir = tempfile::tempdir().unwrap();
     let blobs = FsBlobStore::open(dir.path().to_str().unwrap()).unwrap();
-    (build_router(AppState { store, blobs }), dir)
+    let mut state = AppState::new(store, blobs);
+    state.limits = limits;
+    (build_router(state), dir)
+}
+
+async fn test_router() -> (axum::Router, tempfile::TempDir) {
+    test_router_with(Limits::default()).await
 }
 
 async fn json_body(response: axum::response::Response) -> Value {
@@ -104,6 +111,11 @@ async fn full_file_lifecycle() {
     let response = router.clone().oneshot(download).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(response.headers()["content-type"], "application/pdf");
+    // Streaming body still advertises the exact length up front.
+    assert_eq!(
+        response.headers()["content-length"],
+        payload.len().to_string().as_str(),
+    );
     let etag = response.headers()["etag"].to_str().unwrap().to_owned();
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     assert_eq!(&bytes[..], payload);
@@ -217,4 +229,81 @@ fn walkdir(root: std::path::PathBuf) -> Vec<std::path::PathBuf> {
         }
     }
     files
+}
+
+#[tokio::test]
+async fn idempotent_create_replays_with_200_and_the_original() {
+    let (router, _dir) = test_router().await;
+
+    let first = req(
+        "POST",
+        "/v1/files",
+        Some("acme"),
+        Body::from(json!({"path": "orig.txt", "idempotency_key": "req-77"}).to_string()),
+    );
+    let response = router.clone().oneshot(first).await.unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let original = json_body(response).await;
+
+    // The retried request -- even with a different path -- returns the
+    // original record with 200, never a 409.
+    let replay = req(
+        "POST",
+        "/v1/files",
+        Some("acme"),
+        Body::from(json!({"path": "changed.txt", "idempotency_key": "req-77"}).to_string()),
+    );
+    let response = router.clone().oneshot(replay).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let replayed = json_body(response).await;
+    assert_eq!(replayed["id"], original["id"]);
+    assert_eq!(replayed["path"], "orig.txt");
+}
+
+#[tokio::test]
+async fn oversized_uploads_are_413_and_retryable() {
+    let (router, _dir) = test_router_with(Limits {
+        max_upload_bytes: 16,
+        upload_lease_secs: 900,
+    })
+    .await;
+
+    let create = req(
+        "POST",
+        "/v1/files",
+        Some("acme"),
+        Body::from(json!({"path": "big.bin"}).to_string()),
+    );
+    let response = router.clone().oneshot(create).await.unwrap();
+    let id = json_body(response).await["id"].as_str().unwrap().to_owned();
+
+    let upload = req(
+        "PUT",
+        &format!("/v1/files/{id}/content"),
+        Some("acme"),
+        Body::from(vec![0u8; 64]),
+    );
+    let response = router.clone().oneshot(upload).await.unwrap();
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+
+    // The record landed in failed -- retryable, and a within-limit
+    // retry succeeds end to end.
+    let meta = req(
+        "GET",
+        &format!("/v1/files/{id}"),
+        Some("acme"),
+        Body::empty(),
+    );
+    let response = router.clone().oneshot(meta).await.unwrap();
+    assert_eq!(json_body(response).await["state"], "failed");
+
+    let retry = req(
+        "PUT",
+        &format!("/v1/files/{id}/content"),
+        Some("acme"),
+        Body::from(&b"small"[..]),
+    );
+    let response = router.clone().oneshot(retry).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(json_body(response).await["state"], "ready");
 }

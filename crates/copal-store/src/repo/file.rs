@@ -10,10 +10,12 @@ use serde_json::{json, Value};
 use surql::query::builder::Query;
 use surql::query::crud::{create_record, get_record, query_records};
 use surql::query::expressions::raw;
-use surql::types::operators::{eq, is_none};
+use surql::types::operators::{eq, is_none, is_not_none};
 use surql::types::RecordID;
 
-use copal_core::{ContentDigest, CopalError, FileId, FileRecord, FileSpec, FileState, TenantId};
+use copal_core::{
+    ContentDigest, CopalError, CreatedFile, FileId, FileRecord, FileSpec, FileState, TenantId,
+};
 
 use crate::dto::{map_store_err, FileRow};
 use crate::store::Store;
@@ -24,16 +26,20 @@ fn rid(id: &FileId) -> copal_core::Result<RecordID<()>> {
     RecordID::new(TABLE, id.as_str()).map_err(|e| map_store_err("record id", e))
 }
 
-/// Create a file record in `draft`.
+/// Create a file record in `draft`, or return the original on an
+/// idempotency-key replay.
 ///
-/// A duplicate live path or idempotency key surfaces as `Conflict` via
-/// the unique indexes — no pre-read, no separate pending table.
+/// A duplicate live path surfaces as `Conflict` via the unique index —
+/// no pre-read, no separate pending table. A duplicate idempotency key
+/// is NOT a conflict: the retried request gets the original record back
+/// with `created == false`, which is the contract that makes client
+/// retries safe.
 pub async fn create_file(
     store: &Store,
     tenant: &TenantId,
     spec: &FileSpec,
     created_by: &str,
-) -> copal_core::Result<FileRecord> {
+) -> copal_core::Result<CreatedFile> {
     spec.validate()?;
     let id = FileId::generate();
     // Optional columns are OMITTED when unset, never sent as JSON null:
@@ -57,15 +63,66 @@ pub async fn create_file(
     }
     payload.insert("created_by".into(), json!(created_by));
     let payload = Value::Object(payload);
-    let created = create_record(store.client(), &format!("{TABLE}:{id}"), payload)
-        .await
-        .map_err(|e| map_store_err("create_file", e))?;
+    let created = match create_record(store.client(), &format!("{TABLE}:{id}"), payload).await {
+        Ok(created) => created,
+        Err(err) => {
+            let mapped = map_store_err("create_file", err);
+            // Only an idempotency-key replay converts a uniqueness
+            // conflict into success; a path collision stays a conflict.
+            if let (CopalError::Conflict(_), Some(key)) = (&mapped, &spec.idempotency_key) {
+                if let Some(original) = find_by_idempotency_key(store, tenant, key).await? {
+                    if original.state == FileState::Deleted {
+                        return Err(CopalError::conflict(format!(
+                            "idempotency key {key} was consumed by a deleted file",
+                        )));
+                    }
+                    return Ok(CreatedFile {
+                        record: original,
+                        created: false,
+                    });
+                }
+            }
+            return Err(mapped);
+        }
+    };
     let row = created
         .record
         .ok_or_else(|| CopalError::Store("create returned no record".into()))?;
-    serde_json::from_value::<FileRow>(row)
+    let record = serde_json::from_value::<FileRow>(row)
         .map_err(|e| CopalError::Store(format!("create_file row shape: {e}")))?
-        .into_domain()
+        .into_domain()?;
+    Ok(CreatedFile {
+        record,
+        created: true,
+    })
+}
+
+/// Look up a file by its idempotency key, including tombstones (the
+/// caller decides how a deleted holder is reported).
+async fn find_by_idempotency_key(
+    store: &Store,
+    tenant: &TenantId,
+    key: &str,
+) -> copal_core::Result<Option<FileRecord>> {
+    let query = Query::new()
+        .select(None)
+        .from_table(TABLE)
+        .map_err(|e| map_store_err("find_by_idempotency_key", e))?
+        .where_(eq("tenant_id", tenant.as_str()))
+        .where_(eq("idempotency_key", key))
+        .limit(1)
+        .map_err(|e| map_store_err("find_by_idempotency_key", e))?;
+    let mut rows: Vec<FileRow> = query_records(store.client(), &query)
+        .await
+        .map_err(|e| map_store_err("find_by_idempotency_key", e))?;
+    match rows.pop() {
+        Some(row) => {
+            // Domain mapping happens without the tombstone filter here:
+            // the state is part of the answer.
+            row.into_domain().map(Some)
+        }
+        None => Ok(None),
+    }
 }
 
 /// Fetch one file, tenant-scoped, tombstones excluded.
@@ -121,11 +178,115 @@ pub struct TransitionSets {
     pub link_blob: Option<ContentDigest>,
 }
 
+/// The raw SurrealQL fragment selecting an expired lease. A fragment
+/// because the right-hand side is `time::now()` — server time, which no
+/// value-quoting operator can express. Kept in one place; the family's
+/// condition model (`str | Operator`) sanctions raw fragments as
+/// condition entries.
+const LEASE_EXPIRED: &str = "upload_lease_expires_at < time::now()";
+
+/// Stamp a fresh lease onto an UPDATE under construction. Expiry is
+/// computed server-side (`time::now() + <ttl>s`), so client clock skew
+/// cannot manufacture longer leases.
+fn with_lease(query: Query, owner: &str, ttl_secs: u32) -> copal_core::Result<Query> {
+    query
+        .set("upload_lease_owner", Value::from(owner))
+        .map_err(|e| map_store_err("lease", e))?
+        .set_expr(
+            "upload_lease_expires_at",
+            raw(format!("time::now() + {ttl_secs}s")),
+        )
+        .map_err(|e| map_store_err("lease", e))
+}
+
+/// Claim a file for upload, as `owner`, for `ttl_secs`.
+///
+/// Tries, in order:
+/// 1. `draft -> uploading` — the fresh-file path;
+/// 2. `failed -> uploading` — the retry path;
+/// 3. stealing an `uploading` claim whose lease has expired — the
+///    crashed-or-disconnected-uploader path. Not a state transition (the
+///    state stays `uploading`), so it deliberately bypasses
+///    `ensure_transition`; the guard is the expired lease itself.
+///
+/// A live claim by anyone (including `owner`) loses with `Conflict`.
+pub async fn claim_upload(
+    store: &Store,
+    tenant: &TenantId,
+    id: &FileId,
+    owner: &str,
+    ttl_secs: u32,
+) -> copal_core::Result<FileRecord> {
+    for from in [FileState::Draft, FileState::Failed] {
+        match transition_with(store, tenant, id, from, FileState::Uploading, |q| {
+            with_lease(q, owner, ttl_secs)
+        })
+        .await
+        {
+            Ok(record) => return Ok(record),
+            Err(CopalError::Conflict(_)) => continue,
+            Err(other) => return Err(other),
+        }
+    }
+
+    let target = rid(id)?.to_string();
+    let query = with_lease(
+        Query::new()
+            .update_set(target)
+            .map_err(|e| map_store_err("steal_claim", e))?,
+        owner,
+        ttl_secs,
+    )?
+    .where_(eq("tenant_id", tenant.as_str()))
+    .where_(eq("state", FileState::Uploading.as_str()))
+    .where_(is_not_none("upload_lease_expires_at"))
+    .where_str(LEASE_EXPIRED)
+    .return_after();
+    let rows: Vec<FileRow> = query_records(store.client(), &query)
+        .await
+        .map_err(|e| map_store_err("steal_claim", e))?;
+    match rows.into_iter().next() {
+        Some(row) => row.into_domain(),
+        None => Err(CopalError::conflict(format!(
+            "file {id} is not claimable (missing, live-leased, or already terminal)",
+        ))),
+    }
+}
+
+/// Sweep every expired upload claim to `failed`, clearing the lease.
+///
+/// System-wide by design (no tenant scope): the reaper is an operator
+/// process. Returns the reaped records for logging.
+pub async fn reap_expired_uploads(store: &Store) -> copal_core::Result<Vec<FileRecord>> {
+    // uploading -> failed is a legal transition; asserted so a future
+    // state-machine edit cannot silently break the reaper.
+    FileState::Uploading.ensure_transition(FileState::Failed)?;
+
+    let query = Query::new()
+        .update_set(TABLE)
+        .map_err(|e| map_store_err("reap", e))?
+        .set("state", Value::from(FileState::Failed.as_str()))
+        .map_err(|e| map_store_err("reap", e))?
+        .set_expr("upload_lease_owner", raw("NONE"))
+        .map_err(|e| map_store_err("reap", e))?
+        .set_expr("upload_lease_expires_at", raw("NONE"))
+        .map_err(|e| map_store_err("reap", e))?
+        .where_(eq("state", FileState::Uploading.as_str()))
+        .where_(is_not_none("upload_lease_expires_at"))
+        .where_str(LEASE_EXPIRED)
+        .return_after();
+    let rows: Vec<FileRow> = query_records(store.client(), &query)
+        .await
+        .map_err(|e| map_store_err("reap", e))?;
+    rows.into_iter().map(FileRow::into_domain).collect()
+}
+
 /// Guarded state transition: compare-and-swap on `(tenant, id, from)`.
 ///
 /// The transition is validated in the domain first (fast, exhaustive),
 /// then enforced in the database as the WHERE guard, so concurrent
 /// movers cannot double-apply. Losing the race returns `Conflict`.
+/// Leaving `uploading` clears the upload lease atomically.
 pub async fn transition(
     store: &Store,
     tenant: &TenantId,
@@ -134,6 +295,45 @@ pub async fn transition(
     to: FileState,
     sets: TransitionSets,
 ) -> copal_core::Result<FileRecord> {
+    transition_with(store, tenant, id, from, to, |mut query| {
+        if let Some(digest) = &sets.digest {
+            query = query
+                .set("digest", Value::from(digest.as_str()))
+                .map_err(|e| map_store_err("transition", e))?;
+        }
+        if let Some(size) = sets.size_bytes {
+            query = query
+                .set("size_bytes", Value::from(size))
+                .map_err(|e| map_store_err("transition", e))?;
+        }
+        if let Some(blob_digest) = &sets.link_blob {
+            // A record link needs a record literal on the right-hand
+            // side; RecordID renders the canonical (bracketed where
+            // necessary) form and set_expr injects it unquoted.
+            let blob_rid = RecordID::<()>::new("blob", blob_digest.as_str())
+                .map_err(|e| map_store_err("transition", e))?;
+            query = query
+                .set_expr("blob", raw(blob_rid.to_string()))
+                .map_err(|e| map_store_err("transition", e))?;
+        }
+        Ok(query)
+    })
+    .await
+}
+
+/// Shared CAS core: `extra` customises the UPDATE (payload columns or a
+/// fresh lease) before the guards land.
+async fn transition_with<F>(
+    store: &Store,
+    tenant: &TenantId,
+    id: &FileId,
+    from: FileState,
+    to: FileState,
+    extra: F,
+) -> copal_core::Result<FileRecord>
+where
+    F: FnOnce(Query) -> copal_core::Result<Query>,
+{
     from.ensure_transition(to)?;
 
     let target = rid(id)?.to_string();
@@ -142,27 +342,15 @@ pub async fn transition(
         .map_err(|e| map_store_err("transition", e))?
         .set("state", Value::from(to.as_str()))
         .map_err(|e| map_store_err("transition", e))?;
-    if let Some(digest) = &sets.digest {
+    if from == FileState::Uploading {
+        // The claim ends with the state, atomically.
         query = query
-            .set("digest", Value::from(digest.as_str()))
+            .set_expr("upload_lease_owner", raw("NONE"))
+            .map_err(|e| map_store_err("transition", e))?
+            .set_expr("upload_lease_expires_at", raw("NONE"))
             .map_err(|e| map_store_err("transition", e))?;
     }
-    if let Some(size) = sets.size_bytes {
-        query = query
-            .set("size_bytes", Value::from(size))
-            .map_err(|e| map_store_err("transition", e))?;
-    }
-    if let Some(blob_digest) = &sets.link_blob {
-        // A record link needs a record literal on the right-hand side;
-        // RecordID renders the canonical (bracketed where necessary)
-        // form and set_expr injects it unquoted.
-        let blob_rid = RecordID::<()>::new("blob", blob_digest.as_str())
-            .map_err(|e| map_store_err("transition", e))?;
-        query = query
-            .set_expr("blob", raw(blob_rid.to_string()))
-            .map_err(|e| map_store_err("transition", e))?;
-    }
-    let query = query
+    let query = extra(query)?
         .where_(eq("tenant_id", tenant.as_str()))
         .where_(eq("state", from.as_str()))
         .return_after();

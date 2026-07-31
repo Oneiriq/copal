@@ -70,6 +70,12 @@ fn file_table() -> TableDefinition {
             built(datetime_field("updated_at").value("time::now()")),
             built(datetime_field("expires_at").nullable(true)),
             built(datetime_field("deleted_at").nullable(true)),
+            // Upload claim lease. Set on claim (expiry computed
+            // server-side from time::now()), cleared on any transition
+            // out of `uploading`. An expired lease is stealable and is
+            // what the reaper sweeps to `failed`.
+            built(string_field("upload_lease_owner").nullable(true)),
+            built(datetime_field("upload_lease_expires_at").nullable(true)),
             // '' while live, the record id string once deleted. Probed:
             // VALUE recomputes on update, so the composite unique below
             // holds exactly one live row per (tenant, path).
@@ -100,6 +106,12 @@ fn blob_table() -> TableDefinition {
             // backend is named by key so rows stay meaningful.
             built(string_field("store_key")),
             built(string_field("storage_path")),
+            // Advisory cache. The authoritative reference count is
+            // DERIVED by counting inbound `file.blob` links over
+            // idx_file_blob (see repo::blob::recount_inbound_links):
+            // an increment-based counter drifts upward when a crash
+            // lands between sighting and link, and an undercount would
+            // let GC delete live data. Sweeps refresh this column.
             built(int_field("refcount").default("0")),
             built(datetime_field("unreferenced_since").nullable(true)),
             built(

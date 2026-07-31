@@ -1,19 +1,24 @@
 //! Blob repository: content-addressed rows keyed by digest.
 //!
 //! The record id is the digest (`blob:<sha256>`), so deduplication is a
-//! CREATE that either succeeds (first sighting, refcount 1) or collides
-//! (seen before, refcount incremented atomically). No read-then-write
-//! window.
+//! CREATE that either succeeds (first sighting) or collides (seen
+//! before) — and the collision is the happy path, not a failure.
+//!
+//! Reference counting is DERIVED, not incremented. An increment written
+//! before the file link commits drifts upward on a crash-and-retry; an
+//! undercount would let garbage collection delete live data. So the
+//! authoritative count is the number of inbound `file.blob` links
+//! (served by `idx_file_blob`), computed at sweep time; the stored
+//! `refcount` column is an advisory cache the sweep refreshes.
 
 use serde_json::json;
 
 use surql::query::builder::Query;
 use surql::query::crud::{create_record, get_record, query_records};
-use surql::query::expressions::field;
-use surql::types::operators::eq;
+use surql::types::operators::is_none;
 use surql::types::RecordID;
 
-use copal_core::{ContentDigest, CopalError};
+use copal_core::ContentDigest;
 
 use crate::dto::map_store_err;
 use crate::store::Store;
@@ -24,8 +29,8 @@ fn rid(digest: &ContentDigest) -> copal_core::Result<RecordID<()>> {
     RecordID::new(TABLE, digest.as_str()).map_err(|e| map_store_err("blob id", e))
 }
 
-/// Record a sighting of `digest`: create on first upload, atomic
-/// refcount increment on every subsequent one.
+/// Ensure a blob row exists for `digest`. Idempotent: replaying after a
+/// crash or racing another uploader of the same content is a no-op.
 pub async fn record_sighting(
     store: &Store,
     digest: &ContentDigest,
@@ -38,16 +43,17 @@ pub async fn record_sighting(
         "size_bytes": size_bytes,
         "store_key": store_key,
         "storage_path": storage_path,
-        "refcount": 1,
+        "refcount": 0,
     });
     match create_record(store.client(), &rid(digest)?.to_string(), payload).await {
         Ok(_) => Ok(()),
         Err(err) => {
-            // A duplicate id means the content already exists — the happy
-            // dedupe path, not a failure.
+            // Duplicate id: the content is already registered. Identical
+            // digest implies identical size and address, so there is
+            // nothing to reconcile.
             let text = err.to_string();
             if text.contains("already exists") || text.contains("already contains") {
-                increment_refcount(store, digest, 1).await
+                Ok(())
             } else {
                 Err(map_store_err("record_sighting", err))
             }
@@ -55,27 +61,30 @@ pub async fn record_sighting(
     }
 }
 
-/// Atomically adjust the refcount by `delta` (server-side arithmetic;
-/// no read-modify-write).
-pub async fn increment_refcount(
+/// Count the live files referencing `digest` — the authoritative
+/// reference count, served by `idx_file_blob`.
+pub async fn recount_inbound_links(
     store: &Store,
     digest: &ContentDigest,
-    delta: i64,
-) -> copal_core::Result<()> {
+) -> copal_core::Result<i64> {
+    let blob_target = rid(digest)?.to_string();
     let query = Query::new()
-        .update_set(rid(digest)?.to_string())
-        .map_err(|e| map_store_err("refcount", e))?
-        .set_expr("refcount", field("refcount") + delta)
-        .map_err(|e| map_store_err("refcount", e))?
-        .where_(eq("digest", digest.as_str()))
-        .return_after();
+        .select(Some(vec!["count()".to_owned()]))
+        .from_table("file")
+        .map_err(|e| map_store_err("recount", e))?
+        // Record equality against a literal; no quoting operator can
+        // express a record right-hand side, hence the fragment.
+        .where_str(format!("blob = {blob_target}"))
+        .where_(is_none("deleted_at"))
+        .group_all();
     let rows: Vec<serde_json::Value> = query_records(store.client(), &query)
         .await
-        .map_err(|e| map_store_err("refcount", e))?;
-    if rows.is_empty() {
-        return Err(CopalError::not_found(format!("blob {digest}")));
-    }
-    Ok(())
+        .map_err(|e| map_store_err("recount", e))?;
+    Ok(rows
+        .first()
+        .and_then(|r| r.get("count"))
+        .and_then(serde_json::Value::as_i64)
+        .unwrap_or(0))
 }
 
 /// Fetch a blob row's storage location, if the content is known.

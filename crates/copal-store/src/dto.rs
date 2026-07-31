@@ -28,6 +28,10 @@ pub(crate) struct FileRow {
     pub created_by: String,
     pub created_at: String,
     pub updated_at: String,
+    #[serde(default)]
+    pub upload_lease_owner: Option<String>,
+    #[serde(default)]
+    pub upload_lease_expires_at: Option<String>,
 }
 
 /// Strip a `table:` prefix and any record-id brackets from an id string.
@@ -62,6 +66,8 @@ impl FileRow {
             created_by: self.created_by,
             created_at: self.created_at,
             updated_at: self.updated_at,
+            upload_lease_owner: self.upload_lease_owner,
+            upload_lease_expires_at: self.upload_lease_expires_at,
         })
     }
 }

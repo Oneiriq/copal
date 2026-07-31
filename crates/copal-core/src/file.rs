@@ -71,6 +71,24 @@ pub struct FileRecord {
     pub created_by: String,
     pub created_at: String,
     pub updated_at: String,
+    /// Owner of the active upload claim, when one exists. Operational
+    /// visibility: which instance is mid-upload, and whether a claim
+    /// has gone stale.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upload_lease_owner: Option<String>,
+    /// When the active upload claim expires and becomes stealable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upload_lease_expires_at: Option<String>,
+}
+
+/// Result of a create: the record plus whether this call created it.
+///
+/// `created == false` means an idempotency-key replay returned the
+/// original record — success, not conflict.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreatedFile {
+    pub record: FileRecord,
+    pub created: bool,
 }
 
 #[cfg(test)]

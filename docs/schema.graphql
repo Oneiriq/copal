@@ -25,6 +25,23 @@ type FilePage {
   nextCursor: String
 }
 
+type Event {
+  id: ID!
+  action: String!
+  payload: JSON!
+  created_at: DateTime!
+}
+
+enum EventSort {
+  CREATED_AT_ASC
+  CREATED_AT_DESC
+}
+
+type EventPage {
+  items: [Event!]!
+  nextCursor: String
+}
+
 type Run {
   id: ID!
   workflow: String!
@@ -48,12 +65,16 @@ type RunPage {
 type Query {
   files(limit: Int = 100, cursor: String, state: String, sort: FileSort): FilePage!
   file(id: ID!): File
+  events(limit: Int = 100, cursor: String, sort: EventSort): EventPage!
+  event(id: ID!): Event
   runs(limit: Int = 100, cursor: String, status: String, sort: RunSort): RunPage!
   run(id: ID!): Run
 }
 
 type Mutation {
   fileIssueUrl(id: ID!, ttlSecs: Int, maxUses: Int): JSON!
+  fileIssueUploadUrl(id: ID!, ttlSecs: Int): JSON!
+  fileRequestRendition(id: ID!, kind: String, width: Int, height: Int, format: String): JSON!
   fileRemove(id: ID!): Boolean!
   runStart(workflow: String!, input: JSON, file: String, idempotencyKey: String, mode: String): JSON!
   runRetry(id: ID!): JSON!

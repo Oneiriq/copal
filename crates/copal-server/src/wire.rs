@@ -36,6 +36,18 @@ pub fn wire_run(run: &RunRow) -> serde_json::Value {
     })
 }
 
+/// One outbox event as both faces render it. The `action` column
+/// keeps its name on the wire: `event` is reserved in SurrealDB v3,
+/// and the contract's name gate refuses overrides that collide there.
+pub fn wire_event(row: &copal_store::repo::eventing::EventRow) -> serde_json::Value {
+    serde_json::json!({
+        "id": row.event_id(),
+        "action": row.action,
+        "payload": row.payload,
+        "created_at": row.created_at,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -29,6 +29,18 @@ type FilePage struct {
 	NextCursor *string `json:"next_cursor"`
 }
 
+type Event struct {
+	ID string `json:"id"`
+	Action string `json:"action"`
+	Payload any `json:"payload"`
+	CreatedAt string `json:"created_at"`
+}
+
+type EventPage struct {
+	Items []Event `json:"items"`
+	NextCursor *string `json:"next_cursor"`
+}
+
 type Run struct {
 	ID string `json:"id"`
 	Workflow string `json:"workflow"`
@@ -122,8 +134,51 @@ func (c *Client) IssueUrlFile(id string, input map[string]any) (map[string]any, 
 	return out, nil
 }
 
+func (c *Client) IssueUploadUrlFile(id string, input map[string]any) (map[string]any, error) {
+	out := map[string]any{}
+	if err := c.request("POST", "/v1/files" + "/" + id + "/upload-url", input, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) RequestRenditionFile(id string, input map[string]any) (map[string]any, error) {
+	out := map[string]any{}
+	if err := c.request("POST", "/v1/files" + "/" + id + "/renditions", input, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *Client) RemoveFile(id string) error {
 	return c.request("DELETE", "/v1/files" + "/" + id, nil, nil)
+}
+
+func (c *Client) ListEvents(limit int, cursor string) (*EventPage, error) {
+	query := url.Values{}
+	if limit > 0 {
+		query.Set("limit", fmt.Sprint(limit))
+	}
+	if cursor != "" {
+		query.Set("cursor", cursor)
+	}
+	path := "/v1/events"
+	if encoded := query.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+	var page EventPage
+	if err := c.request("GET", path, nil, &page); err != nil {
+		return nil, err
+	}
+	return &page, nil
+}
+
+func (c *Client) GetEvent(id string) (*Event, error) {
+	var out Event
+	if err := c.request("GET", "/v1/events/"+id, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 func (c *Client) ListRuns(limit int, cursor string) (*RunPage, error) {

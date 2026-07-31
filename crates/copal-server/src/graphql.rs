@@ -30,7 +30,7 @@ use crate::app::{
     decode_cursor, decode_run_cursor, encode_cursor, encode_run_cursor, issue_grant_core,
     retry_run_core, start_run_core, AppState, StartRunRequest,
 };
-use crate::wire::{wire_file, wire_run};
+use crate::wire::{wire_event, wire_file, wire_run};
 
 /// The per-request tenant, seeded from the transport by the HTTP layer.
 #[derive(Debug, Clone)]
@@ -105,7 +105,11 @@ fn dispatcher<B: BlobStore + 'static>(
     let list_state = state.clone();
     let get_state = state.clone();
     let url_state = state.clone();
+    let upload_url_state = state.clone();
+    let rendition_state = state.clone();
     let remove_state = state.clone();
+    let events_list_state = state.clone();
+    let events_get_state = state.clone();
     let runs_list_state = state.clone();
     let runs_get_state = state.clone();
     let runs_start_state = state.clone();
@@ -192,6 +196,67 @@ fn dispatcher<B: BlobStore + 'static>(
                     .map_err(|e| to_janus_error(e.0))
             }
         })
+        .action("files", "issue_upload_url", move |ctx, args| {
+            let state = upload_url_state.clone();
+            async move {
+                let tenant = tenant_of(&ctx)?;
+                let id = parse_file_id(args.id.as_deref().unwrap_or_default())?;
+                let ttl_secs = args
+                    .input
+                    .get("ttl_secs")
+                    .and_then(|v| v.as_u64())
+                    .and_then(|v| u32::try_from(v).ok())
+                    .unwrap_or(900);
+                let origin = ctx.get::<RequestOrigin>().map(|o| o.0.clone());
+                crate::app::issue_upload_grant_core(
+                    &state,
+                    &tenant,
+                    &id,
+                    ttl_secs,
+                    origin.as_deref(),
+                )
+                .await
+                .map(Some)
+                .map_err(|e| to_janus_error(e.0))
+            }
+        })
+        .action("files", "request_rendition", move |ctx, args| {
+            let state = rendition_state.clone();
+            async move {
+                let tenant = tenant_of(&ctx)?;
+                let id = parse_file_id(args.id.as_deref().unwrap_or_default())?;
+                let spec = crate::app::RenditionSpec {
+                    kind: args
+                        .input
+                        .get("kind")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("thumb")
+                        .to_owned(),
+                    width: args
+                        .input
+                        .get("width")
+                        .and_then(|v| v.as_u64())
+                        .and_then(|v| u32::try_from(v).ok())
+                        .unwrap_or(256),
+                    height: args
+                        .input
+                        .get("height")
+                        .and_then(|v| v.as_u64())
+                        .and_then(|v| u32::try_from(v).ok())
+                        .unwrap_or(256),
+                    format: args
+                        .input
+                        .get("format")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("jpeg")
+                        .to_owned(),
+                };
+                crate::app::request_rendition_core(&state, &tenant, &id, &spec)
+                    .await
+                    .map(|(_, body)| Some(body))
+                    .map_err(|e| to_janus_error(e.0))
+            }
+        })
         .action("files", "remove", move |ctx, args| {
             let state = remove_state.clone();
             async move {
@@ -202,6 +267,34 @@ fn dispatcher<B: BlobStore + 'static>(
                     .await
                     .map_err(|e| to_janus_error(e.0))?;
                 Ok(None)
+            }
+        })
+        .list("events", move |ctx, args| {
+            let state = events_list_state.clone();
+            async move {
+                let tenant = tenant_of(&ctx)?;
+                let limit = i64::from(args.limit);
+                let rows = copal_store::repo::eventing::list_events(&state.store, &tenant, limit)
+                    .await
+                    .map_err(to_janus_error)?;
+                Ok(ListOutput {
+                    items: rows.iter().map(wire_event).collect(),
+                    // The outbox listing is newest-first and bounded;
+                    // cursoring it waits for a keyset over created_at
+                    // the way files and runs have.
+                    next_cursor: None,
+                })
+            }
+        })
+        .get("events", move |ctx, args| {
+            let state = events_get_state.clone();
+            async move {
+                let tenant = tenant_of(&ctx)?;
+                let row = copal_store::repo::eventing::fetch_event(&state.store, &args.id)
+                    .await
+                    .map_err(to_janus_error)?
+                    .filter(|row| row.tenant_id == tenant.as_str());
+                Ok(row.as_ref().map(wire_event))
             }
         })
         .list("runs", move |ctx, args| {

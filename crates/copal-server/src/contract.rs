@@ -69,6 +69,74 @@ pub fn contract() -> Contract {
                         graphql_field: None,
                     },
                     Action {
+                        name: "issue_upload_url".into(),
+                        method: "POST".into(),
+                        path: "/{id}/upload-url".into(),
+                        input: vec![ActionField {
+                            name: "ttl_secs".into(),
+                            kind: TypeRef::Int,
+                            required: false,
+                            description: Some(
+                                "Seconds until the upload URL stops working (default 900, max \
+                                 one day)."
+                                    .into(),
+                            ),
+                        }],
+                        output: ActionOutput::Json,
+                        description: Some(
+                            "Issue a single-use write capability, so a browser can upload \
+                             without holding a tenant key."
+                                .into(),
+                        ),
+                        graphql_field: None,
+                    },
+                    Action {
+                        name: "request_rendition".into(),
+                        method: "POST".into(),
+                        path: "/{id}/renditions".into(),
+                        input: vec![
+                            ActionField {
+                                name: "kind".into(),
+                                kind: TypeRef::String,
+                                required: false,
+                                description: Some(
+                                    "Rendition label, part of the derived path (default \
+                                     \"thumb\")."
+                                        .into(),
+                                ),
+                            },
+                            ActionField {
+                                name: "width".into(),
+                                kind: TypeRef::Int,
+                                required: false,
+                                description: Some(
+                                    "Bounding width, 16..=4096 (default 256).".into(),
+                                ),
+                            },
+                            ActionField {
+                                name: "height".into(),
+                                kind: TypeRef::Int,
+                                required: false,
+                                description: Some(
+                                    "Bounding height, 16..=4096 (default 256).".into(),
+                                ),
+                            },
+                            ActionField {
+                                name: "format".into(),
+                                kind: TypeRef::String,
+                                required: false,
+                                description: Some("\"jpeg\" (default) or \"png\".".into()),
+                            },
+                        ],
+                        output: ActionOutput::Json,
+                        description: Some(
+                            "Derive an image rendition; repeating a request returns the \
+                             existing one."
+                                .into(),
+                        ),
+                        graphql_field: None,
+                    },
+                    Action {
                         name: "remove".into(),
                         method: "DELETE".into(),
                         path: "/{id}".into(),
@@ -82,6 +150,25 @@ pub fn contract() -> Contract {
                         graphql_field: None,
                     },
                 ],
+            },
+            Resource {
+                name: "events".into(),
+                table: "file_event".into(),
+                fields: vec![
+                    // `action` keeps its column name on the wire:
+                    // `event` is reserved in SurrealDB v3, and the
+                    // contract's name gate refuses overrides that
+                    // would collide there.
+                    FieldExposure::column("action"),
+                    FieldExposure::column("payload"),
+                    FieldExposure::column("created_at"),
+                ],
+                pinned: vec!["tenant_id".into()],
+                filterable: vec![],
+                sortable: vec!["created_at".into()],
+                max_page_size: 100,
+                graphql: None,
+                actions: vec![],
             },
             Resource {
                 name: "runs".into(),

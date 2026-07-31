@@ -31,6 +31,21 @@ pub struct FilePage {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+pub struct Event {
+    pub id: String,
+    pub action: String,
+    pub payload: Value,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct EventPage {
+    pub items: Vec<Event>,
+    #[serde(default)]
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct Run {
     pub id: String,
     pub workflow: String,
@@ -91,10 +106,37 @@ impl Client {
         Ok(self.http.post(url).header("x-copal-tenant", &self.tenant).json(&input).send().await?.error_for_status()?.json().await?)
     }
 
+    pub async fn issue_upload_url_file(&self, id: &str, input: Value) -> Result<Value, Error> {
+        let url = format!("{}/v1/files/{id}/upload-url", self.base_url);
+        Ok(self.http.post(url).header("x-copal-tenant", &self.tenant).json(&input).send().await?.error_for_status()?.json().await?)
+    }
+
+    pub async fn request_rendition_file(&self, id: &str, input: Value) -> Result<Value, Error> {
+        let url = format!("{}/v1/files/{id}/renditions", self.base_url);
+        Ok(self.http.post(url).header("x-copal-tenant", &self.tenant).json(&input).send().await?.error_for_status()?.json().await?)
+    }
+
     pub async fn remove_file(&self, id: &str) -> Result<(), Error> {
         let url = format!("{}/v1/files/{id}", self.base_url);
         self.http.delete(url).header("x-copal-tenant", &self.tenant).send().await?.error_for_status()?;
         Ok(())
+    }
+
+    pub async fn list_events(&self, limit: Option<u32>, cursor: Option<&str>) -> Result<EventPage, Error> {
+        let mut url = format!("{}/v1/events", self.base_url);
+        let mut query: Vec<(String, String)> = Vec::new();
+        if let Some(limit) = limit { query.push(("limit".into(), limit.to_string())); }
+        if let Some(cursor) = cursor { query.push(("cursor".into(), cursor.to_string())); }
+        if !query.is_empty() {
+            let joined: Vec<String> = query.iter().map(|(k, v)| format!("{k}={v}")).collect();
+            url = format!("{url}?{}", joined.join("&"));
+        }
+        Ok(self.http.get(url).header("x-copal-tenant", &self.tenant).send().await?.error_for_status()?.json().await?)
+    }
+
+    pub async fn get_event(&self, id: &str) -> Result<Event, Error> {
+        let url = format!("{}/v1/events/{id}", self.base_url);
+        Ok(self.http.get(url).header("x-copal-tenant", &self.tenant).send().await?.error_for_status()?.json().await?)
     }
 
     pub async fn list_runs(&self, limit: Option<u32>, cursor: Option<&str>) -> Result<RunPage, Error> {

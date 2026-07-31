@@ -19,6 +19,18 @@ export interface FilePage {
   next_cursor?: string | null
 }
 
+export interface Event {
+  id: string
+  action: string
+  payload: unknown
+  createdAt: string
+}
+
+export interface EventPage {
+  items: Event[]
+  next_cursor?: string | null
+}
+
 export interface Run {
   id: string
   workflow: string
@@ -67,8 +79,28 @@ export class Client {
     return this.request('POST', `/v1/files/${id}/url`, input)
   }
 
+  issueUploadUrlFile(id: string, input: Record<string, unknown>): Promise<Record<string, unknown>> {
+    return this.request('POST', `/v1/files/${id}/upload-url`, input)
+  }
+
+  requestRenditionFile(id: string, input: Record<string, unknown>): Promise<Record<string, unknown>> {
+    return this.request('POST', `/v1/files/${id}/renditions`, input)
+  }
+
   removeFile(id: string): Promise<void> {
     return this.request('DELETE', `/v1/files/${id}`)
+  }
+
+  listEvents(limit?: number, cursor?: string): Promise<EventPage> {
+    const query = new URLSearchParams()
+    if (limit !== undefined) query.set('limit', String(limit))
+    if (cursor !== undefined) query.set('cursor', cursor)
+    const suffix = query.size > 0 ? `?${query}` : ''
+    return this.request('GET', `/v1/events${suffix}`)
+  }
+
+  getEvent(id: string): Promise<Event> {
+    return this.request('GET', `/v1/events/${id}`)
   }
 
   listRuns(limit?: number, cursor?: string): Promise<RunPage> {

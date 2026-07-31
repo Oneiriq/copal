@@ -443,3 +443,75 @@ async fn graphql_pages_with_cursors_shared_across_faces() {
     .await;
     assert_eq!(body["errors"][0]["extensions"]["code"], "bad_request");
 }
+
+#[tokio::test]
+async fn upload_urls_and_events_serve_on_the_graphql_face() {
+    let (router, _dir) = test_router().await;
+    let id = seed_file(&router, "graphql/parity.txt", b"parity bytes").await;
+
+    // A write capability minted over GraphQL redeems over REST: one
+    // capability model, two protocols.
+    let body = json_body(
+        router
+            .clone()
+            .oneshot(graphql(
+                "mutation($id: ID!) { fileIssueUploadUrl(id: $id, ttlSecs: 300) }",
+                json!({ "id": id }),
+                Some("acme"),
+            ))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(body["errors"], Value::Null, "{body}");
+    let url = body["data"]["fileIssueUploadUrl"]["url"]
+        .as_str()
+        .expect("issued url")
+        .to_owned();
+    let put = Request::builder()
+        .method("PUT")
+        .uri(&url)
+        .header("content-length", "13")
+        .body(Body::from("browser bytes"))
+        .unwrap();
+    assert_eq!(
+        router.clone().oneshot(put).await.unwrap().status(),
+        StatusCode::OK,
+    );
+
+    // The outbox is queryable on the same face; the ready transition
+    // from the seed upload is already recorded.
+    let body = json_body(
+        router
+            .clone()
+            .oneshot(graphql(
+                "{ events(limit: 10) { items { id action payload created_at } } }",
+                json!({}),
+                Some("acme"),
+            ))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(body["errors"], Value::Null, "{body}");
+    let items = body["data"]["events"]["items"].as_array().unwrap();
+    assert!(!items.is_empty(), "the outbox has events: {body}");
+    assert!(items.iter().any(|e| e["action"] == "file.ready"));
+
+    // A single event fetches by id, tenant-scoped.
+    let first = items[0]["id"].as_str().unwrap().to_owned();
+    let body = json_body(
+        router
+            .clone()
+            .oneshot(graphql(
+                "query($id: ID!) { event(id: $id) { id action } }",
+                json!({ "id": first }),
+                Some("acme"),
+            ))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(body["errors"], Value::Null, "{body}");
+    assert_eq!(body["data"]["event"]["id"], first.as_str());
+}

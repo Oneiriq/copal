@@ -85,8 +85,11 @@ From the July 2026 audit, in the order they matter:
 4. Per-residency encryption keys shipped: a residency seals with its
    own key, so a tenant needing key separation takes its own
    residency (which already scopes dedupe and backends).
-5. GraphQL parity for renditions, events, webhooks, usage, and edge
-   tokens, plus subscriptions over the outbox.
+5. GraphQL parity: upload URLs, renditions, and the event outbox
+   joined the contract, so both faces and all four generated clients
+   carry them. Remaining: webhooks, usage, and edge tokens (each
+   needs a resource shape the contract can express), then
+   subscriptions over the outbox via the Janus runtime seam.
 6. Metrics and traces, then cached usage counters for large tenants.
 
 ## Tier 4: platform depth

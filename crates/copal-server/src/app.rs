@@ -852,6 +852,34 @@ async fn request_rendition<B: BlobStore>(
 ) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
     let tenant = crate::auth::authenticate(&state, &headers).await?;
     let id = parse_id(&id)?;
+    let spec = RenditionSpec {
+        kind: request.kind,
+        width: request.width,
+        height: request.height,
+        format: request.format,
+    };
+    let (status, body) = request_rendition_core(&state, &tenant, &id, &spec).await?;
+    Ok((status, Json(body)))
+}
+
+/// What a rendition request asks for, shared by both faces.
+#[derive(Debug, Clone)]
+pub(crate) struct RenditionSpec {
+    pub kind: String,
+    pub width: u32,
+    pub height: u32,
+    pub format: String,
+}
+
+/// Create the derived record and enqueue its render, the shared core
+/// behind the REST handler and the GraphQL action resolver. Returns
+/// 202 for a fresh rendition and 200 for one that already exists.
+pub(crate) async fn request_rendition_core<B: BlobStore>(
+    state: &AppState<B>,
+    tenant: &TenantId,
+    id: &FileId,
+    request: &RenditionSpec,
+) -> Result<(StatusCode, serde_json::Value), ApiError> {
     if !state.flow.has_workflow(crate::pipeline::DERIVE_WORKFLOW) {
         return Err(CopalError::validation("the derivatives pipeline is not configured").into());
     }
@@ -874,7 +902,7 @@ async fn request_rendition<B: BlobStore>(
         .into());
     }
 
-    let source = file_repo::get_file(&state.store, &tenant, &id)
+    let source = file_repo::get_file(&state.store, tenant, id)
         .await?
         .ok_or_else(|| CopalError::not_found(format!("file {id}")))?;
     if !source.servable_content() {
@@ -909,22 +937,22 @@ async fn request_rendition<B: BlobStore>(
         metadata: serde_json::Value::Null,
         idempotency_key: None,
     };
-    let derived = match file_repo::create_file(&state.store, &tenant, &spec, "derive").await {
+    let derived = match file_repo::create_file(&state.store, tenant, &spec, "derive").await {
         Ok(created) => created.record,
         Err(CopalError::Conflict(_)) => {
             // The path already holds this rendition; return it.
-            let existing = file_repo::find_by_path(&state.store, &tenant, &rendition_path)
+            let existing = file_repo::find_by_path(&state.store, tenant, &rendition_path)
                 .await?
                 .ok_or_else(|| CopalError::conflict("rendition path is contended"))?;
-            return Ok((StatusCode::OK, Json(crate::wire::wire_file(&existing))));
+            return Ok((StatusCode::OK, crate::wire::wire_file(&existing)));
         }
         Err(other) => return Err(other.into()),
     };
     file_repo::mark_rendition(
         &state.store,
-        &tenant,
+        tenant,
         &derived.id,
-        &id,
+        id,
         &request.kind,
         params_digest,
     )
@@ -945,7 +973,7 @@ async fn request_rendition<B: BlobStore>(
     let (run_id, _) = state
         .flow
         .enqueue(
-            &tenant,
+            tenant,
             crate::pipeline::DERIVE_WORKFLOW,
             RunSpec {
                 input,
@@ -960,7 +988,7 @@ async fn request_rendition<B: BlobStore>(
         .await?;
     let mut body = crate::wire::wire_file(&derived);
     body["run"] = json!(run_id);
-    Ok((StatusCode::ACCEPTED, Json(body)))
+    Ok((StatusCode::ACCEPTED, body))
 }
 
 /// Live renditions of a file, in path order.
@@ -1324,13 +1352,33 @@ async fn issue_upload_grant<B: BlobStore>(
 ) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
     let tenant = crate::auth::authenticate(&state, &headers).await?;
     let id = parse_id(&id)?;
-    if request.ttl_secs == 0 || request.ttl_secs > 86_400 {
+    let body = issue_upload_grant_core(
+        &state,
+        &tenant,
+        &id,
+        request.ttl_secs,
+        forwarded_origin(&headers).as_deref(),
+    )
+    .await?;
+    Ok((StatusCode::CREATED, Json(body)))
+}
+
+/// Mint a write capability, the shared core behind the REST handler
+/// and the GraphQL action resolver.
+pub(crate) async fn issue_upload_grant_core<B: BlobStore>(
+    state: &AppState<B>,
+    tenant: &TenantId,
+    id: &FileId,
+    ttl_secs: u32,
+    origin: Option<&str>,
+) -> Result<serde_json::Value, ApiError> {
+    if ttl_secs == 0 || ttl_secs > 86_400 {
         return Err(CopalError::validation(
             "ttl_secs must be between 1 and 86400: an upload URL is a write capability",
         )
         .into());
     }
-    let record = file_repo::get_file(&state.store, &tenant, &id)
+    let record = file_repo::get_file(&state.store, tenant, id)
         .await?
         .ok_or_else(|| CopalError::not_found(format!("file {id}")))?;
     if matches!(record.state, FileState::Quarantined | FileState::Deleted) {
@@ -1344,12 +1392,12 @@ async fn issue_upload_grant<B: BlobStore>(
     let token = GrantToken::mint();
     let grant = grant_repo::issue(
         &state.store,
-        &tenant,
-        &id,
+        tenant,
+        id,
         &token.grant_id,
         &token.secret_hash(),
         &grant_repo::GrantSpec {
-            ttl_secs: request.ttl_secs,
+            ttl_secs,
             max_uses: Some(1),
             created_by: "api".to_owned(),
             op: "put".to_owned(),
@@ -1358,23 +1406,20 @@ async fn issue_upload_grant<B: BlobStore>(
     .await?;
     copal_store::repo::auth::record_audit(
         &state.store,
-        &tenant,
+        tenant,
         tenant.as_str(),
         "grant.upload_issued",
         &token.grant_id,
-        forwarded_origin(&headers).as_deref(),
-        Some(json!({ "file": id.as_str(), "ttl_secs": request.ttl_secs })),
+        origin,
+        Some(json!({ "file": id.as_str(), "ttl_secs": ttl_secs })),
     )
     .await?;
-    Ok((
-        StatusCode::CREATED,
-        Json(json!({
-            "grant_id": token.grant_id,
-            "token": token.encode(),
-            "url": format!("/v1/grants/{}", token.encode()),
-            "expires_at": grant.expires_at,
-        })),
-    ))
+    Ok(json!({
+        "grant_id": token.grant_id,
+        "token": token.encode(),
+        "url": format!("/v1/grants/{}", token.encode()),
+        "expires_at": grant.expires_at,
+    }))
 }
 
 /// Redeem a write capability: stream bytes into the granted file.

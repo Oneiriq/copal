@@ -339,8 +339,16 @@ The schema is built at startup from the contract, so it matches
 `docs/schema.graphql` exactly.
 
 Queries follow the contract vocabulary: `files(limit, cursor, state, sort)`,
-`file(id)`, `runs(limit, cursor, status, sort)`, `run(id)`. Mutations map the
-contract actions: `fileIssueUrl`, `fileRemove`, `runStart`, `runRetry`.
+`file(id)`, `events(limit, cursor, sort)`, `event(id)`,
+`runs(limit, cursor, status, sort)`, `run(id)`. Mutations map the
+contract actions: `fileIssueUrl`, `fileIssueUploadUrl`,
+`fileRequestRendition`, `fileRemove`, `runStart`, `runRetry`.
+
+Field names stay as the contract declares them (`created_at`, not
+`createdAt`), because the generated SDL, the OpenAPI document, and
+the four clients all render from the same field list. The outbox
+exposes its column as `action`: `event` is reserved in SurrealDB v3,
+and the contract refuses renames that would collide there.
 
 Depth is capped at 10 and complexity at 500, which rejects alias
 amplification before any resolver runs. Auth failures surface as GraphQL

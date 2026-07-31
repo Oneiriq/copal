@@ -28,6 +28,18 @@ class FilePage:
   next_cursor: str | None = None
 
 @dataclass
+class Event:
+  id: str
+  action: str
+  payload: Any
+  created_at: str
+
+@dataclass
+class EventPage:
+  items: list[Event] = field(default_factory=list)
+  next_cursor: str | None = None
+
+@dataclass
 class Run:
   id: str
   workflow: str
@@ -76,8 +88,27 @@ class Client:
   def issue_url_file(self, id: str, body: dict[str, Any] | None = None) -> Any:
     return self._request('POST', f'/v1/files/{id}/url', body or {})
 
+  def issue_upload_url_file(self, id: str, body: dict[str, Any] | None = None) -> Any:
+    return self._request('POST', f'/v1/files/{id}/upload-url', body or {})
+
+  def request_rendition_file(self, id: str, body: dict[str, Any] | None = None) -> Any:
+    return self._request('POST', f'/v1/files/{id}/renditions', body or {})
+
   def remove_file(self, id: str) -> None:
     return self._request('DELETE', f'/v1/files/{id}')
+
+  def list_events(self, limit: int | None = None, cursor: str | None = None) -> EventPage:
+    query = {k: v for k, v in {'limit': limit, 'cursor': cursor}.items() if v is not None}
+    suffix = f'?{urllib.parse.urlencode(query)}' if query else ''
+    payload = self._request('GET', f'/v1/events{suffix}')
+    return EventPage(
+      items=[Event(**{k: v for k, v in item.items() if k in Event.__dataclass_fields__}) for item in payload.get('items', [])],
+      next_cursor=payload.get('next_cursor'),
+    )
+
+  def get_event(self, id: str) -> Event:
+    item = self._request('GET', f'/v1/events/{id}')
+    return Event(**{k: v for k, v in item.items() if k in Event.__dataclass_fields__})
 
   def list_runs(self, limit: int | None = None, cursor: str | None = None) -> RunPage:
     query = {k: v for k, v in {'limit': limit, 'cursor': cursor}.items() if v is not None}

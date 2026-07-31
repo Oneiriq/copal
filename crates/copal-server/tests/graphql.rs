@@ -372,3 +372,74 @@ async fn caller_supplied_processing_metadata_is_stripped() {
     assert!(record["metadata"].get("processing").is_none(), "{record}",);
     assert_eq!(record["metadata"]["label"], "kept");
 }
+
+#[tokio::test]
+async fn graphql_pages_with_cursors_shared_across_faces() {
+    let (router, _dir) = test_router().await;
+    seed_file(&router, "p1.txt", b"one").await;
+    seed_file(&router, "p2.txt", b"two").await;
+
+    // Page one over GraphQL.
+    let body = json_body(
+        router
+            .clone()
+            .oneshot(graphql(
+                r#"{ files(limit: 1) { items { path } nextCursor } }"#,
+                json!({}),
+                Some("acme"),
+            ))
+            .await
+            .unwrap(),
+    )
+    .await;
+    let first = body["data"]["files"]["items"][0]["path"].clone();
+    let cursor = body["data"]["files"]["nextCursor"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    // Page two, resumed by cursor, yields the other file.
+    let body = json_body(
+        router
+            .clone()
+            .oneshot(graphql(
+                r#"query($c: String) { files(limit: 1, cursor: $c) { items { path } } }"#,
+                json!({ "c": cursor }),
+                Some("acme"),
+            ))
+            .await
+            .unwrap(),
+    )
+    .await;
+    let second = body["data"]["files"]["items"][0]["path"].clone();
+    assert_ne!(first, second);
+
+    // The SAME cursor works over REST — one codec, both faces.
+    let response = router
+        .clone()
+        .oneshot(rest(
+            "GET",
+            &format!("/v1/files?limit=1&cursor={cursor}"),
+            Some("acme"),
+            Body::empty(),
+        ))
+        .await
+        .unwrap();
+    let rest_body = json_body(response).await;
+    assert_eq!(rest_body["items"][0]["path"], second);
+
+    // A direction-mismatched cursor refuses with the coded error.
+    let body = json_body(
+        router
+            .clone()
+            .oneshot(graphql(
+                r#"query($c: String) { files(limit: 1, cursor: $c, sort: CREATED_AT_ASC) { items { path } } }"#,
+                json!({ "c": cursor }),
+                Some("acme"),
+            ))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(body["errors"][0]["extensions"]["code"], "bad_request");
+}

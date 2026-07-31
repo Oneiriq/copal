@@ -757,12 +757,12 @@ async fn redeem_grant<B: BlobStore>(
     if !copal_sign::verify_secret(&token.secret, &grant.secret_hash) {
         return Err(refused().into());
     }
-    // Guards live in the UPDATE: two racing redemptions of a one-use
-    // grant serialize here.
-    if !grant_repo::consume(&state.store, &token.grant_id).await? {
-        return Err(refused().into());
-    }
 
+    // Every precondition runs BEFORE the use is consumed: a token whose
+    // file was since deleted or quarantined must refuse without burning
+    // a remaining use, and a 304 revalidation is not a new read. A
+    // Range request IS a read and does consume — media seeking against
+    // counted grants should use TTL-only grants (max_uses unset).
     let tenant = TenantId::parse(&grant.tenant_id).map_err(|_| refused())?;
     let file_id = grant.file_id().map_err(|_| refused())?;
     let record = file_repo::get_file(&state.store, &tenant, &file_id)
@@ -774,17 +774,30 @@ async fn redeem_grant<B: BlobStore>(
     let digest = record.digest.as_ref().ok_or_else(refused)?;
     // Grant bytes are `no-store`: a shared cache retaining a one-time
     // grant's body would outlive the grant itself.
-    crate::serve::serve_blob(
-        &state.blobs,
-        &headers,
-        crate::serve::ServeSpec {
-            content_type: &record.content_type,
-            digest,
-            path: &record.path,
-            cache: crate::serve::CacheClass::Private,
-        },
-    )
-    .await
+    let spec = crate::serve::ServeSpec {
+        content_type: &record.content_type,
+        digest,
+        path: &record.path,
+        cache: crate::serve::CacheClass::Private,
+    };
+    let etag = format!("\"{digest}\"");
+    if crate::serve::if_none_match_hits(&headers, &etag) {
+        // The revalidation gate re-checks the grant's guards (revoked,
+        // expired, exhausted) without consuming: a dead grant must not
+        // keep refreshing a cache it no longer authorizes.
+        if !grant_repo::redeemable(&state.store, &token.grant_id).await? {
+            return Err(refused().into());
+        }
+        return Ok(crate::serve::not_modified_response(&spec));
+    }
+
+    // Guards live in the UPDATE: two racing redemptions of a one-use
+    // grant serialize here, and this stays the single authorization
+    // point for actually reading bytes.
+    if !grant_repo::consume(&state.store, &token.grant_id).await? {
+        return Err(refused().into());
+    }
+    crate::serve::serve_blob(&state.blobs, &headers, spec).await
 }
 
 /// Revoke a grant by id. Tenant-authenticated; the bearer token is not

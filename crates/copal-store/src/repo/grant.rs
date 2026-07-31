@@ -138,6 +138,29 @@ pub async fn fetch(store: &Store, grant_id: &str) -> copal_core::Result<Option<G
 /// Atomically consume one use. `Ok(false)` means the grant refused:
 /// revoked, unarmed, expired, or exhausted — indistinguishable on
 /// purpose.
+/// Whether the grant is currently redeemable, WITHOUT consuming a use
+/// — the same guards as [`consume`], engine-side clock included, as a
+/// read. The 304-revalidation path uses this so a revoked or expired
+/// grant cannot keep refreshing a cache it no longer authorizes.
+pub async fn redeemable(store: &Store, grant_id: &str) -> copal_core::Result<bool> {
+    let query = Query::new()
+        .select(Some(vec!["id".to_owned()]))
+        .from_table(TABLE)
+        .map_err(|e| map_store_err("grant_redeemable", e))?
+        .where_str(format!("id = {}", rid(grant_id)?))
+        .where_(is_none("revoked_at"))
+        .where_(is_not_none("file"))
+        .where_(is_not_none("expires_at"))
+        .where_str("expires_at > time::now()")
+        .where_str("(max_uses IS NONE OR uses < max_uses)")
+        .limit(1)
+        .map_err(|e| map_store_err("grant_redeemable", e))?;
+    let rows: Vec<serde_json::Value> = query_records(store.client(), &query)
+        .await
+        .map_err(|e| map_store_err("grant_redeemable", e))?;
+    Ok(!rows.is_empty())
+}
+
 pub async fn consume(store: &Store, grant_id: &str) -> copal_core::Result<bool> {
     let query = Query::new()
         .update_set(rid(grant_id)?.to_string())

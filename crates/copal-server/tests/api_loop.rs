@@ -794,3 +794,129 @@ async fn cursors_refuse_replay_under_a_different_sort() {
         "{body}",
     );
 }
+
+#[tokio::test]
+async fn runs_listing_walks_by_cursor_in_both_directions() {
+    // A stack with a registered workflow, so runs can be enqueued
+    // without workers ever claiming them.
+    let store = Store::connect(StoreConfig::memory()).await.unwrap();
+    let _dir = tempfile::tempdir().unwrap();
+    let blobs = FsBlobStore::open(_dir.path().to_str().unwrap()).unwrap();
+    let registry = copal_flow::FlowRegistry::new()
+        .activity("noop", |input| async move { Ok(input) })
+        .workflow("wf", &["noop"], 1);
+    let state = copal_server::AppState::new(store.clone(), blobs).with_flow(registry);
+    let router = copal_server::build_router(state.clone());
+    let tenant = copal_core::TenantId::parse("acme").unwrap();
+    for n in 0..3 {
+        state
+            .flow
+            .enqueue(
+                &tenant,
+                "wf",
+                copal_flow::RunSpec {
+                    input: json!({ "n": n }),
+                    subject: None,
+                    idempotency_key: Some(format!("walk-{n}")),
+                },
+            )
+            .await
+            .unwrap();
+    }
+
+    // Walk descending: three pages of one, then a drained page.
+    let mut seen = Vec::new();
+    let mut cursor: Option<String> = None;
+    loop {
+        let uri = match &cursor {
+            Some(c) => format!("/v1/runs?limit=1&cursor={c}"),
+            None => "/v1/runs?limit=1".to_owned(),
+        };
+        let body = json_body(
+            router
+                .clone()
+                .oneshot(req("GET", &uri, Some("acme"), Body::empty()))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let items = body["items"].as_array().unwrap().clone();
+        if items.is_empty() {
+            break;
+        }
+        seen.extend(items.iter().map(|r| r["id"].as_str().unwrap().to_owned()));
+        match body["next_cursor"].as_str() {
+            Some(next) => cursor = Some(next.to_owned()),
+            None => break,
+        }
+    }
+    assert_eq!(seen.len(), 3, "walk covers every run exactly once");
+    let unique: std::collections::BTreeSet<_> = seen.iter().collect();
+    assert_eq!(unique.len(), 3, "no run repeats across pages");
+
+    // A descending cursor refuses an ascending replay, runs included.
+    let body = json_body(
+        router
+            .clone()
+            .oneshot(req("GET", "/v1/runs?limit=1", Some("acme"), Body::empty()))
+            .await
+            .unwrap(),
+    )
+    .await;
+    let cursor = body["next_cursor"].as_str().unwrap();
+    let response = router
+        .clone()
+        .oneshot(req(
+            "GET",
+            &format!("/v1/runs?limit=1&cursor={cursor}&sort=created_at"),
+            Some("acme"),
+            Body::empty(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn ascending_file_listing_walks_with_its_own_cursors() {
+    let (router, _dir) = test_router().await;
+    for path in ["w1.txt", "w2.txt", "w3.txt"] {
+        let create = req(
+            "POST",
+            "/v1/files",
+            Some("acme"),
+            Body::from(json!({"path": path, "content_type": "text/plain"}).to_string()),
+        );
+        router.clone().oneshot(create).await.unwrap();
+    }
+    let mut seen = Vec::new();
+    let mut cursor: Option<String> = None;
+    loop {
+        let uri = match &cursor {
+            Some(c) => format!("/v1/files?limit=1&sort=created_at&cursor={c}"),
+            None => "/v1/files?limit=1&sort=created_at".to_owned(),
+        };
+        let body = json_body(
+            router
+                .clone()
+                .oneshot(req("GET", &uri, Some("acme"), Body::empty()))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let items = body["items"].as_array().unwrap().clone();
+        if items.is_empty() {
+            break;
+        }
+        seen.extend(items.iter().map(|r| r["path"].as_str().unwrap().to_owned()));
+        match body["next_cursor"].as_str() {
+            Some(next) => cursor = Some(next.to_owned()),
+            None => break,
+        }
+    }
+    assert_eq!(
+        seen,
+        vec!["w1.txt", "w2.txt", "w3.txt"],
+        "ascending walk yields oldest-first exactly once each",
+    );
+}

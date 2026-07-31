@@ -174,6 +174,37 @@ fn base_headers(spec: &ServeSpec<'_>, etag: &str) -> [(header::HeaderName, Strin
     ]
 }
 
+/// Whether the request's `If-None-Match` matches `etag`. Weak
+/// comparison per RFC 9110: a `W/` prefix on a candidate is ignored
+/// (our ETags are strong — the digest — so the octets decide).
+/// `If-Range` deliberately does NOT share this: it requires the strong
+/// comparison, so its exact match elsewhere is correct.
+pub fn if_none_match_hits(request_headers: &HeaderMap, etag: &str) -> bool {
+    request_headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|candidates| {
+            candidates == "*"
+                || candidates.split(',').any(|c| {
+                    let c = c.trim();
+                    c.strip_prefix("W/").unwrap_or(c) == etag
+                })
+        })
+}
+
+/// A 304 with the caching headers but no disposition and no body.
+pub fn not_modified_response(spec: &ServeSpec<'_>) -> Response {
+    let etag = format!("\"{}\"", spec.digest);
+    let mut response = (
+        StatusCode::NOT_MODIFIED,
+        base_headers(spec, &etag),
+        Body::empty(),
+    )
+        .into_response();
+    response.headers_mut().remove(header::CONTENT_DISPOSITION);
+    response
+}
+
 /// Serve a blob with the full header discipline, honoring
 /// `If-None-Match`, `Range`, and `If-Range`.
 pub async fn serve_blob<B: BlobStore>(
@@ -183,21 +214,9 @@ pub async fn serve_blob<B: BlobStore>(
 ) -> Result<Response, ApiError> {
     let etag = format!("\"{}\"", spec.digest);
 
-    // Conditional GET: the ETag is the digest, so a match is exact.
-    if let Some(candidates) = request_headers
-        .get(header::IF_NONE_MATCH)
-        .and_then(|v| v.to_str().ok())
-    {
-        if candidates == "*" || candidates.split(',').any(|c| c.trim() == etag) {
-            let mut response = (
-                StatusCode::NOT_MODIFIED,
-                base_headers(&spec, &etag),
-                Body::empty(),
-            )
-                .into_response();
-            response.headers_mut().remove(header::CONTENT_DISPOSITION);
-            return Ok(response);
-        }
+    // Conditional GET: the ETag is the digest, so a hit is exact.
+    if if_none_match_hits(request_headers, &etag) {
+        return Ok(not_modified_response(&spec));
     }
 
     // If-Range: a stale validator downgrades the range request to the

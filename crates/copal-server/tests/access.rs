@@ -347,3 +347,126 @@ async fn the_admin_surface_splits_off_the_tenant_router() {
     assert_eq!(response.status(), StatusCode::CREATED);
     let _ = dir;
 }
+
+#[tokio::test]
+async fn grant_uses_burn_only_on_actual_reads() {
+    let (router, store, _dir) = keyed_stack().await;
+    let token = mint(&router, "acme", "ci").await;
+    let id = seed(&router, &token, "counted.txt", "grant").await;
+
+    // A two-use grant.
+    let response = router
+        .clone()
+        .oneshot(request(
+            "POST",
+            &format!("/v1/files/{id}/url"),
+            Some(&token),
+            None,
+            Some(json!({ "max_uses": 2 })),
+        ))
+        .await
+        .unwrap();
+    let issued = json_body(response).await;
+    let url = issued["url"].as_str().unwrap().to_owned();
+    let grant_id = issued["grant_id"].as_str().unwrap().to_owned();
+    let uses = |store: Store, grant_id: String| async move {
+        copal_store::repo::grant::fetch(&store, &grant_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .uses
+    };
+
+    // First real read consumes one use.
+    let response = router
+        .clone()
+        .oneshot(request("GET", &url, None, None, None))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let etag = response.headers()["etag"].to_str().unwrap().to_owned();
+    assert_eq!(uses(store.clone(), grant_id.clone()).await, 1);
+
+    // Revalidations are NOT reads: three 304s, zero consumed — and a
+    // weak validator (W/ prefix) matches per RFC 9110.
+    for validator in [etag.clone(), etag.clone(), format!("W/{etag}")] {
+        let mut revalidate = request("GET", &url, None, None, None);
+        revalidate
+            .headers_mut()
+            .insert("if-none-match", validator.parse().unwrap());
+        let response = router.clone().oneshot(revalidate).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_MODIFIED);
+    }
+    assert_eq!(uses(store.clone(), grant_id.clone()).await, 1);
+
+    // The second real read exhausts the grant; a third refuses.
+    let response = router
+        .clone()
+        .oneshot(request("GET", &url, None, None, None))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(uses(store.clone(), grant_id.clone()).await, 2);
+    let response = router
+        .clone()
+        .oneshot(request("GET", &url, None, None, None))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+    // And an exhausted grant cannot keep revalidating a cache either.
+    let mut revalidate = request("GET", &url, None, None, None);
+    revalidate
+        .headers_mut()
+        .insert("if-none-match", etag.parse().unwrap());
+    let response = router.clone().oneshot(revalidate).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn refused_serves_do_not_burn_grant_uses() {
+    let (router, store, _dir) = keyed_stack().await;
+    let token = mint(&router, "acme", "ci").await;
+    let id = seed(&router, &token, "doomed.txt", "private").await;
+
+    let response = router
+        .clone()
+        .oneshot(request(
+            "POST",
+            &format!("/v1/files/{id}/url"),
+            Some(&token),
+            None,
+            Some(json!({ "max_uses": 1 })),
+        ))
+        .await
+        .unwrap();
+    let issued = json_body(response).await;
+    let url = issued["url"].as_str().unwrap().to_owned();
+    let grant_id = issued["grant_id"].as_str().unwrap().to_owned();
+
+    // Delete the file out from under the grant, then redeem: refused,
+    // and the single use SURVIVES the refusal.
+    let response = router
+        .clone()
+        .oneshot(request(
+            "DELETE",
+            &format!("/v1/files/{id}"),
+            Some(&token),
+            None,
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    let response = router
+        .clone()
+        .oneshot(request("GET", &url, None, None, None))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let row = copal_store::repo::grant::fetch(&store, &grant_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.uses, 0, "a refused serve must not burn a use");
+}

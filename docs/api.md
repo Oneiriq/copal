@@ -251,9 +251,27 @@ takes `ttl_secs` (default 900, capped at one year) and `max_uses`. The
 response contains the bearer token exactly once; the store keeps its hash.
 
 ```
-GET    /v1/grants/{token}     redeem: serve the bytes, no tenant header
-DELETE /v1/grants/{id}        revoke, tenant-authenticated by grant id
+POST   /v1/files/{id}/upload-url   issue a write capability
+GET    /v1/grants/{token}          redeem: serve the bytes, no tenant header
+PUT    /v1/grants/{token}          redeem: upload bytes, no tenant header
+DELETE /v1/grants/{id}             revoke, tenant-authenticated by grant id
 ```
+
+A capability authorizes exactly one operation. `POST /v1/files/{id}/url`
+mints a read token; `POST /v1/files/{id}/upload-url` mints a write
+token for a record awaiting content, so a browser can upload straight
+to Copal without holding a tenant key. Your backend creates the record
+(deciding path, access level, and metadata) and hands the browser only
+the URL. A read token refuses `PUT` and a write token refuses `GET`,
+both with the same 404 every other refusal uses.
+
+Upload tokens are single-use by construction and capped at a
+24-hour TTL, because a write capability in an untrusted client is a
+different risk from a read one. The use burns before any byte lands,
+so a replay during an in-flight upload is not also authorized; a
+failed upload leaves the record retryable through a freshly issued
+URL. Uploads through a grant obey the same size ceiling, quota, and
+processing pipeline as every other face.
 
 Redemption refuses uniformly: malformed token, unknown grant, wrong secret,
 revoked, expired, exhausted, and missing file all answer the same 404. A use

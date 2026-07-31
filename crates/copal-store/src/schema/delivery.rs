@@ -33,9 +33,11 @@ fn access_grant_table() -> TableDefinition {
             // Armed by the post-create UPDATE; nullable so the inert
             // row is schemafull-valid.
             built(record_field("file", Some("file")).nullable(true)),
+            // What the capability authorizes: reading the file's
+            // bytes, or writing them once (a browser-direct upload).
             built(
                 string_field("op")
-                    .assertion("$value INSIDE ['get']")
+                    .assertion("$value INSIDE ['get', 'put']")
                     .default("'get'"),
             ),
             // sha256 of the bearer secret; the secret itself never

@@ -300,7 +300,9 @@ pub fn api_router<B: BlobStore + 'static>(state: AppState<B>) -> Router {
         )
         .route(
             "/v1/grants/{grant_ref}",
-            get(redeem_grant::<B>).delete(revoke_grant::<B>),
+            get(redeem_grant::<B>)
+                .put(redeem_upload_grant::<B>)
+                .delete(revoke_grant::<B>),
         )
         .layer(transfer_deadline)
         .with_state(state.clone());
@@ -319,6 +321,7 @@ pub fn api_router<B: BlobStore + 'static>(state: AppState<B>) -> Router {
         .route("/v1/runs/{id}/retry", post(retry_run::<B>))
         .route("/v1/files/{id}/versions", get(list_versions::<B>))
         .route("/v1/files/{id}/url", post(issue_grant::<B>))
+        .route("/v1/files/{id}/upload-url", post(issue_upload_grant::<B>))
         .route(
             "/v1/files/{id}/renditions",
             post(request_rendition::<B>).get(list_renditions::<B>),
@@ -1293,6 +1296,199 @@ fn default_grant_ttl() -> u32 {
     900
 }
 
+/// Upload-URL request body.
+#[derive(Debug, Deserialize)]
+struct IssueUploadRequest {
+    #[serde(default = "default_upload_ttl")]
+    ttl_secs: u32,
+}
+
+fn default_upload_ttl() -> u32 {
+    900
+}
+
+/// Issue a write capability for a file awaiting content, so a browser
+/// can upload straight to Copal without holding a tenant key.
+///
+/// The record must exist and be claimable (`draft`, or `failed`
+/// retryable, or `ready` for a new version): the caller's backend
+/// creates it, decides the path and access level, and hands the
+/// browser only this URL. Upload grants are single-use by
+/// construction; a retry needs a fresh URL, which is the property
+/// that makes handing one to an untrusted client safe.
+async fn issue_upload_grant<B: BlobStore>(
+    State(state): State<AppState<B>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(request): Json<IssueUploadRequest>,
+) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
+    let tenant = crate::auth::authenticate(&state, &headers).await?;
+    let id = parse_id(&id)?;
+    if request.ttl_secs == 0 || request.ttl_secs > 86_400 {
+        return Err(CopalError::validation(
+            "ttl_secs must be between 1 and 86400: an upload URL is a write capability",
+        )
+        .into());
+    }
+    let record = file_repo::get_file(&state.store, &tenant, &id)
+        .await?
+        .ok_or_else(|| CopalError::not_found(format!("file {id}")))?;
+    if matches!(record.state, FileState::Quarantined | FileState::Deleted) {
+        return Err(CopalError::conflict(format!(
+            "file is {} and cannot accept content",
+            record.state.as_str(),
+        ))
+        .into());
+    }
+
+    let token = GrantToken::mint();
+    let grant = grant_repo::issue(
+        &state.store,
+        &tenant,
+        &id,
+        &token.grant_id,
+        &token.secret_hash(),
+        &grant_repo::GrantSpec {
+            ttl_secs: request.ttl_secs,
+            max_uses: Some(1),
+            created_by: "api".to_owned(),
+            op: "put".to_owned(),
+        },
+    )
+    .await?;
+    copal_store::repo::auth::record_audit(
+        &state.store,
+        &tenant,
+        tenant.as_str(),
+        "grant.upload_issued",
+        &token.grant_id,
+        forwarded_origin(&headers).as_deref(),
+        Some(json!({ "file": id.as_str(), "ttl_secs": request.ttl_secs })),
+    )
+    .await?;
+    Ok((
+        StatusCode::CREATED,
+        Json(json!({
+            "grant_id": token.grant_id,
+            "token": token.encode(),
+            "url": format!("/v1/grants/{}", token.encode()),
+            "expires_at": grant.expires_at,
+        })),
+    ))
+}
+
+/// Redeem a write capability: stream bytes into the granted file.
+///
+/// Refusals are the same uniform 404 the read path uses, and the use
+/// is consumed BEFORE the bytes land, so a token cannot be replayed
+/// while its first upload is still in flight. A failed upload leaves
+/// the record retryable through a freshly issued URL.
+async fn redeem_upload_grant<B: BlobStore>(
+    State(state): State<AppState<B>>,
+    Path(grant_ref): Path<String>,
+    request: Request,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let refused = || CopalError::not_found("unknown or unusable grant");
+
+    let token = GrantToken::parse(&grant_ref).map_err(|_| refused())?;
+    let grant = grant_repo::fetch(&state.store, &token.grant_id)
+        .await?
+        .ok_or_else(refused)?;
+    if !copal_sign::verify_secret(&token.secret, &grant.secret_hash) || grant.op != "put" {
+        return Err(refused().into());
+    }
+    let tenant = TenantId::parse(&grant.tenant_id).map_err(|_| refused())?;
+    let id = grant.file_id().map_err(|_| refused())?;
+    let record = file_repo::get_file(&state.store, &tenant, &id)
+        .await?
+        .ok_or_else(refused)?;
+    if matches!(record.state, FileState::Quarantined | FileState::Deleted) {
+        return Err(refused().into());
+    }
+
+    let declared_len = request
+        .headers()
+        .get(axum::http::header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|raw| raw.parse::<u64>().ok());
+    let headroom = state.quota_headroom(&tenant, declared_len).await?;
+    let (residency, backend) = state.residency_for(&tenant).await?;
+
+    file_repo::claim_upload(
+        &state.store,
+        &tenant,
+        &id,
+        &state.instance_id,
+        state.limits.upload_lease_secs,
+    )
+    .await?;
+
+    // The capability burns here, before any byte lands: a replay while
+    // the first upload streams must not also be authorized.
+    if !grant_repo::consume(&state.store, &token.grant_id).await? {
+        return Err(refused().into());
+    }
+
+    let max = match headroom {
+        Some(remaining) => (state.limits.max_upload_bytes as u64).min(remaining),
+        None => state.limits.max_upload_bytes as u64,
+    };
+    let mut running_total = 0u64;
+    let body = request
+        .into_body()
+        .into_data_stream()
+        .map(move |chunk| match chunk {
+            Ok(bytes) => {
+                running_total += bytes.len() as u64;
+                if running_total > max {
+                    Err("length limit exceeded".to_owned())
+                } else {
+                    Ok(bytes)
+                }
+            }
+            Err(err) => Err(format!("body: {err}")),
+        });
+    let stored = match backend.put_streamed(body).await {
+        Ok(stored) => stored,
+        Err(err) => {
+            let _ = file_repo::transition(
+                &state.store,
+                &tenant,
+                &id,
+                FileState::Uploading,
+                FileState::Failed,
+                Default::default(),
+            )
+            .await;
+            let text = err.to_string();
+            if text.contains("length limit") {
+                return Err(CopalError::PayloadTooLarge(format!(
+                    "upload exceeds {} bytes",
+                    state.limits.max_upload_bytes,
+                ))
+                .into());
+            }
+            return Err(err.into());
+        }
+    };
+    let StoredBlob {
+        digest,
+        size_bytes,
+        storage_path,
+    } = stored;
+    let record = finalize_new_content(
+        &state,
+        &tenant,
+        &id,
+        &residency,
+        &digest,
+        size_bytes,
+        &storage_path,
+    )
+    .await?;
+    Ok(Json(crate::wire::wire_file(&record)))
+}
+
 /// Issue a signed URL for a servable file, the shared core behind the
 /// REST handler and the GraphQL action resolver.
 ///
@@ -1338,6 +1534,7 @@ pub(crate) async fn issue_grant_core<B: BlobStore>(
             ttl_secs,
             max_uses,
             created_by: "api".to_owned(),
+            op: "get".to_owned(),
         },
     )
     .await?;
@@ -1406,6 +1603,11 @@ async fn redeem_grant<B: BlobStore>(
     // a remaining use, and a 304 revalidation is not a new read. A
     // Range request IS a read and does consume; media seeking against
     // counted grants should use TTL-only grants (max_uses unset).
+    // A capability authorizes ONE operation: an upload token cannot
+    // read, and a download token cannot write.
+    if grant.op != "get" {
+        return Err(refused().into());
+    }
     let tenant = TenantId::parse(&grant.tenant_id).map_err(|_| refused())?;
     let file_id = grant.file_id().map_err(|_| refused())?;
     let record = file_repo::get_file(&state.store, &tenant, &file_id)

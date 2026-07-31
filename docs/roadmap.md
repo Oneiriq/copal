@@ -80,8 +80,8 @@ From the July 2026 audit, in the order they matter:
 
 1. Webhook destination policy and bounded image decoding (shipped).
 2. S3 multipart upload (shipped): the aws CLI needs it above 8 MiB.
-3. Signed upload URLs, so browsers can upload directly without
-   holding a tenant key. The largest missing integration shape.
+3. Signed upload URLs shipped: write capabilities in the `cg1`
+   family, single-use, op-scoped so a read token cannot write.
 4. Per-tenant blob keys (the sealed-object header names its key).
 5. GraphQL parity for renditions, events, webhooks, usage, and edge
    tokens, plus subscriptions over the outbox.

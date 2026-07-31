@@ -80,7 +80,8 @@ Custody and lifecycle actions land in the audit trail: `key.minted`,
 `key.revoked`, `s3credential.minted`, `s3credential.revoked`,
 `edgekey.minted`, `edgekey.revoked`, `edge.issued`,
 `webhook.registered`, `webhook.removed`, `grant.issued`,
-`grant.revoked`, `file.removed`. When
+`grant.upload_issued`, `grant.revoked`, `tenant.quota_set`,
+`tenant.quota_cleared`, `tenant.storage_assigned`, `file.removed`. When
 the proxy forwards a client origin (`x-forwarded-for`), the first hop
 is recorded on the row for forensics; it plays no part in
 authorization. Rotate the operator token with zero downtime by moving

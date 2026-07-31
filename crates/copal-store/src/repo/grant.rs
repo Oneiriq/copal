@@ -67,6 +67,19 @@ pub struct GrantSpec {
     pub max_uses: Option<u32>,
     /// Principal recorded as the issuer.
     pub created_by: String,
+    /// `get` to read bytes, `put` to write them.
+    pub op: String,
+}
+
+impl Default for GrantSpec {
+    fn default() -> Self {
+        Self {
+            ttl_secs: 900,
+            max_uses: None,
+            created_by: "api".to_owned(),
+            op: "get".to_owned(),
+        }
+    }
 }
 
 /// Create and arm a grant, returning its armed row.
@@ -91,6 +104,7 @@ pub async fn issue(
         payload.insert("max_uses".into(), json!(max));
     }
     payload.insert("created_by".into(), json!(spec.created_by));
+    payload.insert("op".into(), json!(spec.op));
     create_record(
         store.client(),
         &rid(grant_id)?.to_string(),

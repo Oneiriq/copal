@@ -37,6 +37,9 @@ pub struct Limits {
     /// Generous by default; its job is ending slow-drip connections,
     /// never legitimate transfers.
     pub transfer_timeout_secs: u64,
+    /// How long a resumable-upload session may live between appends
+    /// before the sweep discards it.
+    pub tus_session_ttl_secs: u32,
 }
 
 impl Default for Limits {
@@ -46,6 +49,7 @@ impl Default for Limits {
             upload_lease_secs: 900,
             request_timeout_secs: 30,
             transfer_timeout_secs: 3_600,
+            tus_session_ttl_secs: 86_400,
         }
     }
 }
@@ -137,7 +141,14 @@ fn cors_layer(origins: &[String]) -> tower_http::cors::CorsLayer {
     let origins: Vec<HeaderValue> = origins.iter().filter_map(|o| o.parse().ok()).collect();
     tower_http::cors::CorsLayer::new()
         .allow_origin(origins)
-        .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE])
+        .allow_methods([
+            Method::GET,
+            Method::HEAD,
+            Method::POST,
+            Method::PUT,
+            Method::PATCH,
+            Method::DELETE,
+        ])
         .allow_headers([
             axum::http::header::AUTHORIZATION,
             axum::http::header::CONTENT_TYPE,
@@ -145,12 +156,22 @@ fn cors_layer(origins: &[String]) -> tower_http::cors::CorsLayer {
             axum::http::header::RANGE,
             HeaderName::from_static("x-copal-tenant"),
             HeaderName::from_static("x-copal-digest"),
+            HeaderName::from_static("tus-resumable"),
+            HeaderName::from_static("upload-offset"),
+            HeaderName::from_static("upload-length"),
+            HeaderName::from_static("upload-metadata"),
         ])
         .expose_headers([
             axum::http::header::ETAG,
             axum::http::header::CONTENT_RANGE,
             axum::http::header::ACCEPT_RANGES,
             axum::http::header::CONTENT_DISPOSITION,
+            axum::http::header::LOCATION,
+            HeaderName::from_static("tus-resumable"),
+            HeaderName::from_static("tus-version"),
+            HeaderName::from_static("tus-extension"),
+            HeaderName::from_static("upload-offset"),
+            HeaderName::from_static("upload-length"),
         ])
         .max_age(std::time::Duration::from_secs(3600))
 }
@@ -203,6 +224,13 @@ pub fn api_router<B: BlobStore + 'static>(state: AppState<B>) -> Router {
         .layer(request_deadline)
         .with_state(state.clone())
         .merge(transfer_routes)
+        // Resumable uploads: byte-bearing, so the transfer deadline.
+        .merge(crate::tus::tus_router(state.clone()).layer(
+            tower_http::timeout::TimeoutLayer::with_status_code(
+                StatusCode::REQUEST_TIMEOUT,
+                std::time::Duration::from_secs(state.limits.transfer_timeout_secs),
+            ),
+        ))
         // The second face: /graphql, served by Janus from the same
         // contract, dispatching into the same repositories. Queries are
         // ordinary requests, so the request deadline applies.
@@ -650,7 +678,24 @@ async fn upload_content<B: BlobStore>(
         }
     }
 
-    blob_repo::record_sighting(&state.store, &digest, size_bytes, "local", &storage_path).await?;
+    let record =
+        finalize_new_content(&state, &tenant, &id, &digest, size_bytes, &storage_path).await?;
+    Ok(Json(crate::wire::wire_file(&record)))
+}
+
+/// Finish landed content: register the blob, complete the upload CAS,
+/// enqueue the pipeline, and resolve dedupe hits. Shared by the single
+/// PUT path and resumable-session completion, so both finish
+/// identically.
+pub(crate) async fn finalize_new_content<B: BlobStore>(
+    state: &AppState<B>,
+    tenant: &TenantId,
+    id: &FileId,
+    digest: &copal_core::ContentDigest,
+    size_bytes: u64,
+    storage_path: &str,
+) -> Result<copal_core::FileRecord, ApiError> {
+    blob_repo::record_sighting(&state.store, digest, size_bytes, "local", storage_path).await?;
 
     // One CAS finishes the upload and mints the version number; the
     // frozen version row and current_version link follow inside. With a
@@ -664,9 +709,9 @@ async fn upload_content<B: BlobStore>(
     };
     let record = file_repo::complete_upload(
         &state.store,
-        &tenant,
-        &id,
-        &digest,
+        tenant,
+        id,
+        digest,
         size_bytes,
         "api",
         final_state,
@@ -687,12 +732,12 @@ async fn upload_content<B: BlobStore>(
         let (run_id, created) = state
             .flow
             .enqueue(
-                &tenant,
+                tenant,
                 crate::pipeline::UPLOAD_WORKFLOW,
                 RunSpec {
                     input,
                     subject: Some(id.clone()),
-                    idempotency_key: Some(crate::pipeline::upload_run_key(&id, &digest)),
+                    idempotency_key: Some(crate::pipeline::upload_run_key(id, digest)),
                 },
             )
             .await?;
@@ -705,12 +750,12 @@ async fn upload_content<B: BlobStore>(
             // verdict cannot reach this path: quarantined files refuse
             // upload claims.) A FAILED run gets retried so a worker
             // finishes the scan.
-            match flow_repo::get_run(&state.store, &tenant, &run_id).await? {
+            match flow_repo::get_run(&state.store, tenant, &run_id).await? {
                 Some(run) if run.status == "completed" => {
                     match file_repo::transition(
                         &state.store,
-                        &tenant,
-                        &id,
+                        tenant,
+                        id,
                         FileState::Scanning,
                         FileState::Ready,
                         Default::default(),
@@ -729,7 +774,7 @@ async fn upload_content<B: BlobStore>(
             }
         }
     }
-    Ok(Json(crate::wire::wire_file(&record)))
+    Ok(record)
 }
 
 /// Serve `/content` under the file's ACCESS LEVEL, the enforcement

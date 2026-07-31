@@ -83,6 +83,39 @@ pub trait BlobStore: Clone + Send + Sync + 'static {
         digest: &ContentDigest,
     ) -> impl std::future::Future<Output = copal_core::Result<()>> + Send;
 
+    /// Append a body to a named staged object (creating it), returning
+    /// the staged length afterward. Resumable uploads accumulate here;
+    /// bytes are staged as received and seal (when configured) at
+    /// promotion.
+    fn append_staged<S, E>(
+        &self,
+        key: &str,
+        body: S,
+    ) -> impl std::future::Future<Output = copal_core::Result<u64>> + Send
+    where
+        S: Stream<Item = Result<bytes::Bytes, E>> + Send + Unpin,
+        E: std::fmt::Display + Send;
+
+    /// Current length of a staged object; zero when absent.
+    fn staged_len(
+        &self,
+        key: &str,
+    ) -> impl std::future::Future<Output = copal_core::Result<u64>> + Send;
+
+    /// Promote a staged object to its content address: hash it, seal it
+    /// when encryption is configured, land it, and remove the staging
+    /// entry.
+    fn promote_staged(
+        &self,
+        key: &str,
+    ) -> impl std::future::Future<Output = copal_core::Result<StoredBlob>> + Send;
+
+    /// Remove a staged object; absent is a no-op.
+    fn discard_staged(
+        &self,
+        key: &str,
+    ) -> impl std::future::Future<Output = copal_core::Result<()>> + Send;
+
     /// Delete staging entries older than `ttl`, returning how many were
     /// removed. Age comes from the ULID staging key itself, not from
     /// backend metadata; every backend gets the same clock.
@@ -328,6 +361,105 @@ impl BlobStore for FsBlobStore {
             .delete(&Self::addressed(digest))
             .await
             .map_err(|e| CopalError::Blob(format!("delete {digest}: {e}")))
+    }
+
+    async fn append_staged<S, E>(&self, key: &str, mut body: S) -> copal_core::Result<u64>
+    where
+        S: Stream<Item = Result<bytes::Bytes, E>> + Send + Unpin,
+        E: std::fmt::Display + Send,
+    {
+        let mut writer = self
+            .op
+            .writer_with(key)
+            .append(true)
+            .await
+            .map_err(|e| CopalError::Blob(format!("open append {key}: {e}")))?;
+        while let Some(chunk) = body.next().await {
+            let chunk = chunk.map_err(|e| CopalError::Blob(format!("read body: {e}")))?;
+            writer
+                .write(chunk)
+                .await
+                .map_err(|e| CopalError::Blob(format!("append {key}: {e}")))?;
+        }
+        writer
+            .close()
+            .await
+            .map_err(|e| CopalError::Blob(format!("close append {key}: {e}")))?;
+        self.staged_len(key).await
+    }
+
+    async fn staged_len(&self, key: &str) -> copal_core::Result<u64> {
+        match self.op.stat(key).await {
+            Ok(stat) => Ok(stat.content_length()),
+            Err(e) if e.kind() == opendal::ErrorKind::NotFound => Ok(0),
+            Err(e) => Err(CopalError::Blob(format!("stat {key}: {e}"))),
+        }
+    }
+
+    async fn promote_staged(&self, key: &str) -> copal_core::Result<StoredBlob> {
+        // Hash the staged plaintext in one streaming pass.
+        let len = self.staged_len(key).await?;
+        let reader = self
+            .op
+            .reader(key)
+            .await
+            .map_err(|e| CopalError::Blob(format!("open staged {key}: {e}")))?;
+        let mut stream = reader
+            .into_bytes_stream(0..len)
+            .await
+            .map_err(|e| CopalError::Blob(format!("stream staged {key}: {e}")))?;
+        let mut hasher = DigestBuilder::new();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|e| CopalError::Blob(format!("read staged {key}: {e}")))?;
+            hasher.update(&chunk);
+        }
+        let (digest, size_bytes) = hasher.finish();
+        let target = Self::addressed(&digest);
+
+        match &self.cipher {
+            None => {
+                self.op
+                    .rename(key, &target)
+                    .await
+                    .map_err(|e| CopalError::Blob(format!("finalize {target}: {e}")))?;
+            }
+            Some(_) => {
+                // Seal through the ordinary write path into a second
+                // staging key, then land it and drop the plaintext.
+                let reader = self
+                    .op
+                    .reader(key)
+                    .await
+                    .map_err(|e| CopalError::Blob(format!("open staged {key}: {e}")))?;
+                let plain = reader
+                    .into_bytes_stream(0..len)
+                    .await
+                    .map_err(|e| CopalError::Blob(format!("stream staged {key}: {e}")))?
+                    .map(|chunk| chunk.map_err(|e| format!("staged read: {e}")));
+                let stored = self.put_streamed(plain).await?;
+                if stored.digest != digest {
+                    return Err(CopalError::Blob(
+                        "staged content changed during promotion".into(),
+                    ));
+                }
+                self.op
+                    .delete(key)
+                    .await
+                    .map_err(|e| CopalError::Blob(format!("drop staged {key}: {e}")))?;
+            }
+        }
+        Ok(StoredBlob {
+            digest,
+            size_bytes,
+            storage_path: target,
+        })
+    }
+
+    async fn discard_staged(&self, key: &str) -> copal_core::Result<()> {
+        self.op
+            .delete(key)
+            .await
+            .map_err(|e| CopalError::Blob(format!("discard {key}: {e}")))
     }
 
     async fn sweep_staging(&self, ttl: std::time::Duration) -> copal_core::Result<u64> {

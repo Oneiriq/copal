@@ -37,6 +37,8 @@ pub struct Config {
     pub request_timeout_secs: u64,
     /// Deadline for streaming byte routes.
     pub transfer_timeout_secs: u64,
+    /// Resumable-upload session lifetime.
+    pub tus_session_ttl_secs: u64,
     /// CORS allowlist origins; unset means no CORS layer at all.
     pub cors_origins: Option<Vec<String>>,
 }
@@ -88,6 +90,7 @@ impl Config {
                 admin_token_previous: std::env::var("COPAL_ADMIN_TOKEN_PREVIOUS").ok(),
             },
             request_timeout_secs: env_parse("COPAL_REQUEST_TIMEOUT_SECS", 30),
+            tus_session_ttl_secs: env_parse("COPAL_TUS_SESSION_TTL_SECS", 86_400),
             transfer_timeout_secs: env_parse("COPAL_TRANSFER_TIMEOUT_SECS", 3_600),
             cors_origins: std::env::var("COPAL_CORS_ORIGINS").ok().map(|raw| {
                 raw.split(',')
@@ -101,6 +104,7 @@ impl Config {
                 gc_grace_secs: env_parse("COPAL_GC_GRACE_SECS", 86_400),
                 gc_batch: env_parse("COPAL_GC_BATCH", 1_000),
                 scan_stale_secs: env_parse("COPAL_SCAN_STALE_SECS", 3_600),
+                tus_session_ttl_secs: env_parse("COPAL_TUS_SESSION_TTL_SECS", 86_400),
             },
         }
     }

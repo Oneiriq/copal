@@ -12,6 +12,7 @@ pub mod graphql;
 pub mod pipeline;
 pub mod serve;
 pub mod sweeps;
+pub mod tus;
 pub mod wire;
 
 pub use app::{build_router, AppState};

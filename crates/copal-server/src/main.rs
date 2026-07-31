@@ -46,6 +46,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         upload_lease_secs: config.upload_lease_secs,
         request_timeout_secs: config.request_timeout_secs,
         transfer_timeout_secs: config.transfer_timeout_secs,
+        tus_session_ttl_secs: u32::try_from(config.tus_session_ttl_secs).unwrap_or(86_400),
     };
     tracing::info!(instance = %state.instance_id, "upload-claim owner id");
     let instance_id = state.instance_id.clone();

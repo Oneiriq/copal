@@ -95,6 +95,30 @@ upload cannot execute under the service origin.
 downgrades to the full object, so a resume across a re-upload cannot splice
 two contents.
 
+## Resumable uploads
+
+`/v1/tus` speaks the tus 1.0.0 core protocol with the creation and
+termination extensions, tenant-authenticated like every management
+route. `Upload-Metadata` must carry `path` (base64 per the spec);
+`content_type` and `access` are optional keys.
+
+```
+OPTIONS /v1/tus          capabilities
+POST    /v1/tus          create a session (Upload-Length, Upload-Metadata)
+HEAD    /v1/tus/{id}     current offset, for resuming
+PATCH   /v1/tus/{id}     append at Upload-Offset (409 on a stale offset)
+DELETE  /v1/tus/{id}     terminate: staged bytes go, the file fails retryably
+```
+
+The session claims its file for the whole upload, so a rival single-PUT
+loses its compare-and-swap instead of interleaving. One append runs at
+a time per session (a second concurrent PATCH answers 409). When the
+offset reaches the declared length, the staged bytes promote to their
+content address (hashed, and sealed when encryption is on) and the
+file finishes through the same finalize path a single PUT uses: same
+digest, same pipeline, same dedupe behavior. Abandoned sessions sweep
+after `COPAL_TUS_SESSION_TTL_SECS` with their staged bytes.
+
 ## Grants
 
 `POST /v1/files/{id}/url` issues a capability for a servable file. The body

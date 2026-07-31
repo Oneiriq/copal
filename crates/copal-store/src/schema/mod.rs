@@ -15,6 +15,7 @@ pub mod auth;
 pub mod core;
 pub mod delivery;
 pub mod flow;
+pub mod tus;
 
 use surql::schema::{generate_table_sql, TableDefinition};
 use surql::types::reserved::check_reserved_word;
@@ -25,6 +26,7 @@ pub fn tables() -> Vec<TableDefinition> {
     tables.extend(delivery::tables());
     tables.extend(flow::tables());
     tables.extend(auth::tables());
+    tables.extend(tus::tables());
     tables
 }
 

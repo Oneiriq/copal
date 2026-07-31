@@ -27,6 +27,7 @@ Every value comes from the environment. Defaults target local development.
 | `COPAL_SCAN_STALE_SECS` | `3600` | Files stuck in `scanning` with no live run are failed after this age. |
 | `COPAL_REQUEST_TIMEOUT_SECS` | `30` | Deadline for ordinary requests (408 past it). |
 | `COPAL_TRANSFER_TIMEOUT_SECS` | `3600` | Deadline for the byte routes; ends slow-drip connections. |
+| `COPAL_TUS_SESSION_TTL_SECS` | `86400` | Resumable-upload sessions idle longer than this are swept with their staged bytes. |
 | `COPAL_CORS_ORIGINS` | unset | Comma-separated browser-origin allowlist. Unset attaches no CORS layer at all. |
 
 ## Key custody

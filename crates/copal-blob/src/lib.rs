@@ -63,6 +63,21 @@ pub trait BlobStore: Clone + Send + Sync + 'static {
         &self,
         digest: &ContentDigest,
     ) -> impl std::future::Future<Output = copal_core::Result<bool>> + Send;
+
+    /// Remove the object at the digest's address. Removing an absent
+    /// object is a no-op — collection must be replay-safe.
+    fn delete(
+        &self,
+        digest: &ContentDigest,
+    ) -> impl std::future::Future<Output = copal_core::Result<()>> + Send;
+
+    /// Delete staging entries older than `ttl`, returning how many were
+    /// removed. Age comes from the ULID staging key itself, not from
+    /// backend metadata — every backend gets the same clock.
+    fn sweep_staging(
+        &self,
+        ttl: std::time::Duration,
+    ) -> impl std::future::Future<Output = copal_core::Result<u64>> + Send;
 }
 
 /// Filesystem-backed blob store via OpenDAL.
@@ -147,6 +162,48 @@ impl BlobStore for FsBlobStore {
             .exists(&Self::addressed(digest))
             .await
             .map_err(|e| CopalError::Blob(format!("stat {digest}: {e}")))
+    }
+
+    async fn delete(&self, digest: &ContentDigest) -> copal_core::Result<()> {
+        // OpenDAL delete is a no-op on absent paths, which is exactly
+        // the replay-safety collection needs.
+        self.op
+            .delete(&Self::addressed(digest))
+            .await
+            .map_err(|e| CopalError::Blob(format!("delete {digest}: {e}")))
+    }
+
+    async fn sweep_staging(&self, ttl: std::time::Duration) -> copal_core::Result<u64> {
+        let cutoff = std::time::SystemTime::now() - ttl;
+        let entries = self
+            .op
+            .list("staging/")
+            .await
+            .map_err(|e| CopalError::Blob(format!("list staging: {e}")))?;
+        let mut removed = 0u64;
+        for entry in entries {
+            // Listings include the directory itself; only files sweep.
+            if entry.path().ends_with('/') {
+                continue;
+            }
+            let name = entry.name();
+            // The staging key is a ULID, which embeds its mint time —
+            // no dependency on backend last-modified metadata. Anything
+            // unparseable is foreign garbage and old by definition.
+            let expired = match ulid::Ulid::from_string(&name.to_ascii_uppercase()) {
+                Ok(id) => id.datetime() < cutoff,
+                Err(_) => true,
+            };
+            if !expired {
+                continue;
+            }
+            self.op
+                .delete(entry.path())
+                .await
+                .map_err(|e| CopalError::Blob(format!("sweep {}: {e}", entry.path())))?;
+            removed += 1;
+        }
+        Ok(removed)
     }
 
     async fn open_read(&self, digest: &ContentDigest) -> copal_core::Result<(u64, ByteStream)> {

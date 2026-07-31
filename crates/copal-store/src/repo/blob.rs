@@ -11,16 +11,18 @@
 //! (served by `idx_file_blob`), computed at sweep time; the stored
 //! `refcount` column is an advisory cache the sweep refreshes.
 
+use serde::Deserialize;
 use serde_json::json;
 
 use surql::query::builder::Query;
 use surql::query::crud::{create_record, get_record, query_records};
-use surql::types::operators::is_none;
+use surql::query::expressions::raw;
+use surql::types::operators::{is_none, is_not_none};
 use surql::types::RecordID;
 
 use copal_core::ContentDigest;
 
-use crate::dto::map_store_err;
+use crate::dto::{map_store_err, strip_record_prefix};
 use crate::store::Store;
 
 const TABLE: &str = "blob";
@@ -109,4 +111,104 @@ pub async fn get_location(
         .unwrap_or_default()
         .to_owned();
     Ok(Some((store_key, storage_path)))
+}
+
+/// A blob row as garbage collection sees it.
+#[derive(Debug, Clone, Deserialize)]
+pub struct BlobGcRow {
+    pub id: String,
+    pub refcount: i64,
+    #[serde(default)]
+    pub unreferenced_since: Option<String>,
+}
+
+impl BlobGcRow {
+    /// The digest, recovered from the record id.
+    pub fn digest(&self) -> copal_core::Result<ContentDigest> {
+        ContentDigest::parse(strip_record_prefix(&self.id, TABLE))
+    }
+}
+
+/// List blob rows for a GC pass, oldest-marked first is not needed --
+/// the pass visits every row it can see. Bounded; a pass over a larger
+/// population continues next tick.
+pub async fn list_blobs(store: &Store, limit: i64) -> copal_core::Result<Vec<BlobGcRow>> {
+    let query = Query::new()
+        .select(Some(vec![
+            "id".to_owned(),
+            "refcount".to_owned(),
+            "unreferenced_since".to_owned(),
+        ]))
+        .from_table(TABLE)
+        .map_err(|e| map_store_err("list_blobs", e))?
+        .limit(limit)
+        .map_err(|e| map_store_err("list_blobs", e))?;
+    query_records(store.client(), &query)
+        .await
+        .map_err(|e| map_store_err("list_blobs", e))
+}
+
+/// Mark a blob as unreferenced now, if it is not already marked. The
+/// grace clock starts at the FIRST observation, so repeated passes do
+/// not push collection out indefinitely.
+pub async fn mark_unreferenced(store: &Store, digest: &ContentDigest) -> copal_core::Result<()> {
+    let query = Query::new()
+        .update_set(rid(digest)?.to_string())
+        .map_err(|e| map_store_err("mark_unreferenced", e))?
+        .set("refcount", serde_json::Value::from(0))
+        .map_err(|e| map_store_err("mark_unreferenced", e))?
+        .set_expr("unreferenced_since", raw("time::now()"))
+        .map_err(|e| map_store_err("mark_unreferenced", e))?
+        .where_(is_none("unreferenced_since"))
+        .return_after();
+    query_records::<serde_json::Value>(store.client(), &query)
+        .await
+        .map_err(|e| map_store_err("mark_unreferenced", e))?;
+    Ok(())
+}
+
+/// A referenced blob: clear any stale mark and refresh the advisory
+/// refcount cache with the derived truth.
+pub async fn clear_unreferenced(
+    store: &Store,
+    digest: &ContentDigest,
+    live_count: i64,
+) -> copal_core::Result<()> {
+    let query = Query::new()
+        .update_set(rid(digest)?.to_string())
+        .map_err(|e| map_store_err("clear_unreferenced", e))?
+        .set("refcount", serde_json::Value::from(live_count))
+        .map_err(|e| map_store_err("clear_unreferenced", e))?
+        .set_expr("unreferenced_since", raw("NONE"))
+        .map_err(|e| map_store_err("clear_unreferenced", e))?
+        .return_after();
+    query_records::<serde_json::Value>(store.client(), &query)
+        .await
+        .map_err(|e| map_store_err("clear_unreferenced", e))?;
+    Ok(())
+}
+
+/// Collect a blob row whose mark has aged past the grace period.
+///
+/// Returns whether the row was deleted; the CALLER then removes the
+/// object bytes. Row-before-object ordering plus the caller's fresh
+/// recount narrows the resurrection race to the instant between the
+/// two deletions; the remaining window (an identical-content upload
+/// re-registering in that instant, after the full grace period) is a
+/// known hazard queued for a collection-lock hardening.
+pub async fn collect_expired(
+    store: &Store,
+    digest: &ContentDigest,
+    grace_secs: u32,
+) -> copal_core::Result<bool> {
+    let query = Query::new()
+        .delete(rid(digest)?.to_string())
+        .map_err(|e| map_store_err("collect", e))?
+        .where_(is_not_none("unreferenced_since"))
+        .where_str(format!("unreferenced_since < time::now() - {grace_secs}s"))
+        .return_format(surql::query::helpers::ReturnFormat::Before);
+    let rows: Vec<serde_json::Value> = query_records(store.client(), &query)
+        .await
+        .map_err(|e| map_store_err("collect", e))?;
+    Ok(!rows.is_empty())
 }

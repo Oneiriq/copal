@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 use surql::query::builder::Query;
 use surql::query::crud::{create_record, get_record, query_records};
 use surql::query::expressions::raw;
-use surql::types::operators::{eq, is_none, is_not_none};
+use surql::types::operators::{eq, is_none, is_not_none, ne};
 use surql::types::RecordID;
 
 use copal_core::{
@@ -251,6 +251,39 @@ pub async fn claim_upload(
             "file {id} is not claimable (missing, live-leased, or already terminal)",
         ))),
     }
+}
+
+/// Soft-delete a file: tombstone the record, free its live path.
+///
+/// Legal from every live state (the transition table sends all of them
+/// to `deleted`), so the guard is simply `state != 'deleted'`. Setting
+/// `deleted_at` recomputes the live-path sentinel, which releases the
+/// unique `(tenant, path)` slot for reuse; existing grants die through
+/// the tombstone filter on the read path; the blob's derived reference
+/// count drops because recounting only sees live links. Repeating the
+/// delete reports `NotFound`.
+pub async fn soft_delete(store: &Store, tenant: &TenantId, id: &FileId) -> copal_core::Result<()> {
+    let query = Query::new()
+        .update_set(rid(id)?.to_string())
+        .map_err(|e| map_store_err("soft_delete", e))?
+        .set("state", Value::from(FileState::Deleted.as_str()))
+        .map_err(|e| map_store_err("soft_delete", e))?
+        .set_expr("deleted_at", raw("time::now()"))
+        .map_err(|e| map_store_err("soft_delete", e))?
+        .set_expr("upload_lease_owner", raw("NONE"))
+        .map_err(|e| map_store_err("soft_delete", e))?
+        .set_expr("upload_lease_expires_at", raw("NONE"))
+        .map_err(|e| map_store_err("soft_delete", e))?
+        .where_(eq("tenant_id", tenant.as_str()))
+        .where_(ne("state", FileState::Deleted.as_str()))
+        .return_after();
+    let rows: Vec<FileRow> = query_records(store.client(), &query)
+        .await
+        .map_err(|e| map_store_err("soft_delete", e))?;
+    if rows.is_empty() {
+        return Err(CopalError::not_found(format!("file {id}")));
+    }
+    Ok(())
 }
 
 /// Sweep every expired upload claim to `failed`, clearing the lease.

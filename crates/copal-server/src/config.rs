@@ -18,8 +18,8 @@ pub struct Config {
     pub max_upload_bytes: usize,
     /// Upload claim lease TTL; expired claims are stealable and reaped.
     pub upload_lease_secs: u32,
-    /// How often the reaper sweeps expired claims to `failed`.
-    pub reaper_interval_secs: u64,
+    /// Background maintenance cadence and retention.
+    pub sweeps: crate::sweeps::SweepConfig,
 }
 
 fn env_or(key: &str, default: &str) -> String {
@@ -55,7 +55,12 @@ impl Config {
             blob_root: env_or("COPAL_BLOB_ROOT", "./data/blobs"),
             max_upload_bytes: env_parse("COPAL_MAX_UPLOAD_BYTES", 1 << 30),
             upload_lease_secs: env_parse("COPAL_UPLOAD_LEASE_SECS", 900),
-            reaper_interval_secs: env_parse("COPAL_REAPER_INTERVAL_SECS", 60),
+            sweeps: crate::sweeps::SweepConfig {
+                interval_secs: env_parse("COPAL_SWEEP_INTERVAL_SECS", 60),
+                staging_ttl_secs: env_parse("COPAL_STAGING_TTL_SECS", 86_400),
+                gc_grace_secs: env_parse("COPAL_GC_GRACE_SECS", 86_400),
+                gc_batch: env_parse("COPAL_GC_BATCH", 1_000),
+            },
         }
     }
 }

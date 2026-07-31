@@ -72,7 +72,10 @@ pub fn build_router<B: BlobStore>(state: AppState<B>) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
         .route("/v1/files", post(create_file::<B>).get(list_files::<B>))
-        .route("/v1/files/{id}", get(get_file::<B>))
+        .route(
+            "/v1/files/{id}",
+            get(get_file::<B>).delete(delete_file::<B>),
+        )
         .route(
             "/v1/files/{id}/content",
             put(upload_content::<B>).get(download_content::<B>),
@@ -143,6 +146,20 @@ async fn get_file<B: BlobStore>(
         .await?
         .ok_or_else(|| CopalError::not_found(format!("file {id}")))?;
     Ok(Json(record))
+}
+
+/// Soft-delete: tombstone the record and free its live path. Bytes go
+/// later, via garbage collection, once nothing references them —
+/// deletion is a metadata act, reclamation is a sweep.
+async fn delete_file<B: BlobStore>(
+    State(state): State<AppState<B>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    let tenant = tenant_from(&headers)?;
+    let id = parse_id(&id)?;
+    file_repo::soft_delete(&state.store, &tenant, &id).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Stream bytes in and finish the upload in one request.

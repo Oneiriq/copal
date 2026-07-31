@@ -138,6 +138,29 @@ HEAD    /{bucket}/{key}        HeadObject
 DELETE  /{bucket}/{key}        DeleteObject (idempotent soft delete)
 ```
 
+Multipart upload is supported, which matters because the aws CLI
+switches to it above 8 MiB without asking:
+
+```
+POST   /{bucket}/{key}?uploads                        CreateMultipartUpload
+PUT    /{bucket}/{key}?partNumber=N&uploadId=X        UploadPart
+GET    /{bucket}/{key}?uploadId=X                     ListParts
+POST   /{bucket}/{key}?uploadId=X                     CompleteMultipartUpload
+DELETE /{bucket}/{key}?uploadId=X                     AbortMultipartUpload
+```
+
+Parts stage individually, so they may arrive in any order, in
+parallel, and a re-sent part number replaces its predecessor. Each
+part's ETag is its own content digest, and a completion manifest
+naming a part that was never uploaded or whose ETag disagrees fails
+the completion. Completion streams the parts in order through the
+same put and finalize path as every other upload, so the assembled
+object is content-addressed, scanned, versioned, and quota-checked
+identically. No file record exists until completion, which is what
+lets S3's concurrent uploads to one key coexist with Copal's one live
+file per path. Abandoned sessions sweep with their parts on the
+resumable-session TTL.
+
 Requests authenticate with SigV4. Credentials are minted on the admin
 surface (`POST /v1/admin/tenants/{tenant}/s3-credentials`) and are
 separate from `ck1` API keys: SigV4 derives its signing key from the

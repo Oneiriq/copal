@@ -7,6 +7,7 @@ pub mod eventing;
 pub mod file;
 pub mod flow;
 pub mod grant;
+pub mod multipart;
 pub mod s3;
 pub mod tenant;
 pub mod tus;

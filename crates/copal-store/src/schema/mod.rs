@@ -16,6 +16,7 @@ pub mod core;
 pub mod delivery;
 pub mod eventing;
 pub mod flow;
+pub mod s3;
 pub mod tus;
 
 use surql::schema::{generate_table_sql, TableDefinition};
@@ -29,6 +30,7 @@ pub fn tables() -> Vec<TableDefinition> {
     tables.extend(auth::tables());
     tables.extend(tus::tables());
     tables.extend(eventing::tables());
+    tables.extend(s3::tables());
     tables
 }
 

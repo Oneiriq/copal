@@ -61,6 +61,8 @@ pub struct SweepReport {
     pub reaped_runs: u64,
     pub stale_scans_failed: u64,
     pub tus_sessions_swept: u64,
+    /// Abandoned S3 multipart sessions discarded with their parts.
+    pub multipart_swept: u64,
     pub staging_removed: u64,
     pub blobs_marked: u64,
     pub blobs_collected: u64,
@@ -90,6 +92,11 @@ pub async fn run_pass<B: BlobStore>(
     match file_repo::reap_stale_scans(store, config.scan_stale_secs).await {
         Ok(failed) => report.stale_scans_failed = failed,
         Err(err) => tracing::warn!(error = %err, "stale scan sweep failed"),
+    }
+
+    match crate::s3::multipart::sweep_expired(store, blobs, config.tus_session_ttl_secs).await {
+        Ok(swept) => report.multipart_swept = swept,
+        Err(err) => tracing::warn!(error = %err, "multipart sweep failed"),
     }
 
     match crate::tus::sweep_expired(store, blobs, config.tus_session_ttl_secs).await {

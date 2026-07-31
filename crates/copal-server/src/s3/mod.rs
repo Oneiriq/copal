@@ -14,6 +14,7 @@
 //! and pipeline path as every other face, so scanning, dedupe, and
 //! versioning apply to S3 writes unchanged.
 
+pub mod multipart;
 pub mod sigv4;
 
 use axum::body::{Body, Bytes};
@@ -49,10 +50,11 @@ pub fn s3_router<B: BlobStore + 'static>(app: AppState<B>, cipher: BlobCipher) -
         .route("/{bucket}", get(list_objects::<B>).head(head_bucket::<B>))
         .route(
             "/{bucket}/{*key}",
-            get(get_object::<B>)
+            get(object_route::<B>)
                 .head(head_object::<B>)
-                .put(put_object::<B>)
-                .delete(delete_object::<B>),
+                .put(object_route::<B>)
+                .post(object_route::<B>)
+                .delete(object_route::<B>),
         )
         .with_state(gateway)
 }
@@ -74,8 +76,52 @@ pub fn s3_admin_router<B: BlobStore + 'static>(app: AppState<B>, cipher: BlobCip
         .with_state(gateway)
 }
 
+/// Key-route entry point. Multipart requests carry `uploads` or
+/// `uploadId` in the query and are claimed first; everything else
+/// falls through to the ordinary object handlers.
+async fn object_route<B: BlobStore>(
+    State(gateway): State<S3Gateway<B>>,
+    Path((bucket, key)): Path<(String, String)>,
+    request: axum::extract::Request,
+) -> Response {
+    if multipart::claims_request(request.method(), request.uri()) {
+        return multipart::dispatch(State(gateway), Path((bucket, key)), request).await;
+    }
+    let method = request.method().clone();
+    match method {
+        Method::PUT => put_object(State(gateway), Path((bucket, key)), request).await,
+        Method::GET | Method::DELETE => {
+            let (parts, _) = request.into_parts();
+            if parts.method == Method::GET {
+                get_object(
+                    State(gateway),
+                    parts.method,
+                    parts.uri,
+                    parts.headers,
+                    Path((bucket, key)),
+                )
+                .await
+            } else {
+                delete_object(
+                    State(gateway),
+                    parts.method,
+                    parts.uri,
+                    parts.headers,
+                    Path((bucket, key)),
+                )
+                .await
+            }
+        }
+        _ => xml_error(
+            StatusCode::METHOD_NOT_ALLOWED,
+            "MethodNotAllowed",
+            "unsupported method for this route",
+        ),
+    }
+}
+
 /// One S3 XML error response.
-fn xml_error(status: StatusCode, code: &str, message: &str) -> Response {
+pub(crate) fn xml_error(status: StatusCode, code: &str, message: &str) -> Response {
     let body = format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Error><Code>{}</Code><Message>{}</Message></Error>",
         xml_escape(code),
@@ -84,12 +130,12 @@ fn xml_error(status: StatusCode, code: &str, message: &str) -> Response {
     xml_response(status, body)
 }
 
-fn xml_response(status: StatusCode, body: String) -> Response {
+pub(crate) fn xml_response(status: StatusCode, body: String) -> Response {
     (status, [(header::CONTENT_TYPE, "application/xml")], body).into_response()
 }
 
 /// Map an internal error onto the S3 error envelope.
-fn copal_to_s3(err: CopalError) -> Response {
+pub(crate) fn copal_to_s3(err: CopalError) -> Response {
     match err {
         CopalError::NotFound(msg) => xml_error(StatusCode::NOT_FOUND, "NoSuchKey", &msg),
         CopalError::Unauthorized(msg) => xml_error(StatusCode::FORBIDDEN, "AccessDenied", &msg),
@@ -106,7 +152,7 @@ fn copal_to_s3(err: CopalError) -> Response {
     }
 }
 
-fn xml_escape(raw: &str) -> String {
+pub(crate) fn xml_escape(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
     for c in raw.chars() {
         match c {
@@ -192,7 +238,7 @@ async fn authenticate<B: BlobStore>(
 }
 
 /// Authenticate and pin the bucket to the credential's tenant.
-async fn authorize_bucket<B: BlobStore>(
+pub(crate) async fn authorize_bucket<B: BlobStore>(
     gateway: &S3Gateway<B>,
     method: &Method,
     uri: &Uri,
@@ -775,7 +821,7 @@ fn find_crlf(buf: &[u8]) -> Option<usize> {
     buf.windows(2).position(|pair| pair == b"\r\n")
 }
 
-fn parse_query(raw: &str) -> std::collections::HashMap<String, String> {
+pub(crate) fn parse_query(raw: &str) -> std::collections::HashMap<String, String> {
     raw.split('&')
         .filter(|pair| !pair.is_empty())
         .map(|pair| {

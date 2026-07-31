@@ -74,6 +74,19 @@ sealed gateway credentials).
    is complete; what remains of it lives in the deferred seams above
    (GraphQL subscriptions, external transformers).
 
+## Tier 5: post-moat audit items
+
+From the July 2026 audit, in the order they matter:
+
+1. Webhook destination policy and bounded image decoding (shipped).
+2. S3 multipart upload (shipped): the aws CLI needs it above 8 MiB.
+3. Signed upload URLs, so browsers can upload directly without
+   holding a tenant key. The largest missing integration shape.
+4. Per-tenant blob keys (the sealed-object header names its key).
+5. GraphQL parity for renditions, events, webhooks, usage, and edge
+   tokens, plus subscriptions over the outbox.
+6. Metrics and traces, then cached usage counters for large tenants.
+
 ## Tier 4: platform depth
 
 1. Metrics and traces (`/metrics`, OTel spans).

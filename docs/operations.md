@@ -8,6 +8,7 @@ Every value comes from the environment. Defaults target local development.
 | --- | --- | --- |
 | `COPAL_BIND` | `127.0.0.1:8080` | Tenant-facing listener. |
 | `COPAL_ADMIN_BIND` | unset | Separate listener for the admin surface. When set, admin routes exist only there. |
+| `COPAL_S3_BIND` | unset | Listener for the S3-compatible gateway (path-style bucket routes at its root). Requires `COPAL_BLOB_ENCRYPTION_KEY`; startup refuses otherwise. |
 | `COPAL_DB_URL` | `ws://127.0.0.1:8000` | SurrealDB endpoint. |
 | `COPAL_DB_NS` / `COPAL_DB_NAME` | `copal` / `copal` | Namespace and database. |
 | `COPAL_DB_USER` / `COPAL_DB_PASS` | `root` / `root` | Database credentials. Use a scoped user in deployments. |
@@ -46,8 +47,26 @@ The mint response carries the bearer token once. Store it; the server keeps
 the hash. Key names are unique per tenant, so rotation reads as revoke old,
 mint new under the next name. Listings never include hash material.
 
+S3 gateway credentials live beside the keys and follow a different
+custody rule, forced by the protocol: SigV4 verification derives its
+signing key from the shared secret, so the server must read the secret
+back. The secret is stored sealed under `COPAL_BLOB_ENCRYPTION_KEY`
+(never hashed, never clear) and appears once in the mint response.
+These credentials never reuse `ck1` material and revoke independently.
+
+```
+POST   /v1/admin/tenants/{tenant}/s3-credentials
+GET    /v1/admin/tenants/{tenant}/s3-credentials
+DELETE /v1/admin/tenants/{tenant}/s3-credentials/{access_key_id}
+```
+
+Rotating the blob master key invalidates sealed credentials (they open
+under the key that sealed them); re-mint gateway credentials as part of
+any master-key rotation.
+
 Custody and lifecycle actions land in the audit trail: `key.minted`,
-`key.revoked`, `grant.issued`, `grant.revoked`, `file.removed`. When
+`key.revoked`, `s3credential.minted`, `s3credential.revoked`,
+`grant.issued`, `grant.revoked`, `file.removed`. When
 the proxy forwards a client origin (`x-forwarded-for`), the first hop
 is recorded on the row for forensics; it plays no part in
 authorization. Rotate the operator token with zero downtime by moving

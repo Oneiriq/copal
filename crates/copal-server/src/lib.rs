@@ -10,6 +10,7 @@ pub mod contract;
 pub mod error;
 pub mod graphql;
 pub mod pipeline;
+pub mod s3;
 pub mod serve;
 pub mod sweeps;
 pub mod tus;

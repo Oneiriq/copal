@@ -13,7 +13,28 @@ use surql::schema::{
 
 /// All tables in this cluster.
 pub fn tables() -> Vec<TableDefinition> {
-    vec![api_key_table(), audit_event_table()]
+    vec![api_key_table(), s3_credential_table(), audit_event_table()]
+}
+
+/// S3 gateway credentials. SigV4 verification derives an HMAC chain
+/// from the shared secret, so the server must be able to read it back:
+/// the secret is stored SEALED under the blob master key, never as a
+/// hash and never in the clear. These are minted separately and never
+/// reuse `ck1` material.
+fn s3_credential_table() -> TableDefinition {
+    table_schema("s3_credential")
+        .with_mode(TableMode::Schemafull)
+        .with_fields([
+            built(string_field("tenant_id").assertion("$value != ''")),
+            built(string_field("secret_sealed").assertion("$value != ''")),
+            built(datetime_field("revoked_at").nullable(true)),
+            built(
+                datetime_field("created_at")
+                    .default("time::now()")
+                    .readonly(true),
+            ),
+        ])
+        .with_indexes([index("idx_s3cred_tenant", ["tenant_id", "created_at"])])
 }
 
 /// The audit trail: custody and lifecycle actions, append-only.

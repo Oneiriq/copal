@@ -309,3 +309,38 @@ async fn completion_links_blob_and_recount_derives_references() {
         2
     );
 }
+
+#[tokio::test]
+async fn path_keyset_advances_past_the_cursor() {
+    // Regression: SurrealDB 3.0.5 serves a strict path range from the
+    // composite live-path unique index and includes the boundary row,
+    // because the seek target is a prefix of the stored key (the index
+    // carries live_marker after path). The repo adds a residual
+    // inequality so continuation cursors advance instead of looping.
+    let store = fresh_store().await;
+    let t = tenant();
+    for path in ["a/1.txt", "a/b/2.txt", "c.txt"] {
+        create(&store, &t, path).await;
+    }
+
+    let page = file::list_by_path_prefix(&store, &t, "", None, 1)
+        .await
+        .unwrap();
+    assert_eq!(page[0].path, "a/1.txt");
+
+    let page = file::list_by_path_prefix(&store, &t, "", Some("a/1.txt"), 1)
+        .await
+        .unwrap();
+    assert_eq!(page[0].path, "a/b/2.txt", "cursor must exclude its own row");
+
+    let page = file::list_by_path_prefix(&store, &t, "a/", None, 10)
+        .await
+        .unwrap();
+    let paths: Vec<_> = page.iter().map(|r| r.path.as_str()).collect();
+    assert_eq!(paths, ["a/1.txt", "a/b/2.txt"]);
+
+    let missing = file::find_by_path(&store, &t, "nope.txt").await.unwrap();
+    assert!(missing.is_none());
+    let found = file::find_by_path(&store, &t, "c.txt").await.unwrap();
+    assert_eq!(found.unwrap().path, "c.txt");
+}

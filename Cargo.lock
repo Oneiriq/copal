@@ -876,6 +876,7 @@ dependencies = [
  "copal-store",
  "futures",
  "hex",
+ "hmac",
  "http-body-util",
  "oneiriq-janus",
  "serde",

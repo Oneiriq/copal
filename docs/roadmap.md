@@ -41,31 +41,29 @@ The items that gate running Copal anywhere real.
    the proxy provides one.
 4. Per-tenant blob keys, building on the shipped encryption at rest
    (chunked AEAD, plaintext digests, non-destructive enablement).
-   This unlocks the data-residency story below.
+   The data-residency story below depends on this.
 5. Per-tenant quotas and usage accounting (bytes stored, request
    rates), replacing the documented proxy-level interim.
 
 ## Tier 3: moat expansion
 
-In leverage order, from the July 2026 market research: MinIO's
+Ordered by expected pull, from the July 2026 market research: MinIO's
 community edition is archived, the S3-only alternatives have no
 metadata brain, Supabase Storage is platform-bound, and SurrealDB 3.0
 ships file primitives without a service layer. tus resumable uploads
-shipped first from this tier.
+shipped first from this tier, then the S3-compatible ingest gateway
+(SigV4, the object plane, ListObjectsV2 with delimiter collapse,
+sealed gateway credentials).
 
-1. S3-compatible ingest gateway. Existing S3 tooling points at Copal
-   and gains metadata, pipelines, and contracts without a client
-   rewrite; the window is open while SurrealDB's own S3 bucket API
-   remains an open issue.
-2. Eventing: LIVE SELECT drives webhooks and GraphQL subscriptions.
+1. Eventing: LIVE SELECT drives webhooks and GraphQL subscriptions.
    Database-native live queries make real-time file events cheap in a
    way S3-family competitors cannot copy without changing databases.
-3. Derivatives on the existing flow engine: thumbnails and transcodes
+2. Derivatives on the existing flow engine: thumbnails and transcodes
    as registered workflows, removing the recurring hosted-transform
    tax that drives the alternatives market.
-4. Per-tenant BYO bucket over OpenDAL: each tenant's bytes in their
+3. Per-tenant BYO bucket over OpenDAL: each tenant's bytes in their
    own bucket and keys. The data-residency wedge.
-5. `cg2` HMAC edge tokens for CDN-edge verification without a
+4. `cg2` HMAC edge tokens for CDN-edge verification without a
    database hop, beside the stateful `cg1` family.
 
 ## Tier 4: platform depth

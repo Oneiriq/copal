@@ -132,6 +132,77 @@ async fn find_by_idempotency_key(
     }
 }
 
+/// Look up the live file at a path, tenant-scoped. At most one exists
+/// (the live-path unique index); tombstones read as absent.
+pub async fn find_by_path(
+    store: &Store,
+    tenant: &TenantId,
+    path: &str,
+) -> copal_core::Result<Option<FileRecord>> {
+    let query = Query::new()
+        .select(None)
+        .from_table(TABLE)
+        .map_err(|e| map_store_err("find_by_path", e))?
+        .where_(eq("tenant_id", tenant.as_str()))
+        .where_(eq("path", path))
+        .where_(is_none("deleted_at"))
+        .limit(1)
+        .map_err(|e| map_store_err("find_by_path", e))?;
+    let mut rows: Vec<FileRow> = query_records(store.client(), &query)
+        .await
+        .map_err(|e| map_store_err("find_by_path", e))?;
+    match rows.pop() {
+        Some(row) => row.into_domain().map(Some),
+        None => Ok(None),
+    }
+}
+
+/// List live files in lexicographic path order, filtered by a path
+/// prefix, keyset-paginated on the path itself. This is the S3 listing
+/// shape; the predicate and order ride the live-path unique index with
+/// the tenant pinned.
+pub async fn list_by_path_prefix(
+    store: &Store,
+    tenant: &TenantId,
+    prefix: &str,
+    after_path: Option<&str>,
+    limit: i64,
+) -> copal_core::Result<Vec<FileRecord>> {
+    let mut query = Query::new()
+        .select(None)
+        .from_table(TABLE)
+        .map_err(|e| map_store_err("list_by_path_prefix", e))?
+        .where_(eq("tenant_id", tenant.as_str()))
+        .where_(is_none("deleted_at"));
+    if !prefix.is_empty() {
+        query = query.where_str(format!(
+            "string::starts_with(path, {})",
+            Value::from(prefix),
+        ));
+    }
+    if let Some(after) = after_path {
+        // SurrealDB 3.0.5 planner defect: a strict range on a prefix of
+        // a composite index key (here uniq_file_live_path, whose third
+        // column is live_marker) seeks to the boundary and fails to
+        // skip it, returning the cursor row again. The redundant
+        // inequality cannot ride an index, so it lands in the filter
+        // stage and restores strictness. Proven by EXPLAIN and by
+        // WITH NOINDEX returning the correct row.
+        query = query
+            .where_str(format!("path > {}", Value::from(after)))
+            .where_str(format!("path != {}", Value::from(after)));
+    }
+    let query = query
+        .order_by("path", "ASC")
+        .map_err(|e| map_store_err("list_by_path_prefix", e))?
+        .limit(limit)
+        .map_err(|e| map_store_err("list_by_path_prefix", e))?;
+    let rows: Vec<FileRow> = query_records(store.client(), &query)
+        .await
+        .map_err(|e| map_store_err("list_by_path_prefix", e))?;
+    rows.into_iter().map(FileRow::into_domain).collect()
+}
+
 /// Fetch one file, tenant-scoped, tombstones excluded.
 pub async fn get_file(
     store: &Store,

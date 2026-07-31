@@ -51,11 +51,46 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!(instance = %state.instance_id, "upload-claim owner id");
     let instance_id = state.instance_id.clone();
     let cors = config.cors_origins.as_deref();
+
+    // The S3 gateway serves bucket routes at the root of its own
+    // listener, so stock tooling needs only an endpoint URL. It exists
+    // only with an encryption key: SigV4 verification reads the shared
+    // secret back, and Copal stores such secrets sealed or not at all.
+    let s3_cipher = match &config.s3_bind {
+        Some(s3_bind) => {
+            let Some(key) = &config.blob_encryption_key else {
+                return Err(
+                    "COPAL_S3_BIND requires COPAL_BLOB_ENCRYPTION_KEY: gateway credentials \
+                     are stored sealed under it"
+                        .into(),
+                );
+            };
+            let cipher = copal_blob::crypto::BlobCipher::from_hex(key)?;
+            let gateway = copal_server::s3::s3_router(state.clone(), cipher.clone());
+            let listener = tokio::net::TcpListener::bind(s3_bind).await?;
+            tracing::info!(addr = %listener.local_addr()?, "s3 gateway listening");
+            tokio::spawn(async move {
+                if let Err(err) = axum::serve(listener, gateway).await {
+                    tracing::error!(error = %err, "s3 listener failed");
+                }
+            });
+            Some(cipher)
+        }
+        None => None,
+    };
+    // Credential management joins the admin surface only when the
+    // gateway is configured.
+    let admin_extras =
+        s3_cipher.map(|cipher| copal_server::s3::s3_admin_router(state.clone(), cipher));
+
     // With a dedicated admin bind, the tenant listener never carries
     // admin routes at all; otherwise everything shares one router.
     let router = match &config.admin_bind {
         Some(admin_bind) => {
-            let admin = copal_server::app::admin_router(state.clone());
+            let mut admin = copal_server::app::admin_router(state.clone());
+            if let Some(extras) = admin_extras {
+                admin = admin.merge(extras);
+            }
             let listener = tokio::net::TcpListener::bind(admin_bind).await?;
             tracing::info!(addr = %listener.local_addr()?, "admin surface listening");
             tokio::spawn(async move {
@@ -65,7 +100,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             });
             copal_server::app::api_router_with_cors(state, cors)
         }
-        None => copal_server::app::build_router_with_cors(state, cors),
+        None => {
+            let mut router = copal_server::app::build_router_with_cors(state, cors);
+            if let Some(extras) = admin_extras {
+                router = router.merge(extras);
+            }
+            router
+        }
     };
 
     // Maintenance: claim reaping, staging TTL, and content GC share one

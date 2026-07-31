@@ -14,6 +14,11 @@ pub struct Config {
     /// routes exist ONLY on this listener, keeping key custody off the
     /// tenant-facing network.
     pub admin_bind: Option<String>,
+    /// Optional bind for the S3-compatible gateway, which serves
+    /// path-style bucket routes at its own root. Requires
+    /// `blob_encryption_key`: SigV4 needs the shared secret back, and
+    /// credentials are stored sealed under that key or not at all.
+    pub s3_bind: Option<String>,
     /// Metadata plane connection.
     pub store: StoreConfig,
     /// Root directory of the filesystem blob store.
@@ -67,6 +72,7 @@ impl Config {
         Self {
             bind: env_or("COPAL_BIND", "127.0.0.1:8080"),
             admin_bind: std::env::var("COPAL_ADMIN_BIND").ok(),
+            s3_bind: std::env::var("COPAL_S3_BIND").ok(),
             store: StoreConfig {
                 url: env_or("COPAL_DB_URL", "ws://127.0.0.1:8000"),
                 namespace: env_or("COPAL_DB_NS", "copal"),

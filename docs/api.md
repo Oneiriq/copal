@@ -119,6 +119,49 @@ file finishes through the same finalize path a single PUT uses: same
 digest, same pipeline, same dedupe behavior. Abandoned sessions sweep
 after `COPAL_TUS_SESSION_TTL_SECS` with their staged bytes.
 
+## S3 gateway
+
+With `COPAL_S3_BIND` set, a second listener speaks the S3 API in
+path-style form: the bucket is the tenant id, the key is the file path.
+Point any S3 client at the endpoint URL and it works against Copal
+storage; uploads land in the same claim and finalize path as the REST
+face, so scanning, dedupe, and versioning apply unchanged.
+
+```
+GET     /                      ListBuckets (the credential's tenant)
+HEAD    /{bucket}              HeadBucket
+GET     /{bucket}?list-type=2  ListObjectsV2 (prefix, delimiter,
+                               max-keys, continuation-token)
+PUT     /{bucket}/{key}        PutObject (create or re-upload at the path)
+GET     /{bucket}/{key}        GetObject (ETag, Range, conditional requests)
+HEAD    /{bucket}/{key}        HeadObject
+DELETE  /{bucket}/{key}        DeleteObject (idempotent soft delete)
+```
+
+Requests authenticate with SigV4. Credentials are minted on the admin
+surface (`POST /v1/admin/tenants/{tenant}/s3-credentials`) and are
+separate from `ck1` API keys: SigV4 derives its signing key from the
+shared secret, so the server must read the secret back, and Copal
+stores it sealed under `COPAL_BLOB_ENCRYPTION_KEY` rather than hashed.
+That is why the gateway refuses to start without the encryption key.
+Any region in the credential scope is accepted; the clock-skew window
+is fifteen minutes.
+
+A signed `x-amz-content-sha256` that is a literal digest doubles as an
+integrity assertion (both sides are SHA-256 of the content); a mismatch
+fails the upload after hashing. Streaming signatures
+(`STREAMING-AWS4-HMAC-SHA256-PAYLOAD`, the aws CLI default over plain
+HTTP) are accepted: the chunk framing is decoded and the seed signature
+authenticates the request, though per-chunk signatures are not
+re-verified. The ETag is the SHA-256 digest, quoted; clients that
+compare ETags to MD5 will see every object as changed, which affects
+`aws s3 sync` change detection and nothing else.
+
+Grant-access files refuse GetObject exactly as they refuse direct REST
+download: their bytes flow only through issued grants. Listings walk
+the live-path index in key order; `delimiter` collapses shared segments
+into `CommonPrefixes`.
+
 ## Grants
 
 `POST /v1/files/{id}/url` issues a capability for a servable file. The body

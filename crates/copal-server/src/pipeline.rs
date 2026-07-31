@@ -42,6 +42,12 @@ pub const DERIVE_WORKFLOW: &str = "derive";
 /// interactive latency, and a decoder is an amplification surface.
 pub const MAX_DERIVE_SOURCE_BYTES: u64 = 32 * 1024 * 1024;
 
+/// Ceiling on decoded pixel buffers. Compressed size bounds nothing on
+/// its own: a few megabytes of PNG can describe a gigapixel canvas, so
+/// the decoder gets an explicit allocation limit and refuses rather
+/// than exhausting the host.
+pub const MAX_DECODE_BYTES: u64 = 256 * 1024 * 1024;
+
 /// Deterministic idempotency key for a rendition run: one render per
 /// derived record per source content and parameter set.
 pub fn derive_run_key(derived: &FileId, source_digest: &ContentDigest, params: &str) -> String {
@@ -226,7 +232,7 @@ async fn render_rendition<B: BlobStore>(
         let reason = "source exceeds the decode ceiling".to_owned();
         return refuse_rendition(store, &tenant, &derived, reason).await;
     }
-    let decoded = match image::load_from_memory(&source) {
+    let decoded = match decode_bounded(&source) {
         Ok(decoded) => decoded,
         Err(err) => {
             let reason = format!("source does not decode as an image: {err}");
@@ -284,6 +290,18 @@ async fn render_rendition<B: BlobStore>(
         "size_bytes": stored.size_bytes,
         "state": record.state.as_str(),
     }))
+}
+
+/// Decode an image under an explicit allocation ceiling, so a small
+/// compressed file cannot claim a huge pixel buffer.
+fn decode_bounded(source: &[u8]) -> Result<image::DynamicImage, image::ImageError> {
+    let mut limits = image::Limits::default();
+    limits.max_alloc = Some(MAX_DECODE_BYTES);
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(source))
+        .with_guessed_format()
+        .map_err(image::ImageError::IoError)?;
+    reader.limits(limits);
+    reader.decode()
 }
 
 /// A business refusal fails the derived record and completes the run.

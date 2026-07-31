@@ -82,6 +82,10 @@ async fn register_endpoint<B: BlobStore>(
     Json(request): Json<RegisterRequest>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
     let tenant = crate::auth::authenticate(&state.app, &headers).await?;
+    // Refuse destinations inside the deployment before a row exists.
+    if !state.app.limits.allow_private_webhook_targets {
+        crate::netguard::check_outbound_url(&request.url)?;
+    }
     let secret = copal_sign::ApiKeyToken::mint().secret;
     let sealed = state.cipher.seal(secret.as_bytes())?;
     let sealed_b64 = base64::engine::general_purpose::STANDARD.encode(sealed);
@@ -231,6 +235,7 @@ pub async fn run_pass(
     cipher: &BlobCipher,
     http: &reqwest::Client,
     instance_id: &str,
+    allow_private: bool,
 ) -> DispatchReport {
     let mut report = DispatchReport::default();
 
@@ -299,7 +304,7 @@ pub async fn run_pass(
                         continue;
                     }
                 }
-                match attempt_delivery(store, cipher, http, &delivery).await {
+                match attempt_delivery(store, cipher, http, &delivery, allow_private).await {
                     Ok(status) => {
                         report.delivered += 1;
                         tracing::debug!(status, delivery = %delivery.delivery_id(), "delivered");
@@ -350,6 +355,7 @@ async fn attempt_delivery(
     cipher: &BlobCipher,
     http: &reqwest::Client,
     delivery: &eventing::DeliveryRow,
+    allow_private: bool,
 ) -> Result<i64, AttemptOutcome> {
     let Some(event_id) = delivery.event_id() else {
         return Err(AttemptOutcome::Terminal("delivery has no event link"));
@@ -369,6 +375,13 @@ async fn attempt_delivery(
     };
     let secret = open_secret(cipher, &endpoint.secret_sealed)
         .ok_or(AttemptOutcome::Terminal("secret does not open"))?;
+    // Re-check at delivery: DNS answers change between registration
+    // and now, and a rebinding answer would otherwise be followed.
+    if !allow_private && crate::netguard::check_outbound_url(&endpoint.target_url).is_err() {
+        return Err(AttemptOutcome::Terminal(
+            "endpoint resolves to a non-public address",
+        ));
+    }
 
     let body = json!({
         "id": event.event_id(),
@@ -424,9 +437,16 @@ pub fn sign_body(secret: &str, body: &[u8]) -> String {
 /// The dispatcher loop: drain passes, then sleep on the outbox live
 /// query with a slow fallback tick. The watch stream ending (a dropped
 /// connection) rebuilds the subscription.
-pub async fn run_forever(store: Store, cipher: BlobCipher, instance_id: String) {
+pub async fn run_forever(
+    store: Store,
+    cipher: BlobCipher,
+    instance_id: String,
+    allow_private: bool,
+) {
     let http = match reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(HTTP_TIMEOUT_SECS))
+        // A redirect would reach an address the guard never checked.
+        .redirect(reqwest::redirect::Policy::none())
         .build()
     {
         Ok(http) => http,
@@ -445,7 +465,7 @@ pub async fn run_forever(store: Store, cipher: BlobCipher, instance_id: String) 
         };
         loop {
             loop {
-                let report = run_pass(&store, &cipher, &http, &instance_id).await;
+                let report = run_pass(&store, &cipher, &http, &instance_id, allow_private).await;
                 if report.idle() {
                     break;
                 }

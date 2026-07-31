@@ -40,6 +40,11 @@ pub struct Limits {
     /// How long a resumable-upload session may live between appends
     /// before the sweep discards it.
     pub tus_session_ttl_secs: u32,
+    /// Allow webhook endpoints that resolve to private addresses.
+    /// Off by default: a tenant-supplied URL pointing inside the
+    /// deployment is server-side request forgery. Deployments whose
+    /// receivers are genuinely internal turn it on knowingly.
+    pub allow_private_webhook_targets: bool,
 }
 
 impl Default for Limits {
@@ -50,6 +55,7 @@ impl Default for Limits {
             request_timeout_secs: 30,
             transfer_timeout_secs: 3_600,
             tus_session_ttl_secs: 86_400,
+            allow_private_webhook_targets: false,
         }
     }
 }

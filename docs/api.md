@@ -178,8 +178,9 @@ Renditions live at a deterministic path,
 returns the existing record with 200 instead of a duplicate. The
 derived record links its source (`derived_from`) and inherits the
 source's access level. Sources must be servable images; a source past
-32 MiB or one that fails to decode fails the derived record with the
-run completed, and the reason lands in the run output. Re-uploading a
+32 MiB, one whose decoded pixels would exceed 256 MiB, or one that
+fails to decode at all fails the derived record with the run
+completed, and the reason lands in the run output. Re-uploading a
 source does not touch existing renditions; request again to render
 from the new content.
 
@@ -204,6 +205,11 @@ delivery is an HTTP POST with `x-copal-event`, `x-copal-delivery`, and
 `x-copal-signature: sha256=<hex>`, the HMAC of the exact body bytes
 under that secret; verify it before trusting the payload. The `events`
 filter takes dotted actions; empty means everything.
+
+Endpoint URLs must resolve to public addresses; loopback, private,
+link-local, and cloud metadata destinations refuse at registration and
+again at delivery, and redirects are not followed. Deployments with
+internal receivers opt in through configuration.
 
 Delivery is at-least-once: dedupe on the event `id` in the body. A
 non-2xx answer retries on exponential backoff (30 seconds doubling,

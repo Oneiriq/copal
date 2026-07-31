@@ -30,6 +30,7 @@ Every value comes from the environment. Defaults target local development.
 | `COPAL_TRANSFER_TIMEOUT_SECS` | `3600` | Deadline for the byte routes; ends slow-drip connections. |
 | `COPAL_TUS_SESSION_TTL_SECS` | `86400` | Resumable-upload sessions idle longer than this are swept with their staged bytes. |
 | `COPAL_CORS_ORIGINS` | unset | Comma-separated browser-origin allowlist. Unset attaches no CORS layer at all. |
+| `COPAL_WEBHOOK_ALLOW_PRIVATE_TARGETS` | `false` | Permit webhook endpoints resolving to private, loopback, or link-local addresses. Off by default: tenant-supplied URLs pointing inside the deployment are server-side request forgery. Turn on only when receivers are genuinely internal and tenants are trusted. |
 | `COPAL_RESIDENCIES` | unset | JSON map of named storage residencies beyond `local`, e.g. `{"eu": {"scheme": "s3", "bucket": "...", "endpoint": "...", "region": "...", "access_key_id": "...", "secret_access_key": "..."}}`. Filesystem residencies use `{"scheme": "fs", "root": "..."}`. Names are lowercase alphanumeric. |
 
 ## Key custody
@@ -87,6 +88,24 @@ the old value to `COPAL_ADMIN_TOKEN_PREVIOUS`, deploying the new one,
 and unsetting the previous once callers have moved. Audit rows
 are immutable inside the engine; an UPDATE or DELETE against one aborts in
 SurrealDB itself.
+
+## Outbound request policy
+
+Webhook delivery is the one place the server fetches a
+tenant-supplied URL, which makes it the server-side request forgery
+surface. Every endpoint URL resolves at registration and again at
+delivery (DNS answers change in between), and any answer that is
+loopback, private, link-local, carrier-grade NAT, or the cloud
+metadata address refuses. The delivery client follows no redirects,
+because a redirect reaches an address the guard never checked.
+`COPAL_WEBHOOK_ALLOW_PRIVATE_TARGETS` disables the check for
+deployments whose receivers are internal by design; the server logs a
+warning at startup when it is on.
+
+Rendition decoding is bounded twice: sources over 32 MiB are refused
+before decoding, and the decoder itself carries a 256 MiB allocation
+ceiling, so a small compressed file describing an enormous canvas
+fails the derived record instead of exhausting the host.
 
 ## Storage residencies
 

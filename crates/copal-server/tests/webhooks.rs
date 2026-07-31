@@ -33,7 +33,11 @@ async fn stack() -> (
     let store = Store::connect(StoreConfig::memory()).await.unwrap();
     let dir = tempfile::tempdir().unwrap();
     let blobs = ObjectStore::open(dir.path().to_str().unwrap()).unwrap();
-    let state = AppState::new(store.clone(), blobs);
+    let mut state = AppState::new(store.clone(), blobs);
+    // The fixture's receiver is a loopback listener, which the
+    // outbound guard refuses by default; this is the same opt-in a
+    // deployment with internal receivers uses.
+    state.limits.allow_private_webhook_targets = true;
     let cipher = BlobCipher::from_hex(MASTER_KEY).unwrap();
     let api = build_router(state.clone());
     let hooks = webhook_router(state, cipher.clone());
@@ -110,6 +114,32 @@ fn register_req(url: &str, events: &[&str]) -> Request<Body> {
 }
 
 #[tokio::test]
+async fn private_targets_refuse_without_the_opt_in() {
+    let store = Store::connect(StoreConfig::memory()).await.unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let blobs = ObjectStore::open(dir.path().to_str().unwrap()).unwrap();
+    // Default limits: the guard is armed.
+    let state = AppState::new(store, blobs);
+    let cipher = BlobCipher::from_hex(MASTER_KEY).unwrap();
+    let hooks = webhook_router(state, cipher);
+
+    for url in [
+        "http://127.0.0.1:9000/hook",
+        "http://localhost/hook",
+        "http://169.254.169.254/latest/meta-data",
+        "http://10.0.0.5/hook",
+        "ftp://example.com/hook",
+    ] {
+        let response = hooks.clone().oneshot(register_req(url, &[])).await.unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "{url} must refuse",
+        );
+    }
+}
+
+#[tokio::test]
 async fn engine_outbox_records_terminal_transitions() {
     let (api, hooks, _store, _cipher, _dir) = stack().await;
     let id = upload(&api, "outbox.txt", b"observable bytes").await;
@@ -171,7 +201,7 @@ async fn deliveries_sign_and_settle() {
     upload(&api, "delivered.txt", b"signed payload").await;
 
     let http = reqwest::Client::new();
-    let report = run_pass(&store, &cipher, &http, "test-instance").await;
+    let report = run_pass(&store, &cipher, &http, "test-instance", true).await;
     assert_eq!(report.events_dispatched, 1);
     assert_eq!(report.delivered, 1);
 
@@ -194,7 +224,7 @@ async fn deliveries_sign_and_settle() {
     assert_eq!(deliveries.len(), 1);
     assert_eq!(deliveries[0].state, "delivered");
     assert_eq!(deliveries[0].last_status, Some(200));
-    assert!(run_pass(&store, &cipher, &http, "test-instance")
+    assert!(run_pass(&store, &cipher, &http, "test-instance", true)
         .await
         .idle());
 }
@@ -225,7 +255,7 @@ async fn failures_back_off_and_filters_hold() {
     upload(&api, "retry.txt", b"eventually delivered").await;
 
     let http = reqwest::Client::new();
-    let report = run_pass(&store, &cipher, &http, "test-instance").await;
+    let report = run_pass(&store, &cipher, &http, "test-instance", true).await;
     // The filtered endpoint got no delivery; the other failed with 500.
     assert_eq!(report.retried, 1);
     assert_eq!(report.delivered, 0);
@@ -241,7 +271,7 @@ async fn failures_back_off_and_filters_hold() {
     assert!(deliveries[0].next_attempt_at.is_some(), "backoff scheduled");
 
     // Not due yet: the pass finds nothing.
-    assert!(run_pass(&store, &cipher, &http, "test-instance")
+    assert!(run_pass(&store, &cipher, &http, "test-instance", true)
         .await
         .idle());
 
@@ -250,7 +280,7 @@ async fn failures_back_off_and_filters_hold() {
     eventing::force_due_for_test(&store, &deliveries[0].delivery_id())
         .await
         .unwrap();
-    let report = run_pass(&store, &cipher, &http, "test-instance").await;
+    let report = run_pass(&store, &cipher, &http, "test-instance", true).await;
     assert_eq!(report.delivered, 1);
     let (headers, body) = inbox.recv().await.expect("retry arrived");
     assert_eq!(

@@ -78,7 +78,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         request_timeout_secs: config.request_timeout_secs,
         transfer_timeout_secs: config.transfer_timeout_secs,
         tus_session_ttl_secs: u32::try_from(config.tus_session_ttl_secs).unwrap_or(86_400),
+        allow_private_webhook_targets: config.allow_private_webhook_targets,
     };
+    if config.allow_private_webhook_targets {
+        tracing::warn!(
+            "webhook targets on private addresses are ALLOWED              (COPAL_WEBHOOK_ALLOW_PRIVATE_TARGETS): tenant-supplied URLs can reach              services inside this deployment",
+        );
+    }
     tracing::info!(instance = %state.instance_id, "upload-claim owner id");
     let instance_id = state.instance_id.clone();
     let cors = config.cors_origins.as_deref();
@@ -141,6 +147,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             store.clone(),
             cipher,
             instance_id.clone(),
+            config.allow_private_webhook_targets,
         ));
     }
 

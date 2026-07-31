@@ -49,6 +49,8 @@ pub struct Config {
     /// Named storage residencies beyond `local`: a JSON map of name to
     /// backend config. Tenants pin to one via the admin surface.
     pub residencies: std::collections::HashMap<String, copal_blob::BackendConfig>,
+    /// Permit webhook endpoints on private addresses.
+    pub allow_private_webhook_targets: bool,
 }
 
 fn env_or(key: &str, default: &str) -> String {
@@ -107,6 +109,7 @@ impl Config {
                     .filter(|o| !o.is_empty())
                     .collect()
             }),
+            allow_private_webhook_targets: env_parse("COPAL_WEBHOOK_ALLOW_PRIVATE_TARGETS", false),
             residencies: std::env::var("COPAL_RESIDENCIES")
                 .ok()
                 .and_then(|raw| match serde_json::from_str(&raw) {

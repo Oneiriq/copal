@@ -135,6 +135,42 @@ async fn renditions_render_serve_and_repeat_idempotently() {
 }
 
 #[tokio::test]
+async fn decode_bombs_refuse_instead_of_exhausting_the_host() {
+    // A small compressed file describing an enormous canvas: the
+    // source passes the byte ceiling, and only the decoder's
+    // allocation limit stops it.
+    let (router, engine, _dir) = stack().await;
+    let bomb = {
+        let img = image::GrayImage::new(20_000, 20_000);
+        let mut out = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageLuma8(img)
+            .write_to(&mut out, image::ImageFormat::Png)
+            .unwrap();
+        out.into_inner()
+    };
+    assert!(
+        bomb.len() < 32 * 1024 * 1024,
+        "the bomb is small on disk ({} bytes) and huge decoded",
+        bomb.len(),
+    );
+
+    let id = upload(&router, "bombs/huge.png", "image/png", bomb).await;
+    assert!(engine.tick("w").await.unwrap());
+    let request = req(
+        "POST",
+        &format!("/v1/files/{id}/renditions"),
+        Body::from(json!({}).to_string()),
+    );
+    let response = router.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let derived_id = json_body(response).await["id"].as_str().unwrap().to_owned();
+    assert!(engine.tick("w").await.unwrap());
+    let meta = req("GET", &format!("/v1/files/{derived_id}"), Body::empty());
+    let record = json_body(router.clone().oneshot(meta).await.unwrap()).await;
+    assert_eq!(record["state"], "failed", "the render refused the bomb");
+}
+
+#[tokio::test]
 async fn non_image_sources_refuse_and_bad_params_reject() {
     let (router, engine, _dir) = stack().await;
 

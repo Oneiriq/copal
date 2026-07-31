@@ -111,13 +111,13 @@ fn dispatcher<B: BlobStore + 'static>(
             let state = list_state.clone();
             async move {
                 let tenant = tenant_of(&ctx)?;
+                let ascending = matches!(&args.sort, Some((_, SortDirection::Asc)));
                 let after = args
                     .cursor
                     .as_deref()
-                    .map(decode_cursor)
+                    .map(|raw| decode_cursor(raw, ascending))
                     .transpose()
                     .map_err(|e| JanusError::BadRequest(e.0.to_string()))?;
-                let ascending = matches!(&args.sort, Some((_, SortDirection::Asc)));
                 let state_filter = args
                     .filters
                     .get("state")
@@ -136,10 +136,13 @@ fn dispatcher<B: BlobStore + 'static>(
                 .map_err(to_janus_error)?;
                 let next_cursor = if records.len() as i64 == limit {
                     records.last().map(|last| {
-                        encode_cursor(&file_repo::ListPosition {
-                            created_at: last.created_at.clone(),
-                            id: last.id.clone(),
-                        })
+                        encode_cursor(
+                            &file_repo::ListPosition {
+                                created_at: last.created_at.clone(),
+                                id: last.id.clone(),
+                            },
+                            ascending,
+                        )
                     })
                 } else {
                     None
@@ -198,13 +201,13 @@ fn dispatcher<B: BlobStore + 'static>(
             let state = runs_list_state.clone();
             async move {
                 let tenant = tenant_of(&ctx)?;
+                let ascending = matches!(&args.sort, Some((_, SortDirection::Asc)));
                 let after = args
                     .cursor
                     .as_deref()
-                    .map(decode_run_cursor)
+                    .map(|raw| decode_run_cursor(raw, ascending))
                     .transpose()
                     .map_err(|e| JanusError::BadRequest(e.0.to_string()))?;
-                let ascending = matches!(&args.sort, Some((_, SortDirection::Asc)));
                 let status = args
                     .filters
                     .get("status")
@@ -223,10 +226,13 @@ fn dispatcher<B: BlobStore + 'static>(
                 .map_err(to_janus_error)?;
                 let next_cursor = if runs.len() as i64 == limit {
                     runs.last().map(|last| {
-                        encode_run_cursor(&flow_repo::RunListPosition {
-                            created_at: last.created_at.clone(),
-                            id: last.run_id(),
-                        })
+                        encode_run_cursor(
+                            &flow_repo::RunListPosition {
+                                created_at: last.created_at.clone(),
+                                id: last.run_id(),
+                            },
+                            ascending,
+                        )
                     })
                 } else {
                     None

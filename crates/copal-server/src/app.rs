@@ -4,10 +4,9 @@
 //! Handlers stay thin: tenant extraction, one or two repo/blob calls,
 //! HTTP mapping. The state machine and tenancy rules live below.
 
-use axum::body::Body;
 use axum::extract::{Path, Request, State};
-use axum::http::{header, HeaderMap, StatusCode};
-use axum::response::{IntoResponse, Response};
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::Response;
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use futures::StreamExt as _;
@@ -238,16 +237,34 @@ struct ListQuery {
 }
 
 /// Encode a page position as an opaque cursor. Hex over a delimited
-/// pair -- opacity is the point; clients never construct these.
-pub(crate) fn encode_cursor(position: &file_repo::ListPosition) -> String {
-    hex::encode(format!("{}|{}", position.created_at, position.id))
+/// triple (direction, timestamp, id) -- opacity is the point; clients
+/// never construct these, and the embedded direction lets decode
+/// refuse a cursor replayed under a different sort order (which would
+/// silently return wrong pages).
+pub(crate) fn encode_cursor(position: &file_repo::ListPosition, ascending: bool) -> String {
+    let dir = if ascending { 'a' } else { 'd' };
+    hex::encode(format!("{dir}|{}|{}", position.created_at, position.id))
 }
 
-pub(crate) fn decode_cursor(raw: &str) -> Result<file_repo::ListPosition, ApiError> {
+pub(crate) fn decode_cursor(
+    raw: &str,
+    ascending: bool,
+) -> Result<file_repo::ListPosition, ApiError> {
     let invalid = || CopalError::validation("malformed cursor");
     let bytes = hex::decode(raw).map_err(|_| invalid())?;
     let text = String::from_utf8(bytes).map_err(|_| invalid())?;
-    let (created_at, id) = text.split_once('|').ok_or_else(invalid)?;
+    let mut parts = text.splitn(3, '|');
+    let (Some(dir), Some(created_at), Some(id)) = (parts.next(), parts.next(), parts.next()) else {
+        return Err(invalid().into());
+    };
+    let cursor_ascending = match dir {
+        "a" => true,
+        "d" => false,
+        _ => return Err(invalid().into()),
+    };
+    if cursor_ascending != ascending {
+        return Err(CopalError::validation("cursor was issued for a different sort order").into());
+    }
     Ok(file_repo::ListPosition {
         created_at: created_at.to_owned(),
         id: FileId::parse(id)?,
@@ -266,8 +283,6 @@ async fn list_files<B: BlobStore>(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let tenant = crate::auth::authenticate(&state, &headers).await?;
     let limit = params.limit.unwrap_or(100).clamp(1, 100);
-    let after = params.cursor.as_deref().map(decode_cursor).transpose()?;
-    let state_filter = params.state.as_deref().map(parse_state_param).transpose()?;
     let ascending = match params.sort.as_deref() {
         None | Some("-created_at") => false,
         Some("created_at") => true,
@@ -275,6 +290,12 @@ async fn list_files<B: BlobStore>(
             return Err(CopalError::validation(format!("unknown sort {other:?}")).into());
         }
     };
+    let after = params
+        .cursor
+        .as_deref()
+        .map(|raw| decode_cursor(raw, ascending))
+        .transpose()?;
+    let state_filter = params.state.as_deref().map(parse_state_param).transpose()?;
     let records = file_repo::list_files(
         &state.store,
         &tenant,
@@ -288,10 +309,13 @@ async fn list_files<B: BlobStore>(
     // last row either way and a drained next page returns empty.
     let next_cursor = if records.len() as i64 == limit {
         records.last().map(|last| {
-            encode_cursor(&file_repo::ListPosition {
-                created_at: last.created_at.clone(),
-                id: last.id.clone(),
-            })
+            encode_cursor(
+                &file_repo::ListPosition {
+                    created_at: last.created_at.clone(),
+                    id: last.id.clone(),
+                },
+                ascending,
+            )
         })
     } else {
         None
@@ -511,20 +535,17 @@ async fn download_content<B: BlobStore>(
         .digest
         .as_ref()
         .ok_or_else(|| CopalError::Store("servable file without digest".into()))?;
-    // Stream: bytes never buffer in the server, while the length —
-    // known up front for immutable content-addressed objects — still
-    // rides Content-Length.
-    let (len, stream) = state.blobs.open_read(digest).await?;
-
-    let response = (
-        [
-            (header::CONTENT_TYPE, record.content_type.clone()),
-            (header::CONTENT_LENGTH, len.to_string()),
-            (header::ETAG, format!("\"{digest}\"")),
-        ],
-        Body::from_stream(stream),
-    );
-    Ok(response.into_response())
+    crate::serve::serve_blob(
+        &state.blobs,
+        &headers,
+        crate::serve::ServeSpec {
+            content_type: &record.content_type,
+            digest,
+            path: &record.path,
+            cache: crate::serve::CacheClass::Private,
+        },
+    )
+    .await
 }
 
 /// Request body for grant issuance.
@@ -619,6 +640,7 @@ async fn issue_grant<B: BlobStore>(
 /// URL must not be an oracle for any of those distinctions.
 async fn redeem_grant<B: BlobStore>(
     State(state): State<AppState<B>>,
+    headers: HeaderMap,
     Path(grant_ref): Path<String>,
 ) -> Result<Response, ApiError> {
     let refused = || CopalError::not_found("unknown or unusable grant");
@@ -645,16 +667,19 @@ async fn redeem_grant<B: BlobStore>(
         return Err(refused().into());
     }
     let digest = record.digest.as_ref().ok_or_else(refused)?;
-    let (len, stream) = state.blobs.open_read(digest).await?;
-    let response = (
-        [
-            (header::CONTENT_TYPE, record.content_type.clone()),
-            (header::CONTENT_LENGTH, len.to_string()),
-            (header::ETAG, format!("\"{digest}\"")),
-        ],
-        Body::from_stream(stream),
-    );
-    Ok(response.into_response())
+    // Grant bytes are `no-store`: a shared cache retaining a one-time
+    // grant's body would outlive the grant itself.
+    crate::serve::serve_blob(
+        &state.blobs,
+        &headers,
+        crate::serve::ServeSpec {
+            content_type: &record.content_type,
+            digest,
+            path: &record.path,
+            cache: crate::serve::CacheClass::Private,
+        },
+    )
+    .await
 }
 
 /// Revoke a grant by id. Tenant-authenticated; the bearer token is not
@@ -703,16 +728,26 @@ async fn download_version<B: BlobStore>(
     let version = version_repo::get_version(&state.store, &tenant, &id, number)
         .await?
         .ok_or_else(|| CopalError::not_found(format!("version {number} of file {id}")))?;
-    let (len, stream) = state.blobs.open_read(&version.digest).await?;
-    let response = (
-        [
-            (header::CONTENT_TYPE, version.content_type.clone()),
-            (header::CONTENT_LENGTH, len.to_string()),
-            (header::ETAG, format!("\"{}\"", version.digest)),
-        ],
-        Body::from_stream(stream),
-    );
-    Ok(response.into_response())
+    // A failed CURRENT version is unscanned content — its bytes do not
+    // serve. Historical versions (different digest) passed their own
+    // pipelines and keep serving.
+    if record.state == FileState::Failed && record.digest.as_ref() == Some(&version.digest) {
+        return Err(CopalError::conflict(
+            "this version's content failed processing and is not servable",
+        )
+        .into());
+    }
+    crate::serve::serve_blob(
+        &state.blobs,
+        &headers,
+        crate::serve::ServeSpec {
+            content_type: &version.content_type,
+            digest: &version.digest,
+            path: &record.path,
+            cache: crate::serve::CacheClass::Private,
+        },
+    )
+    .await
 }
 
 /// Request body for starting a run.
@@ -879,15 +914,30 @@ struct RunListQuery {
     sort: Option<String>,
 }
 
-pub(crate) fn encode_run_cursor(position: &flow_repo::RunListPosition) -> String {
-    hex::encode(format!("{}|{}", position.created_at, position.id))
+pub(crate) fn encode_run_cursor(position: &flow_repo::RunListPosition, ascending: bool) -> String {
+    let dir = if ascending { 'a' } else { 'd' };
+    hex::encode(format!("{dir}|{}|{}", position.created_at, position.id))
 }
 
-pub(crate) fn decode_run_cursor(raw: &str) -> Result<flow_repo::RunListPosition, ApiError> {
+pub(crate) fn decode_run_cursor(
+    raw: &str,
+    ascending: bool,
+) -> Result<flow_repo::RunListPosition, ApiError> {
     let invalid = || CopalError::validation("malformed cursor");
     let bytes = hex::decode(raw).map_err(|_| invalid())?;
     let text = String::from_utf8(bytes).map_err(|_| invalid())?;
-    let (created_at, id) = text.split_once('|').ok_or_else(invalid)?;
+    let mut parts = text.splitn(3, '|');
+    let (Some(dir), Some(created_at), Some(id)) = (parts.next(), parts.next(), parts.next()) else {
+        return Err(invalid().into());
+    };
+    let cursor_ascending = match dir {
+        "a" => true,
+        "d" => false,
+        _ => return Err(invalid().into()),
+    };
+    if cursor_ascending != ascending {
+        return Err(CopalError::validation("cursor was issued for a different sort order").into());
+    }
     Ok(flow_repo::RunListPosition {
         created_at: created_at.to_owned(),
         id: id.to_owned(),
@@ -904,11 +954,6 @@ async fn list_runs<B: BlobStore>(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let tenant = crate::auth::authenticate(&state, &headers).await?;
     let limit = params.limit.unwrap_or(100).clamp(1, 100);
-    let after = params
-        .cursor
-        .as_deref()
-        .map(decode_run_cursor)
-        .transpose()?;
     if let Some(status) = params.status.as_deref() {
         if !RUN_STATUSES.contains(&status) {
             return Err(CopalError::validation(format!("unknown status {status:?}")).into());
@@ -921,6 +966,11 @@ async fn list_runs<B: BlobStore>(
             return Err(CopalError::validation(format!("unknown sort {other:?}")).into());
         }
     };
+    let after = params
+        .cursor
+        .as_deref()
+        .map(|raw| decode_run_cursor(raw, ascending))
+        .transpose()?;
     let runs = flow_repo::list_runs(
         &state.store,
         &tenant,
@@ -932,10 +982,13 @@ async fn list_runs<B: BlobStore>(
     .await?;
     let next_cursor = if runs.len() as i64 == limit {
         runs.last().map(|last| {
-            encode_run_cursor(&flow_repo::RunListPosition {
-                created_at: last.created_at.clone(),
-                id: last.run_id(),
-            })
+            encode_run_cursor(
+                &flow_repo::RunListPosition {
+                    created_at: last.created_at.clone(),
+                    id: last.run_id(),
+                },
+                ascending,
+            )
         })
     } else {
         None

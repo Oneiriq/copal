@@ -19,8 +19,11 @@ impl From<CopalError> for ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
+        // One vocabulary across faces: these kinds match the GraphQL
+        // error extension codes exactly (payload_too_large excepted —
+        // GraphQL never sees a 413).
         let (status, kind) = match &self.0 {
-            CopalError::Validation(_) => (StatusCode::BAD_REQUEST, "validation"),
+            CopalError::Validation(_) => (StatusCode::BAD_REQUEST, "bad_request"),
             CopalError::Unauthorized(_) => (StatusCode::UNAUTHORIZED, "unauthorized"),
             CopalError::NotFound(_) => (StatusCode::NOT_FOUND, "not_found"),
             CopalError::Conflict(_) => (StatusCode::CONFLICT, "conflict"),

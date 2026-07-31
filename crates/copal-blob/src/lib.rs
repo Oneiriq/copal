@@ -58,6 +58,16 @@ pub trait BlobStore: Clone + Send + Sync + 'static {
         digest: &ContentDigest,
     ) -> impl std::future::Future<Output = copal_core::Result<(u64, ByteStream)>> + Send;
 
+    /// Open one byte range `[start, end)` of a blob: total object
+    /// length plus the ranged stream. The caller validates the range
+    /// against the total; backends may assume `start < end <= len`.
+    fn open_range(
+        &self,
+        digest: &ContentDigest,
+        start: u64,
+        end: u64,
+    ) -> impl std::future::Future<Output = copal_core::Result<(u64, ByteStream)>> + Send;
+
     /// Whether bytes exist at the digest's address.
     fn exists(
         &self,
@@ -225,6 +235,42 @@ impl BlobStore for FsBlobStore {
         let owned = digest.clone();
         let stream = reader
             .into_bytes_stream(0..len)
+            .await
+            .map_err(|e| CopalError::Blob(format!("stream {digest}: {e}")))?
+            .map(move |chunk| chunk.map_err(|e| CopalError::Blob(format!("stream {owned}: {e}"))))
+            .boxed();
+        Ok((len, stream))
+    }
+
+    async fn open_range(
+        &self,
+        digest: &ContentDigest,
+        start: u64,
+        end: u64,
+    ) -> copal_core::Result<(u64, ByteStream)> {
+        let path = Self::addressed(digest);
+        let not_found = |e: &opendal::Error| e.kind() == opendal::ErrorKind::NotFound;
+        let stat = self.op.stat(&path).await.map_err(|e| {
+            if not_found(&e) {
+                CopalError::not_found(format!("blob {digest}"))
+            } else {
+                CopalError::Blob(format!("stat {digest}: {e}"))
+            }
+        })?;
+        let len = stat.content_length();
+        if start >= end || end > len {
+            return Err(CopalError::validation(format!(
+                "range {start}..{end} exceeds object length {len}",
+            )));
+        }
+        let reader = self
+            .op
+            .reader(&path)
+            .await
+            .map_err(|e| CopalError::Blob(format!("open {digest}: {e}")))?;
+        let owned = digest.clone();
+        let stream = reader
+            .into_bytes_stream(start..end)
             .await
             .map_err(|e| CopalError::Blob(format!("stream {digest}: {e}")))?
             .map(move |chunk| chunk.map_err(|e| CopalError::Blob(format!("stream {owned}: {e}"))))

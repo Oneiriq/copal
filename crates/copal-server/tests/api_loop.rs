@@ -638,3 +638,159 @@ async fn runs_api_executes_workflows() {
     let response = router.clone().oneshot(foreign).await.unwrap();
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
+
+#[tokio::test]
+async fn serving_carries_the_security_and_caching_floor() {
+    let (router, _dir) = test_router().await;
+    let payload = b"<html><script>alert(1)</script></html>";
+
+    // An HTML upload — declared as text/html — must never render
+    // inline under the service origin.
+    let create = req(
+        "POST",
+        "/v1/files",
+        Some("acme"),
+        Body::from(json!({"path": "page.html", "content_type": "text/html"}).to_string()),
+    );
+    let response = router.clone().oneshot(create).await.unwrap();
+    let id = json_body(response).await["id"].as_str().unwrap().to_owned();
+    let upload = req(
+        "PUT",
+        &format!("/v1/files/{id}/content"),
+        Some("acme"),
+        Body::from(&payload[..]),
+    );
+    router.clone().oneshot(upload).await.unwrap();
+
+    let download = req(
+        "GET",
+        &format!("/v1/files/{id}/content"),
+        Some("acme"),
+        Body::empty(),
+    );
+    let response = router.clone().oneshot(download).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let headers = response.headers();
+    assert_eq!(headers["x-content-type-options"], "nosniff");
+    assert_eq!(headers["cache-control"], "no-store");
+    assert_eq!(headers["accept-ranges"], "bytes");
+    assert_eq!(
+        headers["content-disposition"], "attachment; filename=\"page.html\"",
+        "script-capable types force download",
+    );
+    let etag = headers["etag"].to_str().unwrap().to_owned();
+
+    // Conditional GET: matching If-None-Match answers 304, no body.
+    let mut conditional = req(
+        "GET",
+        &format!("/v1/files/{id}/content"),
+        Some("acme"),
+        Body::empty(),
+    );
+    conditional
+        .headers_mut()
+        .insert("if-none-match", etag.parse().unwrap());
+    let response = router.clone().oneshot(conditional).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_MODIFIED);
+
+    // Range: a middle slice comes back 206 with the right window.
+    let mut ranged = req(
+        "GET",
+        &format!("/v1/files/{id}/content"),
+        Some("acme"),
+        Body::empty(),
+    );
+    ranged
+        .headers_mut()
+        .insert("range", "bytes=6-11".parse().unwrap());
+    let response = router.clone().oneshot(ranged).await.unwrap();
+    assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(
+        response.headers()["content-range"],
+        format!("bytes 6-11/{}", payload.len()),
+    );
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(&bytes[..], &payload[6..=11]);
+
+    // A stale If-Range validator downgrades to the full object.
+    let mut stale = req(
+        "GET",
+        &format!("/v1/files/{id}/content"),
+        Some("acme"),
+        Body::empty(),
+    );
+    stale
+        .headers_mut()
+        .insert("range", "bytes=0-3".parse().unwrap());
+    stale
+        .headers_mut()
+        .insert("if-range", "\"someoldetag\"".parse().unwrap());
+    let response = router.clone().oneshot(stale).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // Unsatisfiable ranges answer 416 with the total.
+    let mut absurd = req(
+        "GET",
+        &format!("/v1/files/{id}/content"),
+        Some("acme"),
+        Body::empty(),
+    );
+    absurd
+        .headers_mut()
+        .insert("range", "bytes=9999-".parse().unwrap());
+    let response = router.clone().oneshot(absurd).await.unwrap();
+    assert_eq!(response.status(), StatusCode::RANGE_NOT_SATISFIABLE);
+    assert_eq!(
+        response.headers()["content-range"],
+        format!("bytes */{}", payload.len()),
+    );
+}
+
+#[tokio::test]
+async fn cursors_refuse_replay_under_a_different_sort() {
+    let (router, _dir) = test_router().await;
+    for path in ["c1.txt", "c2.txt"] {
+        let create = req(
+            "POST",
+            "/v1/files",
+            Some("acme"),
+            Body::from(json!({"path": path, "content_type": "text/plain"}).to_string()),
+        );
+        router.clone().oneshot(create).await.unwrap();
+    }
+    // Mint a cursor under the default (descending) order.
+    let list = req("GET", "/v1/files?limit=1", Some("acme"), Body::empty());
+    let body = json_body(router.clone().oneshot(list).await.unwrap()).await;
+    let cursor = body["next_cursor"].as_str().unwrap().to_owned();
+
+    // Same direction: fine.
+    let same = req(
+        "GET",
+        &format!("/v1/files?limit=1&cursor={cursor}"),
+        Some("acme"),
+        Body::empty(),
+    );
+    assert_eq!(
+        router.clone().oneshot(same).await.unwrap().status(),
+        StatusCode::OK
+    );
+
+    // Flipped sort: refused with the unified error vocabulary.
+    let flipped = req(
+        "GET",
+        &format!("/v1/files?limit=1&cursor={cursor}&sort=created_at"),
+        Some("acme"),
+        Body::empty(),
+    );
+    let response = router.clone().oneshot(flipped).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = json_body(response).await;
+    assert_eq!(body["error"]["kind"], "bad_request");
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("different sort order"),
+        "{body}",
+    );
+}

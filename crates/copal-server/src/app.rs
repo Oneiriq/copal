@@ -85,13 +85,20 @@ impl<B: BlobStore> AppState<B> {
     }
 }
 
-/// Build the router over any blob backend.
+/// Build the full router — tenant API plus admin surface — over any
+/// blob backend. Deployments that set `COPAL_ADMIN_BIND` serve
+/// [`api_router`] and [`admin_router`] on separate listeners instead.
 ///
 /// The upload ceiling is enforced inside the upload handler's stream —
 /// `DefaultBodyLimit` guards extractor-based bodies only, and the
 /// upload path consumes the raw request stream. JSON routes keep axum's
 /// small built-in default limit.
 pub fn build_router<B: BlobStore + 'static>(state: AppState<B>) -> Router {
+    api_router(state.clone()).merge(admin_router(state))
+}
+
+/// The tenant-facing API: files, runs, grants, and both faces.
+pub fn api_router<B: BlobStore + 'static>(state: AppState<B>) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
         .route("/v1/files", post(create_file::<B>).get(list_files::<B>))
@@ -118,8 +125,19 @@ pub fn build_router<B: BlobStore + 'static>(state: AppState<B>) -> Router {
             "/v1/grants/{grant_ref}",
             get(redeem_grant::<B>).delete(revoke_grant::<B>),
         )
-        // Operator surface: key custody. Guarded by the admin token;
-        // disabled entirely when none is configured.
+        .with_state(state.clone())
+        // The second face: /graphql, served by Janus from the same
+        // contract, dispatching into the same repositories.
+        .merge(crate::graphql::graphql_router(state))
+}
+
+/// The operator surface alone: key custody and the audit trail,
+/// guarded by the admin token (disabled entirely when none is
+/// configured). Servable on its own listener (`COPAL_ADMIN_BIND`) so
+/// deployments can keep it off the tenant-facing network; without a
+/// separate bind, [`build_router`] merges it into the main router.
+pub fn admin_router<B: BlobStore + 'static>(state: AppState<B>) -> Router {
+    Router::new()
         .route(
             "/v1/admin/tenants/{tenant}/keys",
             post(mint_key::<B>).get(list_keys::<B>),
@@ -128,10 +146,8 @@ pub fn build_router<B: BlobStore + 'static>(state: AppState<B>) -> Router {
             "/v1/admin/tenants/{tenant}/keys/{key_id}",
             axum::routing::delete(revoke_key::<B>),
         )
-        .with_state(state.clone())
-        // The second face: /graphql, served by Janus from the same
-        // contract, dispatching into the same repositories.
-        .merge(crate::graphql::graphql_router(state))
+        .route("/v1/admin/tenants/{tenant}/audit", get(list_audit::<B>))
+        .with_state(state)
 }
 
 async fn healthz() -> &'static str {
@@ -161,6 +177,15 @@ async fn mint_key<B: BlobStore>(
         &request.name,
         &token.key_id,
         &token.secret_hash(),
+    )
+    .await?;
+    copal_store::repo::auth::record_audit(
+        &state.store,
+        &tenant,
+        "admin",
+        "key.minted",
+        &row.key_id(),
+        Some(json!({ "name": row.name })),
     )
     .await?;
     Ok((
@@ -198,7 +223,28 @@ async fn revoke_key<B: BlobStore>(
     if !copal_store::repo::auth::revoke_key(&state.store, &tenant, &key_id).await? {
         return Err(CopalError::not_found(format!("key {key_id}")).into());
     }
+    copal_store::repo::auth::record_audit(
+        &state.store,
+        &tenant,
+        "admin",
+        "key.revoked",
+        &key_id,
+        None,
+    )
+    .await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// A tenant's audit trail, newest first (admin surface).
+async fn list_audit<B: BlobStore>(
+    State(state): State<AppState<B>>,
+    headers: HeaderMap,
+    Path(tenant): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    crate::auth::require_admin(&state, &headers)?;
+    let tenant = TenantId::parse(&tenant)?;
+    let events = copal_store::repo::auth::list_audit(&state.store, &tenant, 200).await?;
+    Ok(Json(json!({ "items": events })))
 }
 
 fn parse_id(raw: &str) -> Result<FileId, ApiError> {
@@ -347,8 +393,28 @@ async fn delete_file<B: BlobStore>(
 ) -> Result<StatusCode, ApiError> {
     let tenant = crate::auth::authenticate(&state, &headers).await?;
     let id = parse_id(&id)?;
-    file_repo::soft_delete(&state.store, &tenant, &id).await?;
+    remove_file_core(&state, &tenant, &id).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Soft-delete plus its audit event — shared by the REST handler and
+/// the GraphQL action resolver.
+pub(crate) async fn remove_file_core<B: BlobStore>(
+    state: &AppState<B>,
+    tenant: &TenantId,
+    id: &FileId,
+) -> Result<(), ApiError> {
+    file_repo::soft_delete(&state.store, tenant, id).await?;
+    copal_store::repo::auth::record_audit(
+        &state.store,
+        tenant,
+        tenant.as_str(),
+        "file.removed",
+        id.as_str(),
+        None,
+    )
+    .await?;
+    Ok(())
 }
 
 /// Stream bytes in and finish the upload in one request.
@@ -511,16 +577,46 @@ async fn upload_content<B: BlobStore>(
     Ok(Json(crate::wire::wire_file(&record)))
 }
 
+/// Serve `/content` under the file's ACCESS LEVEL — the enforcement
+/// point of the access model:
+///
+/// - `public`: anonymous, and cacheable hard (immutable by digest).
+/// - `private` / `tenant`: the owning tenant, `no-store`. (The two
+///   levels coincide until principals-within-a-tenant exist; keys ARE
+///   tenant identities today.)
+/// - `grant`: bytes flow ONLY through issued URLs — direct download
+///   refuses even for the owner, because "grant" means every access
+///   is an auditable, revocable capability.
 async fn download_content<B: BlobStore>(
     State(state): State<AppState<B>>,
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Response, ApiError> {
-    let tenant = crate::auth::authenticate(&state, &headers).await?;
     let id = parse_id(&id)?;
-    let record = file_repo::get_file(&state.store, &tenant, &id)
+    // The public path cannot know a tenant before reading the row, so
+    // the row is fetched unscoped and non-public falls back to the
+    // authenticated, tenant-checked path.
+    let record = file_repo::get_file_any(&state.store, &id)
         .await?
         .ok_or_else(|| CopalError::not_found(format!("file {id}")))?;
+
+    let cache = match record.access {
+        copal_core::AccessLevel::Public => crate::serve::CacheClass::Public,
+        access => {
+            let tenant = crate::auth::authenticate(&state, &headers).await?;
+            if record.tenant_id != tenant {
+                // Cross-tenant reads as absent, never as forbidden.
+                return Err(CopalError::not_found(format!("file {id}")).into());
+            }
+            if access == copal_core::AccessLevel::Grant {
+                return Err(
+                    CopalError::forbidden("file is grant-only; redeem an issued URL").into(),
+                );
+            }
+            crate::serve::CacheClass::Private
+        }
+    };
+
     // Digest-based servability: a re-upload in flight (or failed) keeps
     // the previous version serving; only quarantine and never-uploaded
     // block.
@@ -542,7 +638,7 @@ async fn download_content<B: BlobStore>(
             content_type: &record.content_type,
             digest,
             path: &record.path,
-            cache: crate::serve::CacheClass::Private,
+            cache,
         },
     )
     .await
@@ -609,6 +705,15 @@ pub(crate) async fn issue_grant_core<B: BlobStore>(
             max_uses,
             created_by: "api".to_owned(),
         },
+    )
+    .await?;
+    copal_store::repo::auth::record_audit(
+        &state.store,
+        tenant,
+        tenant.as_str(),
+        "grant.issued",
+        &token.grant_id,
+        Some(json!({ "file": id.as_str(), "ttl_secs": ttl_secs, "max_uses": max_uses })),
     )
     .await?;
 
@@ -691,6 +796,15 @@ async fn revoke_grant<B: BlobStore>(
 ) -> Result<StatusCode, ApiError> {
     let tenant = crate::auth::authenticate(&state, &headers).await?;
     grant_repo::revoke(&state.store, &tenant, &grant_ref).await?;
+    copal_store::repo::auth::record_audit(
+        &state.store,
+        &tenant,
+        tenant.as_str(),
+        "grant.revoked",
+        &grant_ref,
+        None,
+    )
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -749,6 +863,11 @@ async fn download_version<B: BlobStore>(
     let version = version_repo::get_version(&state.store, &tenant, &id, number)
         .await?
         .ok_or_else(|| CopalError::not_found(format!("version {number} of file {id}")))?;
+    // Grant-only files serve bytes exclusively through issued URLs —
+    // history included.
+    if record.access == copal_core::AccessLevel::Grant {
+        return Err(CopalError::forbidden("file is grant-only; redeem an issued URL").into());
+    }
     // A failed CURRENT version is unscanned content — its bytes do not
     // serve. Historical versions (different digest) passed their own
     // pipelines and keep serving.

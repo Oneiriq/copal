@@ -43,7 +43,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     tracing::info!(instance = %state.instance_id, "upload-claim owner id");
     let instance_id = state.instance_id.clone();
-    let router = build_router(state);
+    // With a dedicated admin bind, the tenant listener never carries
+    // admin routes at all; otherwise everything shares one router.
+    let router = match &config.admin_bind {
+        Some(admin_bind) => {
+            let admin = copal_server::app::admin_router(state.clone());
+            let listener = tokio::net::TcpListener::bind(admin_bind).await?;
+            tracing::info!(addr = %listener.local_addr()?, "admin surface listening");
+            tokio::spawn(async move {
+                if let Err(err) = axum::serve(listener, admin).await {
+                    tracing::error!(error = %err, "admin listener failed");
+                }
+            });
+            copal_server::app::api_router(state)
+        }
+        None => build_router(state),
+    };
 
     // Maintenance: claim reaping, staging TTL, and content GC share one
     // interval loop; each sweep is failure-isolated inside it.

@@ -72,6 +72,7 @@ fn to_janus_error(err: CopalError) -> JanusError {
     match err {
         CopalError::Validation(m) => JanusError::BadRequest(m),
         CopalError::Unauthorized(m) => JanusError::Unauthorized(m),
+        CopalError::Forbidden(m) => JanusError::Forbidden(m),
         CopalError::NotFound(_) => JanusError::NotFound,
         CopalError::Conflict(m) => JanusError::Conflict(m),
         CopalError::PayloadTooLarge(m) => JanusError::BadRequest(m),
@@ -191,9 +192,9 @@ fn dispatcher<B: BlobStore + 'static>(
             async move {
                 let tenant = tenant_of(&ctx)?;
                 let id = parse_file_id(args.id.as_deref().unwrap_or_default())?;
-                file_repo::soft_delete(&state.store, &tenant, &id)
+                crate::app::remove_file_core(&state, &tenant, &id)
                     .await
-                    .map_err(to_janus_error)?;
+                    .map_err(|e| to_janus_error(e.0))?;
                 Ok(None)
             }
         })

@@ -7,13 +7,45 @@
 //! anywhere.
 
 use surql::schema::{
-    datetime_field, string_field, table_schema, unique_index, FieldDefinition, TableDefinition,
-    TableMode,
+    datetime_field, event, index, object_field, string_field, table_schema, unique_index,
+    FieldDefinition, TableDefinition, TableMode,
 };
 
 /// All tables in this cluster.
 pub fn tables() -> Vec<TableDefinition> {
-    vec![api_key_table()]
+    vec![api_key_table(), audit_event_table()]
+}
+
+/// The audit trail: custody and lifecycle actions, append-only.
+///
+/// Immutability is engine-enforced with the same THROW-event pattern
+/// that freezes version rows — an UPDATE or DELETE against an audit
+/// event aborts inside SurrealDB itself, not in application code.
+fn audit_event_table() -> TableDefinition {
+    table_schema("audit_event")
+        .with_mode(TableMode::Schemafull)
+        .with_fields([
+            built(string_field("tenant_id").assertion("$value != ''")),
+            // Who acted: `admin` for operator-token actions, the
+            // tenant id for tenant-authenticated ones.
+            built(string_field("actor").assertion("$value != ''")),
+            // Dotted verb, e.g. `key.minted`, `grant.issued`.
+            built(string_field("action").assertion("$value != ''")),
+            // What it acted on (key id, grant id, file id).
+            built(string_field("subject")),
+            built(object_field("detail").nullable(true)),
+            built(
+                datetime_field("created_at")
+                    .default("time::now()")
+                    .readonly(true),
+            ),
+        ])
+        .with_indexes([index("idx_audit_tenant", ["tenant_id", "created_at"])])
+        .with_events([event(
+            "audit_immutable",
+            "$event = 'UPDATE' OR $event = 'DELETE'",
+            "THROW 'audit events are immutable'",
+        )])
 }
 
 fn built(builder: surql::schema::FieldBuilder) -> FieldDefinition {

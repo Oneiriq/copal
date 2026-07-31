@@ -154,6 +154,25 @@ pub async fn get_file(
     row.into_domain().map(Some)
 }
 
+/// Fetch one file by id with NO tenant scope — for the anonymous
+/// public-content path only, where the tenant cannot be known before
+/// the row is read. Tombstones still read as absent. Every management
+/// surface uses [`get_file`].
+pub async fn get_file_any(store: &Store, id: &FileId) -> copal_core::Result<Option<FileRecord>> {
+    let Some(row) = get_record(store.client(), &rid(id)?)
+        .await
+        .map_err(|e| map_store_err("get_file_any", e))?
+    else {
+        return Ok(None);
+    };
+    let row: FileRow = serde_json::from_value(row)
+        .map_err(|e| CopalError::Store(format!("get_file_any row shape: {e}")))?;
+    if row.state == FileState::Deleted {
+        return Ok(None);
+    }
+    row.into_domain().map(Some)
+}
+
 /// Keyset position: strictly-after this row in (created_at DESC, id
 /// DESC) order. Both values come verbatim from the last row of the
 /// previous page.

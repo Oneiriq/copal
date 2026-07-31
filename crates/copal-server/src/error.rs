@@ -25,6 +25,7 @@ impl IntoResponse for ApiError {
         let (status, kind) = match &self.0 {
             CopalError::Validation(_) => (StatusCode::BAD_REQUEST, "bad_request"),
             CopalError::Unauthorized(_) => (StatusCode::UNAUTHORIZED, "unauthorized"),
+            CopalError::Forbidden(_) => (StatusCode::FORBIDDEN, "forbidden"),
             CopalError::NotFound(_) => (StatusCode::NOT_FOUND, "not_found"),
             CopalError::Conflict(_) => (StatusCode::CONFLICT, "conflict"),
             CopalError::PayloadTooLarge(_) => (StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large"),

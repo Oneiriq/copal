@@ -112,6 +112,89 @@ pub async fn list_keys(store: &Store, tenant: &TenantId) -> copal_core::Result<V
         .collect())
 }
 
+/// Append one audit event. The row is engine-immutable (THROW on
+/// UPDATE/DELETE); callers pass `admin` or the tenant id as the actor.
+pub async fn record_audit(
+    store: &Store,
+    tenant: &TenantId,
+    actor: &str,
+    action: &str,
+    subject: &str,
+    detail: Option<Value>,
+) -> copal_core::Result<()> {
+    let id = ulid::Ulid::new().to_string().to_ascii_lowercase();
+    let rid =
+        RecordID::<()>::new("audit_event", id.as_str()).map_err(|e| map_store_err("audit", e))?;
+    let mut payload = serde_json::Map::new();
+    payload.insert("tenant_id".into(), json!(tenant.as_str()));
+    payload.insert("actor".into(), json!(actor));
+    payload.insert("action".into(), json!(action));
+    payload.insert("subject".into(), json!(subject));
+    if let Some(detail) = detail {
+        payload.insert("detail".into(), detail);
+    }
+    create_record(store.client(), &rid.to_string(), Value::Object(payload))
+        .await
+        .map_err(|e| map_store_err("audit", e))?;
+    Ok(())
+}
+
+/// List a tenant's audit trail, newest first, bounded.
+pub async fn list_audit(
+    store: &Store,
+    tenant: &TenantId,
+    limit: i64,
+) -> copal_core::Result<Vec<Value>> {
+    let query = Query::new()
+        .select(None)
+        .from_table("audit_event")
+        .map_err(|e| map_store_err("audit", e))?
+        .where_(eq("tenant_id", tenant.as_str()))
+        .order_by("created_at", "DESC")
+        .map_err(|e| map_store_err("audit", e))?
+        .limit(limit)
+        .map_err(|e| map_store_err("audit", e))?;
+    query_records(store.client(), &query)
+        .await
+        .map_err(|e| map_store_err("audit", e))
+}
+
+/// Test support: attempt to rewrite an audit event, so integration
+/// tests can prove the engine-level THROW rather than trusting the
+/// schema text. Never called by production code.
+pub async fn tamper_audit_for_test(store: &Store, tenant: &TenantId) -> copal_core::Result<()> {
+    #[derive(serde::Deserialize)]
+    struct IdRow {
+        id: String,
+    }
+    let find = Query::new()
+        .select(Some(vec!["id".to_owned()]))
+        .from_table("audit_event")
+        .map_err(|e| map_store_err("tamper", e))?
+        .where_(eq("tenant_id", tenant.as_str()))
+        .limit(1)
+        .map_err(|e| map_store_err("tamper", e))?;
+    let rows: Vec<IdRow> = query_records(store.client(), &find)
+        .await
+        .map_err(|e| map_store_err("tamper", e))?;
+    let row = rows
+        .into_iter()
+        .next()
+        .ok_or_else(|| CopalError::not_found("audit event"))?;
+    let bare = strip_record_prefix(&row.id, "audit_event");
+    let rid = RecordID::<()>::new("audit_event", bare).map_err(|e| map_store_err("tamper", e))?;
+    let query = Query::new()
+        .update_set(rid.to_string())
+        .map_err(|e| map_store_err("tamper", e))?
+        .set("action", Value::from("forged"))
+        .map_err(|e| map_store_err("tamper", e))?
+        .return_after();
+    query_records::<Value>(store.client(), &query)
+        .await
+        .map_err(|e| map_store_err("tamper", e))?;
+    Ok(())
+}
+
 /// Revoke a key, tenant-scoped; idempotent-safe via the NONE guard.
 /// Returns whether this call performed the revocation.
 pub async fn revoke_key(

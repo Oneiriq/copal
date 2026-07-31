@@ -19,6 +19,10 @@ pub enum CopalError {
     #[error("unauthorized: {0}")]
     Unauthorized(String),
 
+    /// Identified, but this operation is not allowed.
+    #[error("forbidden: {0}")]
+    Forbidden(String),
+
     /// The target does not exist (or is soft-deleted).
     #[error("not found: {0}")]
     NotFound(String),
@@ -60,5 +64,10 @@ impl CopalError {
     /// Shorthand for an authentication failure.
     pub fn unauthorized(msg: impl Into<String>) -> Self {
         Self::Unauthorized(msg.into())
+    }
+
+    /// Shorthand for an authorization refusal.
+    pub fn forbidden(msg: impl Into<String>) -> Self {
+        Self::Forbidden(msg.into())
     }
 }

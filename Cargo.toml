@@ -4,6 +4,7 @@ members = [
     "crates/copal-core",
     "crates/copal-store",
     "crates/copal-blob",
+    "crates/copal-sign",
     "crates/copal-server",
 ]
 
@@ -19,6 +20,7 @@ authors = ["Shon Thomas <shonpt@outlook.com>"]
 copal-core = { path = "crates/copal-core" }
 copal-store = { path = "crates/copal-store" }
 copal-blob = { path = "crates/copal-blob" }
+copal-sign = { path = "crates/copal-sign" }
 
 # Schema, query building, and the SurrealDB client all come from surql-rs.
 # Pinned to the rolling feature branch that accumulates every capability
@@ -40,6 +42,7 @@ axum = "0.8"
 tempfile = "3"
 futures = "0.3"
 bytes = "1"
+rand = "0.9"
 
 [patch.crates-io]
 oneiriq-surql = { git = "https://github.com/Oneiriq/surql-rs", branch = "feat/copal-janus" }

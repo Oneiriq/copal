@@ -12,13 +12,16 @@
 //! the same definitions via the surql toolchain.
 
 pub mod core;
+pub mod delivery;
 
 use surql::schema::{generate_table_sql, TableDefinition};
 use surql::types::reserved::check_reserved_word;
 
 /// Every table in the Copal control plane, in application order.
 pub fn tables() -> Vec<TableDefinition> {
-    core::tables()
+    let mut tables = core::tables();
+    tables.extend(delivery::tables());
+    tables
 }
 
 /// Render the idempotent DDL statements for the full schema, in order.

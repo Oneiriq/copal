@@ -307,3 +307,191 @@ async fn oversized_uploads_are_413_and_retryable() {
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(json_body(response).await["state"], "ready");
 }
+
+/// Full grant lifecycle: issue, redeem without any tenant header,
+/// enforce the use limit, and refuse after revocation. Every refusal
+/// is the same 404 — a signed URL is not an oracle.
+#[tokio::test]
+async fn grant_urls_serve_share_limit_and_revoke() {
+    let (router, _dir) = test_router().await;
+    let payload = b"shared via link";
+
+    // Create + upload a servable file.
+    let create = req(
+        "POST",
+        "/v1/files",
+        Some("acme"),
+        Body::from(json!({"path": "share.bin"}).to_string()),
+    );
+    let response = router.clone().oneshot(create).await.unwrap();
+    let id = json_body(response).await["id"].as_str().unwrap().to_owned();
+    let upload = req(
+        "PUT",
+        &format!("/v1/files/{id}/content"),
+        Some("acme"),
+        Body::from(&payload[..]),
+    );
+    assert_eq!(
+        router.clone().oneshot(upload).await.unwrap().status(),
+        StatusCode::OK
+    );
+
+    // A draft file refuses issuance; a ready one issues.
+    let issue = req(
+        "POST",
+        &format!("/v1/files/{id}/url"),
+        Some("acme"),
+        Body::from(json!({"ttl_secs": 900, "max_uses": 2}).to_string()),
+    );
+    let response = router.clone().oneshot(issue).await.unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let grant = json_body(response).await;
+    let url = grant["url"].as_str().unwrap().to_owned();
+    let grant_id = grant["grant_id"].as_str().unwrap().to_owned();
+    assert!(grant["expires_at"].as_str().is_some());
+
+    // Redemption needs NO tenant header and streams the bytes.
+    let redeem = req("GET", &url, None, Body::empty());
+    let response = router.clone().oneshot(redeem).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(&bytes[..], payload);
+
+    // Tampered secret: same grant id, flipped final hex digit -> 404.
+    let mut tampered = url.clone();
+    let last = tampered.pop().unwrap();
+    tampered.push(if last == '0' { '1' } else { '0' });
+    let response = router
+        .clone()
+        .oneshot(req("GET", &tampered, None, Body::empty()))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+    // Second legitimate use consumes the limit...
+    let response = router
+        .clone()
+        .oneshot(req("GET", &url, None, Body::empty()))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    // ...and the third is refused: max_uses = 2.
+    let response = router
+        .clone()
+        .oneshot(req("GET", &url, None, Body::empty()))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+    // A fresh unlimited grant works until revoked, then 404s.
+    let issue = req(
+        "POST",
+        &format!("/v1/files/{id}/url"),
+        Some("acme"),
+        Body::from(json!({}).to_string()),
+    );
+    let fresh = json_body(router.clone().oneshot(issue).await.unwrap()).await;
+    let fresh_url = fresh["url"].as_str().unwrap().to_owned();
+    let fresh_id = fresh["grant_id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        router
+            .clone()
+            .oneshot(req("GET", &fresh_url, None, Body::empty()))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::OK
+    );
+    let revoke = req(
+        "DELETE",
+        &format!("/v1/grants/{fresh_id}"),
+        Some("acme"),
+        Body::empty(),
+    );
+    assert_eq!(
+        router.clone().oneshot(revoke).await.unwrap().status(),
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        router
+            .clone()
+            .oneshot(req("GET", &fresh_url, None, Body::empty()))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+
+    // Revocation is tenant-guarded: a foreign tenant cannot revoke.
+    let foreign_revoke = req(
+        "DELETE",
+        &format!("/v1/grants/{grant_id}"),
+        Some("globex"),
+        Body::empty(),
+    );
+    assert_eq!(
+        router
+            .clone()
+            .oneshot(foreign_revoke)
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+}
+
+/// Expiry and issuance validation edges.
+#[tokio::test]
+async fn grant_expiry_and_validation() {
+    let (router, _dir) = test_router().await;
+
+    let create = req(
+        "POST",
+        "/v1/files",
+        Some("acme"),
+        Body::from(json!({"path": "exp.bin"}).to_string()),
+    );
+    let response = router.clone().oneshot(create).await.unwrap();
+    let id = json_body(response).await["id"].as_str().unwrap().to_owned();
+
+    // No URL for a non-servable file.
+    let premature = req(
+        "POST",
+        &format!("/v1/files/{id}/url"),
+        Some("acme"),
+        Body::from(json!({}).to_string()),
+    );
+    assert_eq!(
+        router.clone().oneshot(premature).await.unwrap().status(),
+        StatusCode::CONFLICT
+    );
+
+    let upload = req(
+        "PUT",
+        &format!("/v1/files/{id}/content"),
+        Some("acme"),
+        Body::from(&b"x"[..]),
+    );
+    router.clone().oneshot(upload).await.unwrap();
+
+    // ttl_secs = 0 is rejected at issuance (a link that can never be
+    // redeemed is a caller bug, not a product feature).
+    let zero = req(
+        "POST",
+        &format!("/v1/files/{id}/url"),
+        Some("acme"),
+        Body::from(json!({"ttl_secs": 0}).to_string()),
+    );
+    assert_eq!(
+        router.clone().oneshot(zero).await.unwrap().status(),
+        StatusCode::BAD_REQUEST
+    );
+
+    // Garbage tokens 404 without touching the store.
+    let response = router
+        .clone()
+        .oneshot(req("GET", "/v1/grants/not-a-token", None, Body::empty()))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}

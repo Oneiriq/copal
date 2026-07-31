@@ -14,8 +14,11 @@ use futures::StreamExt as _;
 
 use copal_blob::{BlobStore, StoredBlob};
 use copal_core::{CopalError, FileId, FileRecord, FileSpec, FileState, TenantId};
-use copal_store::repo::{blob as blob_repo, file as file_repo};
+use copal_sign::GrantToken;
+use copal_store::repo::{blob as blob_repo, file as file_repo, grant as grant_repo};
 use copal_store::Store;
+use serde::Deserialize;
+use serde_json::json;
 
 use crate::error::ApiError;
 
@@ -73,6 +76,13 @@ pub fn build_router<B: BlobStore>(state: AppState<B>) -> Router {
         .route(
             "/v1/files/{id}/content",
             put(upload_content::<B>).get(download_content::<B>),
+        )
+        .route("/v1/files/{id}/url", post(issue_grant::<B>))
+        // One pattern, two readings: GET takes the full bearer token,
+        // DELETE takes the bare grant id (with tenant auth).
+        .route(
+            "/v1/grants/{grant_ref}",
+            get(redeem_grant::<B>).delete(revoke_grant::<B>),
         )
         .with_state(state)
 }
@@ -266,4 +276,137 @@ async fn download_content<B: BlobStore>(
         Body::from_stream(stream),
     );
     Ok(response.into_response())
+}
+
+/// Request body for grant issuance.
+#[derive(Debug, Deserialize)]
+struct IssueGrantRequest {
+    /// Seconds until the URL stops working. Bounded to a year.
+    #[serde(default = "default_grant_ttl")]
+    ttl_secs: u32,
+    /// Cap on redemptions; one-time links use 1. Unset = unlimited
+    /// within the TTL.
+    #[serde(default)]
+    max_uses: Option<u32>,
+}
+
+fn default_grant_ttl() -> u32 {
+    900
+}
+
+/// Issue a signed URL for a servable file.
+///
+/// The response's `url` is relative -- the deployment's public base is
+/// the proxy's business. The token appears exactly once, here; the
+/// store keeps only its hash.
+async fn issue_grant<B: BlobStore>(
+    State(state): State<AppState<B>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(request): Json<IssueGrantRequest>,
+) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
+    let tenant = tenant_from(&headers)?;
+    let id = parse_id(&id)?;
+    if request.ttl_secs == 0 || request.ttl_secs > 31_536_000 {
+        return Err(CopalError::validation("ttl_secs must be between 1 and 31536000").into());
+    }
+    if request.max_uses == Some(0) {
+        return Err(CopalError::validation("max_uses must be at least 1").into());
+    }
+
+    // Only a servable file gets a URL; a draft link would 404 until
+    // upload anyway, and issuing it would leak lifecycle state.
+    let record = file_repo::get_file(&state.store, &tenant, &id)
+        .await?
+        .ok_or_else(|| CopalError::not_found(format!("file {id}")))?;
+    if !record.state.servable() {
+        return Err(CopalError::conflict(format!(
+            "file is {}, not servable",
+            record.state.as_str(),
+        ))
+        .into());
+    }
+
+    let token = GrantToken::mint();
+    let grant = grant_repo::issue(
+        &state.store,
+        &tenant,
+        &id,
+        &token.grant_id,
+        &token.secret_hash(),
+        &grant_repo::GrantSpec {
+            ttl_secs: request.ttl_secs,
+            max_uses: request.max_uses,
+            created_by: "api".to_owned(),
+        },
+    )
+    .await?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(json!({
+            "grant_id": token.grant_id,
+            "token": token.encode(),
+            "url": format!("/v1/grants/{}", token.encode()),
+            "expires_at": grant.expires_at,
+            "max_uses": grant.max_uses,
+        })),
+    ))
+}
+
+/// Redeem a grant token: serve the file with no tenant header.
+///
+/// Every failure -- malformed token, unknown grant, wrong secret,
+/// revoked, expired, exhausted, file gone -- is the same 404. A signed
+/// URL must not be an oracle for any of those distinctions.
+async fn redeem_grant<B: BlobStore>(
+    State(state): State<AppState<B>>,
+    Path(grant_ref): Path<String>,
+) -> Result<Response, ApiError> {
+    let refused = || CopalError::not_found("unknown or unusable grant");
+
+    let token = GrantToken::parse(&grant_ref).map_err(|_| refused())?;
+    let grant = grant_repo::fetch(&state.store, &token.grant_id)
+        .await?
+        .ok_or_else(refused)?;
+    if !copal_sign::verify_secret(&token.secret, &grant.secret_hash) {
+        return Err(refused().into());
+    }
+    // Guards live in the UPDATE: two racing redemptions of a one-use
+    // grant serialize here.
+    if !grant_repo::consume(&state.store, &token.grant_id).await? {
+        return Err(refused().into());
+    }
+
+    let tenant = TenantId::parse(&grant.tenant_id).map_err(|_| refused())?;
+    let file_id = grant.file_id().map_err(|_| refused())?;
+    let record = file_repo::get_file(&state.store, &tenant, &file_id)
+        .await?
+        .ok_or_else(refused)?;
+    if !record.state.servable() {
+        return Err(refused().into());
+    }
+    let digest = record.digest.as_ref().ok_or_else(refused)?;
+    let (len, stream) = state.blobs.open_read(digest).await?;
+    let response = (
+        [
+            (header::CONTENT_TYPE, record.content_type.clone()),
+            (header::CONTENT_LENGTH, len.to_string()),
+            (header::ETAG, format!("\"{digest}\"")),
+        ],
+        Body::from_stream(stream),
+    );
+    Ok(response.into_response())
+}
+
+/// Revoke a grant by id. Tenant-authenticated; the bearer token is not
+/// required -- losing the token is exactly when revocation matters.
+async fn revoke_grant<B: BlobStore>(
+    State(state): State<AppState<B>>,
+    headers: HeaderMap,
+    Path(grant_ref): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    let tenant = tenant_from(&headers)?;
+    grant_repo::revoke(&state.store, &tenant, &grant_ref).await?;
+    Ok(StatusCode::NO_CONTENT)
 }

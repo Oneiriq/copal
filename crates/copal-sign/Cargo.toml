@@ -1,0 +1,16 @@
+[package]
+name = "copal-sign"
+description = "Copal grant tokens: minting, parsing, and verification for signed URLs."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+copal-core = { workspace = true }
+rand = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+ulid = { workspace = true }

@@ -414,6 +414,11 @@ async fn put_object<B: BlobStore>(
     };
     let id = record.id.clone();
 
+    let (residency, backend) = match state.residency_for(&tenant).await {
+        Ok(resolved) => resolved,
+        Err(err) => return copal_to_s3(err.0),
+    };
+
     if let Err(err) = file_repo::claim_upload(
         &state.store,
         &tenant,
@@ -461,7 +466,7 @@ async fn put_object<B: BlobStore>(
         Err(err) => Err(err),
     });
 
-    let stored = match state.blobs.put_streamed(counted).await {
+    let stored = match backend.put_streamed(counted).await {
         Ok(stored) => stored,
         Err(err) => {
             let _ = file_repo::transition(
@@ -509,7 +514,17 @@ async fn put_object<B: BlobStore>(
         }
     }
 
-    match finalize_new_content(state, &tenant, &id, &digest, size_bytes, &storage_path).await {
+    match finalize_new_content(
+        state,
+        &tenant,
+        &id,
+        &residency,
+        &digest,
+        size_bytes,
+        &storage_path,
+    )
+    .await
+    {
         Ok(_) => (StatusCode::OK, [(header::ETAG, format!("\"{digest}\""))]).into_response(),
         Err(err) => copal_to_s3(err.0),
     }
@@ -534,8 +549,12 @@ async fn get_object<B: BlobStore>(
         Err(response) => return response,
     };
     let digest = record.digest.as_ref().expect("servable implies digest");
+    let backend = match gateway.app.backend_for_record(&record) {
+        Ok(backend) => backend,
+        Err(err) => return copal_to_s3(err.0),
+    };
     match serve_blob(
-        &gateway.app.blobs,
+        &backend,
         &headers,
         ServeSpec {
             content_type: &record.content_type,

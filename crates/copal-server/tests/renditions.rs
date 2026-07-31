@@ -20,7 +20,7 @@ async fn stack() -> (axum::Router, FlowEngine, tempfile::TempDir) {
     let blobs = ObjectStore::open(dir.path().to_str().unwrap()).unwrap();
     let registry = standard_registry(
         store.clone(),
-        blobs.clone(),
+        copal_server::app::Residencies::local_only(blobs.clone()),
         ExtensionPolicy::standard(),
         false,
     );

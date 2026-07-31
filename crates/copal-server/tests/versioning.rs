@@ -236,8 +236,18 @@ async fn superseded_blobs_survive_gc_while_their_file_lives() {
         gc_grace_secs: 0,
         ..SweepConfig::default()
     };
-    run_pass(&store, &blobs, &config).await;
-    let report = run_pass(&store, &blobs, &config).await;
+    run_pass(
+        &store,
+        &copal_server::app::Residencies::local_only(blobs.clone()),
+        &config,
+    )
+    .await;
+    let report = run_pass(
+        &store,
+        &copal_server::app::Residencies::local_only(blobs.clone()),
+        &config,
+    )
+    .await;
     assert_eq!(report.blobs_collected, 0, "history must hold the blob");
     let object = dir.path().join("objects").join(old_digest.storage_key());
     assert!(object.exists(), "superseded bytes must survive: {object:?}");
@@ -250,8 +260,18 @@ async fn superseded_blobs_survive_gc_while_their_file_lives() {
         Body::empty(),
     );
     router.clone().oneshot(delete).await.unwrap();
-    run_pass(&store, &blobs, &config).await; // mark
-    let report = run_pass(&store, &blobs, &config).await; // collect
+    run_pass(
+        &store,
+        &copal_server::app::Residencies::local_only(blobs.clone()),
+        &config,
+    )
+    .await; // mark
+    let report = run_pass(
+        &store,
+        &copal_server::app::Residencies::local_only(blobs.clone()),
+        &config,
+    )
+    .await; // collect
     assert_eq!(report.blobs_collected, 2);
     assert!(!object.exists(), "history released: bytes reclaimed");
 }

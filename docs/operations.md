@@ -30,6 +30,7 @@ Every value comes from the environment. Defaults target local development.
 | `COPAL_TRANSFER_TIMEOUT_SECS` | `3600` | Deadline for the byte routes; ends slow-drip connections. |
 | `COPAL_TUS_SESSION_TTL_SECS` | `86400` | Resumable-upload sessions idle longer than this are swept with their staged bytes. |
 | `COPAL_CORS_ORIGINS` | unset | Comma-separated browser-origin allowlist. Unset attaches no CORS layer at all. |
+| `COPAL_RESIDENCIES` | unset | JSON map of named storage residencies beyond `local`, e.g. `{"eu": {"scheme": "s3", "bucket": "...", "endpoint": "...", "region": "...", "access_key_id": "...", "secret_access_key": "..."}}`. Filesystem residencies use `{"scheme": "fs", "root": "..."}`. Names are lowercase alphanumeric. |
 
 ## Key custody
 
@@ -81,6 +82,33 @@ the old value to `COPAL_ADMIN_TOKEN_PREVIOUS`, deploying the new one,
 and unsetting the previous once callers have moved. Audit rows
 are immutable inside the engine; an UPDATE or DELETE against one aborts in
 SurrealDB itself.
+
+## Storage residencies
+
+A residency is a named backend (filesystem root or S3-compatible
+bucket) configured through `COPAL_RESIDENCIES`. `local` always exists.
+Pin a tenant's new content with the admin surface:
+
+```
+PUT /v1/admin/tenants/{tenant}/storage    body: { "residency": "eu" }
+GET /v1/admin/tenants/{tenant}/storage
+```
+
+Assignment affects new uploads only. Blob rows record the residency
+their content landed in, and every read path resolves the backend from
+the row, so reassigning a tenant never strands existing content: old
+files keep serving from where they live, new files land in the new
+residency, and garbage collection removes bytes from the backend that
+holds them. Deduplication is scoped per residency by design; the same
+content pinned to two residencies stores twice, which is what
+residency means. The blob master key, when configured, seals content
+in every residency. Resumable-upload staging always lives on the
+local backend; completed sessions stream into the tenant's residency
+at promotion.
+
+Every instance that runs sweeps must configure the residencies whose
+rows it may collect; a row whose residency is unknown to the instance
+is collected in the database and its bytes logged as unreachable.
 
 ## Maintenance sweeps
 

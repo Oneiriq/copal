@@ -306,13 +306,27 @@ async fn append<B: BlobStore>(
 
     if staged == session.upload_length {
         // Complete: promote the staged bytes to their content address
-        // and finish exactly like a single-PUT upload.
+        // and finish exactly like a single-PUT upload. Staging always
+        // lives on the local backend (appends need it); a remote
+        // residency streams the staged bytes into its own store and
+        // the local staging entry drops after.
         let file_id = session.file_id()?;
-        let stored = state.blobs.promote_staged(&session.staging_key).await?;
+        let (residency, backend) = state.residency_for(&tenant).await?;
+        let stored = if residency == "local" {
+            state.blobs.promote_staged(&session.staging_key).await?
+        } else {
+            let (_, plain) = state.blobs.open_staged(&session.staging_key).await?;
+            let stored = backend
+                .put_streamed(plain.map(|chunk| chunk.map_err(|e| e.to_string())))
+                .await?;
+            state.blobs.discard_staged(&session.staging_key).await?;
+            stored
+        };
         finalize_new_content(
             &state,
             &tenant,
             &file_id,
+            &residency,
             &stored.digest,
             stored.size_bytes,
             &stored.storage_path,

@@ -123,6 +123,14 @@ pub trait BlobStore: Clone + Send + Sync + 'static {
         key: &str,
     ) -> impl std::future::Future<Output = copal_core::Result<u64>> + Send;
 
+    /// Open a staged object for streaming: its length plus the byte
+    /// stream. Cross-residency promotion reads here and writes through
+    /// the target's [`BlobStore::put_streamed`].
+    fn open_staged(
+        &self,
+        key: &str,
+    ) -> impl std::future::Future<Output = copal_core::Result<(u64, ByteStream)>> + Send;
+
     /// Promote a staged object to its content address: hash it, seal it
     /// when encryption is configured, land it, and remove the staging
     /// entry.
@@ -471,6 +479,23 @@ impl BlobStore for ObjectStore {
             Err(e) if e.kind() == opendal::ErrorKind::NotFound => Ok(0),
             Err(e) => Err(CopalError::Blob(format!("stat {key}: {e}"))),
         }
+    }
+
+    async fn open_staged(&self, key: &str) -> copal_core::Result<(u64, ByteStream)> {
+        let len = self.staged_len(key).await?;
+        let reader = self
+            .op
+            .reader(key)
+            .await
+            .map_err(|e| CopalError::Blob(format!("open staged {key}: {e}")))?;
+        let owned = key.to_owned();
+        let stream = reader
+            .into_bytes_stream(0..len)
+            .await
+            .map_err(|e| CopalError::Blob(format!("stream staged {key}: {e}")))?
+            .map(move |chunk| chunk.map_err(|e| CopalError::Blob(format!("staged {owned}: {e}"))))
+            .boxed();
+        Ok((len, stream))
     }
 
     async fn promote_staged(&self, key: &str) -> copal_core::Result<StoredBlob> {

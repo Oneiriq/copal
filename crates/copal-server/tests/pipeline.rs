@@ -24,7 +24,7 @@ async fn pipelined_stack_with(
     let blobs = ObjectStore::open(dir.path().to_str().unwrap()).unwrap();
     let registry = standard_registry(
         store.clone(),
-        blobs.clone(),
+        copal_server::app::Residencies::local_only(blobs.clone()),
         ExtensionPolicy::standard(),
         enforce_type_match,
     );

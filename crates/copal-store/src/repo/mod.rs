@@ -7,5 +7,6 @@ pub mod file;
 pub mod flow;
 pub mod grant;
 pub mod s3;
+pub mod tenant;
 pub mod tus;
 pub mod version;

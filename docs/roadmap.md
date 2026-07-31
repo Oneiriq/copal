@@ -63,8 +63,10 @@ sealed gateway credentials).
    (deterministic paths, idempotent repeats, refusals that fail the
    derived record with the run completed). Remaining: transcodes and
    documents, which need an external transformer seam.
-3. Per-tenant BYO bucket over OpenDAL: each tenant's bytes in their
-   own bucket and keys. The data-residency wedge.
+3. Per-tenant storage residencies shipped: named OpenDAL backends
+   (filesystem or S3-compatible bucket with its own keys), tenant
+   pinning on the admin surface, per-row backend resolution so
+   reassignment never strands content, residency-routed collection.
 4. `cg2` HMAC edge tokens for CDN-edge verification without a
    database hop, beside the stateful `cg1` family.
 

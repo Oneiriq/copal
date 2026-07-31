@@ -65,25 +65,27 @@ pub fn upload_run_key(file: &FileId, digest: &ContentDigest) -> String {
 /// Unsniffable content never blocks (unverifiable is not a lie).
 pub fn standard_registry<B: BlobStore>(
     store: Store,
-    blobs: B,
+    residencies: crate::app::Residencies<B>,
     policy: ExtensionPolicy,
     enforce_type_match: bool,
 ) -> FlowRegistry {
-    let sniff_blobs = blobs.clone();
+    let sniff_residencies = residencies.clone();
     let derive_store = store.clone();
-    let derive_blobs = blobs;
+    let derive_residencies = residencies;
     let finalize_store = store;
 
     FlowRegistry::new()
         .activity("render_rendition", move |input: Value| {
             let store = derive_store.clone();
-            let blobs = derive_blobs.clone();
-            async move { render_rendition(&store, &blobs, input).await }
+            let residencies = derive_residencies.clone();
+            async move { render_rendition(&store, &residencies, input).await }
         })
         .activity("sniff_type", move |input: Value| {
-            let blobs = sniff_blobs.clone();
+            let residencies = sniff_residencies.clone();
             async move {
                 let digest = ContentDigest::parse(input["digest"].as_str().unwrap_or_default())?;
+                let residency = input["residency"].as_str().unwrap_or("local");
+                let blobs = residencies.get(residency)?;
                 let (_, mut stream) = blobs.open_read(&digest).await?;
                 let head = match stream.next().await {
                     Some(chunk) => chunk?,
@@ -190,7 +192,7 @@ pub fn standard_registry<B: BlobStore>(
 /// file with a digest, versions, and every serving rule intact.
 async fn render_rendition<B: BlobStore>(
     store: &Store,
-    blobs: &B,
+    residencies: &crate::app::Residencies<B>,
     input: Value,
 ) -> copal_core::Result<Value> {
     let tenant = TenantId::parse(input["tenant"].as_str().unwrap_or_default())?;
@@ -218,7 +220,8 @@ async fn render_rendition<B: BlobStore>(
         return refuse_rendition(store, &tenant, &derived, reason).await;
     }
 
-    let source = blobs.read(&source_digest).await?;
+    let source_backend = residencies.get(input["source_residency"].as_str().unwrap_or("local"))?;
+    let source = source_backend.read(&source_digest).await?;
     if source.len() as u64 > MAX_DERIVE_SOURCE_BYTES {
         let reason = "source exceeds the decode ceiling".to_owned();
         return refuse_rendition(store, &tenant, &derived, reason).await;
@@ -248,13 +251,17 @@ async fn render_rendition<B: BlobStore>(
     }
     let bytes = encoded.into_inner();
 
+    // Renditions land in the tenant's CURRENT residency, resolved at
+    // render time like any other new content.
+    let residency = copal_store::repo::tenant::get_residency(store, &tenant).await?;
+    let target = residencies.get(&residency)?;
     let body = futures::stream::iter(vec![Ok::<_, String>(bytes::Bytes::from(bytes))]);
-    let stored = blobs.put_streamed(body).await?;
+    let stored = target.put_streamed(body).await?;
     blob_repo::record_sighting(
         store,
         &stored.digest,
         stored.size_bytes,
-        "local",
+        &residency,
         &stored.storage_path,
     )
     .await?;
@@ -263,6 +270,7 @@ async fn render_rendition<B: BlobStore>(
         store,
         &tenant,
         &derived,
+        &residency,
         &stored.digest,
         stored.size_bytes,
         "derive",

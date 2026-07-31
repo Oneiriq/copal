@@ -223,7 +223,12 @@ async fn abandoned_sessions_sweep_with_their_bytes() {
         tus_session_ttl_secs: 0,
         ..SweepConfig::default()
     };
-    let report = run_pass(&store, &blobs, &config).await;
+    let report = run_pass(
+        &store,
+        &copal_server::app::Residencies::local_only(blobs.clone()),
+        &config,
+    )
+    .await;
     assert_eq!(report.tus_sessions_swept, 1);
 
     let response = router.clone().oneshot(head_req(&location)).await.unwrap();

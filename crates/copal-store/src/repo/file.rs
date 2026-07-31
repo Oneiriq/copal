@@ -369,8 +369,9 @@ pub async fn list_files(
 pub struct TransitionSets {
     pub digest: Option<ContentDigest>,
     pub size_bytes: Option<u64>,
-    /// Digest of the blob to link; rendered as a record literal.
-    pub link_blob: Option<ContentDigest>,
+    /// Residency and digest of the blob to link; rendered as a
+    /// record literal.
+    pub link_blob: Option<(String, ContentDigest)>,
     /// Additional column writes (dot paths reach into objects, e.g.
     /// `metadata.processing`), applied atomically with the transition.
     pub set_json: Vec<(String, Value)>,
@@ -554,10 +555,12 @@ pub async fn reap_stale_scans(store: &Store, older_than_secs: u32) -> copal_core
 /// A crash after the CAS leaves the file correct and servable with a
 /// version-history hole that self-identifies (`version_count` exceeds
 /// the version rows); a reconciliation sweep is the queued hardening.
+#[allow(clippy::too_many_arguments)]
 pub async fn complete_upload(
     store: &Store,
     tenant: &TenantId,
     id: &FileId,
+    residency: &str,
     digest: &ContentDigest,
     size_bytes: u64,
     created_by: &str,
@@ -570,8 +573,8 @@ pub async fn complete_upload(
             "completion must land in ready or scanning",
         ));
     }
-    let blob_rid =
-        RecordID::<()>::new("blob", digest.as_str()).map_err(|e| map_store_err("complete", e))?;
+    let blob_rid = RecordID::<()>::new("blob", super::blob::blob_row_id(residency, digest))
+        .map_err(|e| map_store_err("complete", e))?;
     let row = transition_with(
         store,
         tenant,
@@ -596,6 +599,7 @@ pub async fn complete_upload(
         number: row.version_count,
         content_type: row.content_type.clone(),
         size_bytes,
+        residency: residency.to_owned(),
         digest: digest.clone(),
         metadata_snapshot: row.metadata.clone(),
         created_by: created_by.to_owned(),
@@ -652,12 +656,13 @@ pub async fn transition(
                 .set(field.clone(), value.clone())
                 .map_err(|e| map_store_err("transition", e))?;
         }
-        if let Some(blob_digest) = &sets.link_blob {
+        if let Some((residency, blob_digest)) = &sets.link_blob {
             // A record link needs a record literal on the right-hand
             // side; RecordID renders the canonical (bracketed where
             // necessary) form and set_expr injects it unquoted.
-            let blob_rid = RecordID::<()>::new("blob", blob_digest.as_str())
-                .map_err(|e| map_store_err("transition", e))?;
+            let blob_rid =
+                RecordID::<()>::new("blob", super::blob::blob_row_id(residency, blob_digest))
+                    .map_err(|e| map_store_err("transition", e))?;
             query = query
                 .set_expr("blob", raw(blob_rid.to_string()))
                 .map_err(|e| map_store_err("transition", e))?;

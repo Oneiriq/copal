@@ -274,7 +274,10 @@ async fn completion_links_blob_and_recount_derives_references() {
     blob::record_sighting(&store, &digest, 11, "local", &digest.storage_key())
         .await
         .unwrap();
-    let loc = blob::get_location(&store, &digest).await.unwrap().unwrap();
+    let loc = blob::get_location(&store, "local", &digest)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(loc.0, "local");
     assert_eq!(loc.1, digest.storage_key());
 
@@ -295,7 +298,7 @@ async fn completion_links_blob_and_recount_derives_references() {
             file::TransitionSets {
                 digest: Some(digest.clone()),
                 size_bytes: Some(11),
-                link_blob: Some(digest.clone()),
+                link_blob: Some(("local".to_owned(), digest.clone())),
                 ..Default::default()
             },
         )
@@ -305,7 +308,9 @@ async fn completion_links_blob_and_recount_derives_references() {
         assert_eq!(done.digest.as_ref().unwrap(), &digest);
     }
     assert_eq!(
-        blob::recount_inbound_links(&store, &digest).await.unwrap(),
+        blob::recount_inbound_links(&store, "local", &digest)
+            .await
+            .unwrap(),
         2
     );
 }

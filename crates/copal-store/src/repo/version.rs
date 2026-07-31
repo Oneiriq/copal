@@ -28,6 +28,8 @@ pub struct VersionSnapshot {
     pub number: u64,
     pub content_type: String,
     pub size_bytes: u64,
+    /// Residency the content landed in; the blob link renders from it.
+    pub residency: String,
     pub digest: ContentDigest,
     pub metadata_snapshot: serde_json::Value,
     pub created_by: String,
@@ -43,6 +45,8 @@ struct VersionRow {
     size_bytes: u64,
     digest: String,
     #[serde(default)]
+    blob: Option<String>,
+    #[serde(default)]
     metadata_snapshot: serde_json::Value,
     created_by: String,
     created_at: String,
@@ -55,6 +59,11 @@ impl VersionRow {
             content_type: self.content_type,
             size_bytes: self.size_bytes,
             digest: ContentDigest::parse(self.digest)?,
+            blob_residency: self
+                .blob
+                .as_deref()
+                .map(crate::dto::blob_link_residency)
+                .unwrap_or_else(|| "local".to_owned()),
             metadata_snapshot: self.metadata_snapshot,
             created_by: self.created_by,
             created_at: self.created_at,
@@ -89,8 +98,11 @@ pub async fn record_version(
 
     let file_rid =
         RecordID::<()>::new("file", file.as_str()).map_err(|e| map_store_err("version", e))?;
-    let blob_rid = RecordID::<()>::new("blob", snapshot.digest.as_str())
-        .map_err(|e| map_store_err("version", e))?;
+    let blob_rid = RecordID::<()>::new(
+        "blob",
+        super::blob::blob_row_id(&snapshot.residency, &snapshot.digest),
+    )
+    .map_err(|e| map_store_err("version", e))?;
     let mut arm = Query::new()
         .update_set(rid.to_string())
         .map_err(|e| map_store_err("arm_version", e))?

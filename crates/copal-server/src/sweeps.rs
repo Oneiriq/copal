@@ -69,7 +69,12 @@ pub struct SweepReport {
 
 /// Run one maintenance pass. Deterministic and directly testable; the
 /// interval loop is just this on a timer.
-pub async fn run_pass<B: BlobStore>(store: &Store, blobs: &B, config: &SweepConfig) -> SweepReport {
+pub async fn run_pass<B: BlobStore>(
+    store: &Store,
+    residencies: &crate::app::Residencies<B>,
+    config: &SweepConfig,
+) -> SweepReport {
+    let blobs = &residencies.local;
     let mut report = SweepReport::default();
 
     match file_repo::reap_expired_uploads(store).await {
@@ -100,7 +105,7 @@ pub async fn run_pass<B: BlobStore>(store: &Store, blobs: &B, config: &SweepConf
         Err(err) => tracing::warn!(error = %err, "staging sweep failed"),
     }
 
-    match gc_pass(store, blobs, config, &mut report).await {
+    match gc_pass(store, residencies, config, &mut report).await {
         Ok(()) => {}
         Err(err) => tracing::warn!(error = %err, "gc sweep failed"),
     }
@@ -110,38 +115,38 @@ pub async fn run_pass<B: BlobStore>(store: &Store, blobs: &B, config: &SweepConf
 
 async fn gc_pass<B: BlobStore>(
     store: &Store,
-    blobs: &B,
+    residencies: &crate::app::Residencies<B>,
     config: &SweepConfig,
     report: &mut SweepReport,
 ) -> copal_core::Result<()> {
     // Keyset batches until a short page: the whole population is
     // visited every pass, whatever its size.
-    let mut after = None;
+    let mut after: Option<String> = None;
     loop {
-        let rows = blob_repo::list_blobs(store, config.gc_batch, after.as_ref()).await?;
+        let rows = blob_repo::list_blobs(store, config.gc_batch, after.as_deref()).await?;
         let drained = (rows.len() as i64) < config.gc_batch;
         let mut last = None;
         for row in rows {
-            let digest = match row.digest() {
-                Ok(digest) => digest,
+            last = Some(row.bare_id());
+            let (residency, digest) = match row.location() {
+                Ok(location) => location,
                 Err(err) => {
                     tracing::warn!(id = %row.id, error = %err, "unparseable blob id; skipping");
                     continue;
                 }
             };
-            last = Some(digest.clone());
             // The derived truth, freshly computed; the cache plays no part.
-            let live = blob_repo::recount_inbound_links(store, &digest).await?;
+            let live = blob_repo::recount_inbound_links(store, &residency, &digest).await?;
             if live > 0 {
                 if row.unreferenced_since.is_some() || row.refcount != live {
-                    blob_repo::clear_unreferenced(store, &digest, live).await?;
+                    blob_repo::clear_unreferenced(store, &residency, &digest, live).await?;
                     report.blobs_refreshed += 1;
                 }
                 continue;
             }
             match row.unreferenced_since {
                 None => {
-                    blob_repo::mark_unreferenced(store, &digest).await?;
+                    blob_repo::mark_unreferenced(store, &residency, &digest).await?;
                     report.blobs_marked += 1;
                 }
                 Some(_) => {
@@ -152,13 +157,25 @@ async fn gc_pass<B: BlobStore>(
                     // row RE-CREATED since the delete (identical
                     // content re-uploaded in the window) aborts the
                     // collection; the fresh row's bytes stay.
-                    if blob_repo::collect_expired(store, &digest, config.gc_grace_secs).await? {
-                        if blob_repo::row_exists(store, &digest).await? {
+                    if blob_repo::collect_expired(store, &residency, &digest, config.gc_grace_secs)
+                        .await?
+                    {
+                        if blob_repo::row_exists(store, &residency, &digest).await? {
                             tracing::info!(digest = %digest, "collection aborted: blob resurrected");
                             continue;
                         }
-                        blobs.delete(&digest).await?;
-                        report.blobs_collected += 1;
+                        // An unconfigured residency cannot reach its
+                        // bytes from this instance; the row is gone
+                        // and the orphan is that operator's cleanup.
+                        match residencies.get(&residency) {
+                            Ok(backend) => {
+                                backend.delete(&digest).await?;
+                                report.blobs_collected += 1;
+                            }
+                            Err(err) => {
+                                tracing::warn!(residency = %residency, error = %err, "bytes unreachable");
+                            }
+                        }
                     }
                 }
             }
@@ -167,7 +184,7 @@ async fn gc_pass<B: BlobStore>(
             return Ok(());
         }
         match last {
-            Some(digest) => after = Some(digest),
+            Some(cursor) => after = Some(cursor),
             // A full page of unparseable ids cannot advance the cursor;
             // stop rather than loop in place.
             None => return Ok(()),
@@ -184,7 +201,7 @@ async fn gc_pass<B: BlobStore>(
 /// over.
 pub async fn run_forever<B: BlobStore>(
     store: Store,
-    blobs: B,
+    residencies: crate::app::Residencies<B>,
     config: SweepConfig,
     holder: String,
 ) {
@@ -200,7 +217,7 @@ pub async fn run_forever<B: BlobStore>(
                 continue;
             }
         }
-        let report = run_pass(&store, &blobs, &config).await;
+        let report = run_pass(&store, &residencies, &config).await;
         if report != SweepReport::default() {
             tracing::info!(
                 reaped = report.reaped_uploads,

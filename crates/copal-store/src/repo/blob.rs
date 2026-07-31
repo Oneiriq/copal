@@ -27,8 +27,20 @@ use crate::store::Store;
 
 const TABLE: &str = "blob";
 
-fn rid(digest: &ContentDigest) -> copal_core::Result<RecordID<()>> {
-    RecordID::new(TABLE, digest.as_str()).map_err(|e| map_store_err("blob id", e))
+/// The row id for content in a residency: the bare digest for
+/// `local` (compatible with every existing row), or
+/// `{residency}-{digest}` otherwise. Residency names carry no hyphen
+/// and digests are hex, so the id parses back unambiguously.
+pub fn blob_row_id(residency: &str, digest: &ContentDigest) -> String {
+    if residency == "local" {
+        digest.as_str().to_owned()
+    } else {
+        format!("{residency}-{digest}")
+    }
+}
+
+fn rid(residency: &str, digest: &ContentDigest) -> copal_core::Result<RecordID<()>> {
+    RecordID::new(TABLE, blob_row_id(residency, digest)).map_err(|e| map_store_err("blob id", e))
 }
 
 /// Ensure a blob row exists for `digest`. Idempotent: replaying after a
@@ -47,7 +59,13 @@ pub async fn record_sighting(
         "storage_path": storage_path,
         "refcount": 0,
     });
-    match create_record(store.client(), &rid(digest)?.to_string(), payload).await {
+    match create_record(
+        store.client(),
+        &rid(store_key, digest)?.to_string(),
+        payload,
+    )
+    .await
+    {
         Ok(_) => Ok(()),
         Err(err) => {
             // Duplicate id: the content is already registered. Identical
@@ -74,9 +92,10 @@ pub async fn record_sighting(
 /// history in one recount.
 pub async fn recount_inbound_links(
     store: &Store,
+    residency: &str,
     digest: &ContentDigest,
 ) -> copal_core::Result<i64> {
-    let blob_target = rid(digest)?.to_string();
+    let blob_target = rid(residency, digest)?.to_string();
 
     let current = Query::new()
         .select(Some(vec!["count()".to_owned()]))
@@ -115,9 +134,10 @@ pub async fn recount_inbound_links(
 /// Fetch a blob row's storage location, if the content is known.
 pub async fn get_location(
     store: &Store,
+    residency: &str,
     digest: &ContentDigest,
 ) -> copal_core::Result<Option<(String, String)>> {
-    let Some(row) = get_record(store.client(), &rid(digest)?)
+    let Some(row) = get_record(store.client(), &rid(residency, digest)?)
         .await
         .map_err(|e| map_store_err("get_location", e))?
     else {
@@ -146,9 +166,19 @@ pub struct BlobGcRow {
 }
 
 impl BlobGcRow {
-    /// The digest, recovered from the record id.
-    pub fn digest(&self) -> copal_core::Result<ContentDigest> {
-        ContentDigest::parse(strip_record_prefix(&self.id, TABLE))
+    /// The bare row id (prefix and brackets stripped), the keyset
+    /// cursor for [`list_blobs`].
+    pub fn bare_id(&self) -> String {
+        strip_record_prefix(&self.id, TABLE).to_owned()
+    }
+
+    /// The residency and digest, recovered from the record id.
+    pub fn location(&self) -> copal_core::Result<(String, ContentDigest)> {
+        let bare = strip_record_prefix(&self.id, TABLE);
+        match bare.rsplit_once('-') {
+            Some((residency, digest)) => Ok((residency.to_owned(), ContentDigest::parse(digest)?)),
+            None => Ok(("local".to_owned(), ContentDigest::parse(bare)?)),
+        }
     }
 }
 
@@ -160,7 +190,7 @@ impl BlobGcRow {
 pub async fn list_blobs(
     store: &Store,
     limit: i64,
-    after: Option<&ContentDigest>,
+    after: Option<&str>,
 ) -> copal_core::Result<Vec<BlobGcRow>> {
     let mut query = Query::new()
         .select(Some(vec![
@@ -171,7 +201,9 @@ pub async fn list_blobs(
         .from_table(TABLE)
         .map_err(|e| map_store_err("list_blobs", e))?;
     if let Some(after) = after {
-        query = query.where_str(format!("id > {}", rid(after)?));
+        let cursor =
+            RecordID::<()>::new(TABLE, after).map_err(|e| map_store_err("list_blobs", e))?;
+        query = query.where_str(format!("id > {cursor}"));
     }
     let query = query
         .order_by("id", "ASC")
@@ -186,9 +218,13 @@ pub async fn list_blobs(
 /// Mark a blob as unreferenced now, if it is not already marked. The
 /// grace clock starts at the FIRST observation, so repeated passes do
 /// not push collection out indefinitely.
-pub async fn mark_unreferenced(store: &Store, digest: &ContentDigest) -> copal_core::Result<()> {
+pub async fn mark_unreferenced(
+    store: &Store,
+    residency: &str,
+    digest: &ContentDigest,
+) -> copal_core::Result<()> {
     let query = Query::new()
-        .update_set(rid(digest)?.to_string())
+        .update_set(rid(residency, digest)?.to_string())
         .map_err(|e| map_store_err("mark_unreferenced", e))?
         .set("refcount", serde_json::Value::from(0))
         .map_err(|e| map_store_err("mark_unreferenced", e))?
@@ -206,11 +242,12 @@ pub async fn mark_unreferenced(store: &Store, digest: &ContentDigest) -> copal_c
 /// refcount cache with the derived truth.
 pub async fn clear_unreferenced(
     store: &Store,
+    residency: &str,
     digest: &ContentDigest,
     live_count: i64,
 ) -> copal_core::Result<()> {
     let query = Query::new()
-        .update_set(rid(digest)?.to_string())
+        .update_set(rid(residency, digest)?.to_string())
         .map_err(|e| map_store_err("clear_unreferenced", e))?
         .set("refcount", serde_json::Value::from(live_count))
         .map_err(|e| map_store_err("clear_unreferenced", e))?
@@ -227,8 +264,12 @@ pub async fn clear_unreferenced(
 /// immediately before deleting object bytes: a row re-created between
 /// the row-delete and the object-delete (an identical-content upload
 /// re-registering after the full grace period) aborts the collection.
-pub async fn row_exists(store: &Store, digest: &ContentDigest) -> copal_core::Result<bool> {
-    let row = surql::query::crud::get_record(store.client(), &rid(digest)?)
+pub async fn row_exists(
+    store: &Store,
+    residency: &str,
+    digest: &ContentDigest,
+) -> copal_core::Result<bool> {
+    let row = surql::query::crud::get_record(store.client(), &rid(residency, digest)?)
         .await
         .map_err(|e| map_store_err("row_exists", e))?;
     Ok(row.is_some())
@@ -243,11 +284,12 @@ pub async fn row_exists(store: &Store, digest: &ContentDigest) -> copal_core::Re
 /// filesystem delete.
 pub async fn collect_expired(
     store: &Store,
+    residency: &str,
     digest: &ContentDigest,
     grace_secs: u32,
 ) -> copal_core::Result<bool> {
     let query = Query::new()
-        .delete(rid(digest)?.to_string())
+        .delete(rid(residency, digest)?.to_string())
         .map_err(|e| map_store_err("collect", e))?
         .where_(is_not_none("unreferenced_since"))
         .where_str(format!("unreferenced_since < time::now() - {grace_secs}s"))

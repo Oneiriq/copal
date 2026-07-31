@@ -46,6 +46,9 @@ pub struct Config {
     pub tus_session_ttl_secs: u64,
     /// CORS allowlist origins; unset means no CORS layer at all.
     pub cors_origins: Option<Vec<String>>,
+    /// Named storage residencies beyond `local`: a JSON map of name to
+    /// backend config. Tenants pin to one via the admin surface.
+    pub residencies: std::collections::HashMap<String, copal_blob::BackendConfig>,
 }
 
 fn env_or(key: &str, default: &str) -> String {
@@ -104,6 +107,16 @@ impl Config {
                     .filter(|o| !o.is_empty())
                     .collect()
             }),
+            residencies: std::env::var("COPAL_RESIDENCIES")
+                .ok()
+                .and_then(|raw| match serde_json::from_str(&raw) {
+                    Ok(parsed) => Some(parsed),
+                    Err(err) => {
+                        tracing::error!(error = %err, "COPAL_RESIDENCIES does not parse; ignoring");
+                        None
+                    }
+                })
+                .unwrap_or_default(),
             sweeps: crate::sweeps::SweepConfig {
                 interval_secs: env_parse("COPAL_SWEEP_INTERVAL_SECS", 60),
                 staging_ttl_secs: env_parse("COPAL_STAGING_TTL_SECS", 86_400),

@@ -38,6 +38,10 @@ fn default_access() -> AccessLevel {
     AccessLevel::Private
 }
 
+fn default_residency() -> String {
+    "local".to_owned()
+}
+
 impl FileSpec {
     /// Validate caller input before it reaches the store.
     pub fn validate(&self) -> crate::Result<()> {
@@ -84,6 +88,11 @@ pub struct FileRecord {
     /// When the active upload claim expires and becomes stealable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upload_lease_expires_at: Option<String>,
+    /// Residency of the linked content, parsed from the blob link;
+    /// `None` until content lands. Serving resolves its backend from
+    /// this, so reassigning a tenant never strands old content.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blob_residency: Option<String>,
 }
 
 impl FileRecord {
@@ -102,6 +111,10 @@ pub struct FileVersion {
     pub content_type: String,
     pub size_bytes: u64,
     pub digest: ContentDigest,
+    /// Residency of this version's content; `local` for every row
+    /// written before residencies existed.
+    #[serde(default = "default_residency", skip_serializing)]
+    pub blob_residency: String,
     /// The file's metadata as it stood when this version completed.
     #[serde(default)]
     pub metadata_snapshot: serde_json::Value,

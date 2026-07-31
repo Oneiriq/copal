@@ -54,11 +54,51 @@ impl Default for Limits {
     }
 }
 
+/// The configured storage residencies: `local` always exists, named
+/// backends join from configuration. Blob rows record the residency
+/// their content landed in, so resolution happens per row on reads
+/// and per tenant on writes.
+#[derive(Clone)]
+pub struct Residencies<B: BlobStore> {
+    pub local: B,
+    pub named: std::collections::HashMap<String, B>,
+}
+
+impl<B: BlobStore> Residencies<B> {
+    /// Only the local backend.
+    pub fn local_only(local: B) -> Self {
+        Self {
+            local,
+            named: std::collections::HashMap::new(),
+        }
+    }
+
+    /// The backend for a residency name.
+    pub fn get(&self, name: &str) -> copal_core::Result<&B> {
+        if name == "local" {
+            return Ok(&self.local);
+        }
+        self.named.get(name).ok_or_else(|| {
+            CopalError::Store(format!(
+                "residency {name} is not configured on this instance"
+            ))
+        })
+    }
+
+    /// Whether a residency name is configured.
+    pub fn contains(&self, name: &str) -> bool {
+        name == "local" || self.named.contains_key(name)
+    }
+}
+
 /// Shared application state.
 #[derive(Clone)]
 pub struct AppState<B: BlobStore> {
     pub store: Store,
+    /// The local backend, shorthand for `residencies.local`.
     pub blobs: B,
+    /// Every configured backend, local included.
+    pub residencies: Residencies<B>,
     pub limits: Limits,
     /// Durable execution over the same store; empty registry by
     /// default -- unknown workflows are refused at the door.
@@ -77,6 +117,7 @@ impl<B: BlobStore> AppState<B> {
         Self {
             flow: FlowEngine::new(store.clone(), FlowRegistry::new()),
             store,
+            residencies: Residencies::local_only(blobs.clone()),
             blobs,
             limits: Limits::default(),
             instance_id: ulid::Ulid::new().to_string().to_ascii_lowercase(),
@@ -94,6 +135,25 @@ impl<B: BlobStore> AppState<B> {
     pub fn with_auth(mut self, auth: crate::auth::AuthConfig) -> Self {
         self.auth = auth;
         self
+    }
+
+    /// Install named residency backends beside the local one.
+    pub fn with_residencies(mut self, named: std::collections::HashMap<String, B>) -> Self {
+        self.residencies.named = named;
+        self
+    }
+
+    /// The residency a tenant's new content lands in, with its backend.
+    pub async fn residency_for(&self, tenant: &TenantId) -> Result<(String, B), ApiError> {
+        let name = copal_store::repo::tenant::get_residency(&self.store, tenant).await?;
+        let backend = self.residencies.get(&name)?.clone();
+        Ok((name, backend))
+    }
+
+    /// The backend holding a record's landed content.
+    pub fn backend_for_record(&self, record: &copal_core::FileRecord) -> Result<B, ApiError> {
+        let name = record.blob_residency.as_deref().unwrap_or("local");
+        Ok(self.residencies.get(name)?.clone())
     }
 }
 
@@ -262,7 +322,61 @@ pub fn admin_router<B: BlobStore + 'static>(state: AppState<B>) -> Router {
             axum::routing::delete(revoke_key::<B>),
         )
         .route("/v1/admin/tenants/{tenant}/audit", get(list_audit::<B>))
+        .route(
+            "/v1/admin/tenants/{tenant}/storage",
+            put(assign_storage::<B>).get(get_storage::<B>),
+        )
         .with_state(state)
+}
+
+/// Storage assignment body.
+#[derive(Debug, Deserialize)]
+struct AssignStorageRequest {
+    residency: String,
+}
+
+/// Pin a tenant's NEW content to a configured residency. Existing
+/// content is untouched: blob rows carry their residency and serving
+/// resolves from the row.
+async fn assign_storage<B: BlobStore>(
+    State(state): State<AppState<B>>,
+    headers: HeaderMap,
+    Path(tenant): Path<String>,
+    Json(request): Json<AssignStorageRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    crate::auth::require_admin(&state, &headers)?;
+    let tenant = TenantId::parse(&tenant)?;
+    if !state.residencies.contains(&request.residency) {
+        return Err(CopalError::validation(format!(
+            "residency {} is not configured on this instance",
+            request.residency,
+        ))
+        .into());
+    }
+    copal_store::repo::tenant::set_residency(&state.store, &tenant, &request.residency).await?;
+    copal_store::repo::auth::record_audit(
+        &state.store,
+        &tenant,
+        "admin",
+        "tenant.storage_assigned",
+        &request.residency,
+        forwarded_origin(&headers).as_deref(),
+        None,
+    )
+    .await?;
+    Ok(Json(json!({ "residency": request.residency })))
+}
+
+/// The residency a tenant's new content lands in.
+async fn get_storage<B: BlobStore>(
+    State(state): State<AppState<B>>,
+    headers: HeaderMap,
+    Path(tenant): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    crate::auth::require_admin(&state, &headers)?;
+    let tenant = TenantId::parse(&tenant)?;
+    let residency = copal_store::repo::tenant::get_residency(&state.store, &tenant).await?;
+    Ok(Json(json!({ "residency": residency })))
 }
 
 async fn healthz() -> &'static str {
@@ -688,6 +802,7 @@ async fn request_rendition<B: BlobStore>(
         "tenant": tenant.as_str(),
         "derived_file": derived.id.as_str(),
         "source_file": id.as_str(),
+        "source_residency": source.blob_residency.as_deref().unwrap_or("local"),
         "source_digest": source_digest.as_str(),
         "source_size": source.size_bytes,
         "kind": request.kind,
@@ -758,6 +873,8 @@ async fn upload_content<B: BlobStore>(
         })
         .transpose()?;
 
+    let (residency, backend) = state.residency_for(&tenant).await?;
+
     file_repo::claim_upload(
         &state.store,
         &tenant,
@@ -787,7 +904,7 @@ async fn upload_content<B: BlobStore>(
             }
             Err(err) => Err(format!("body: {err}")),
         });
-    let stored = match state.blobs.put_streamed(body).await {
+    let stored = match backend.put_streamed(body).await {
         Ok(stored) => stored,
         Err(err) => {
             // Leave the record retryable; the claim owner reports the
@@ -842,8 +959,16 @@ async fn upload_content<B: BlobStore>(
         }
     }
 
-    let record =
-        finalize_new_content(&state, &tenant, &id, &digest, size_bytes, &storage_path).await?;
+    let record = finalize_new_content(
+        &state,
+        &tenant,
+        &id,
+        &residency,
+        &digest,
+        size_bytes,
+        &storage_path,
+    )
+    .await?;
     Ok(Json(crate::wire::wire_file(&record)))
 }
 
@@ -851,15 +976,17 @@ async fn upload_content<B: BlobStore>(
 /// enqueue the pipeline, and resolve dedupe hits. Shared by the single
 /// PUT path and resumable-session completion, so both finish
 /// identically.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn finalize_new_content<B: BlobStore>(
     state: &AppState<B>,
     tenant: &TenantId,
     id: &FileId,
+    residency: &str,
     digest: &copal_core::ContentDigest,
     size_bytes: u64,
     storage_path: &str,
 ) -> Result<copal_core::FileRecord, ApiError> {
-    blob_repo::record_sighting(&state.store, digest, size_bytes, "local", storage_path).await?;
+    blob_repo::record_sighting(&state.store, digest, size_bytes, residency, storage_path).await?;
 
     // One CAS finishes the upload and mints the version number; the
     // frozen version row and current_version link follow inside. With a
@@ -875,6 +1002,7 @@ pub(crate) async fn finalize_new_content<B: BlobStore>(
         &state.store,
         tenant,
         id,
+        residency,
         digest,
         size_bytes,
         "api",
@@ -889,6 +1017,7 @@ pub(crate) async fn finalize_new_content<B: BlobStore>(
         let input = json!({
             "tenant": tenant.as_str(),
             "file": id.as_str(),
+            "residency": residency,
             "digest": record.digest.as_ref().map(|d| d.as_str()),
             "declared_type": record.content_type,
             "path": record.path,
@@ -995,8 +1124,9 @@ async fn download_content<B: BlobStore>(
         .digest
         .as_ref()
         .ok_or_else(|| CopalError::Store("servable file without digest".into()))?;
+    let backend = state.backend_for_record(&record)?;
     crate::serve::serve_blob(
-        &state.blobs,
+        &backend,
         &headers,
         crate::serve::ServeSpec {
             content_type: &record.content_type,
@@ -1171,7 +1301,8 @@ async fn redeem_grant<B: BlobStore>(
     if !grant_repo::consume(&state.store, &token.grant_id).await? {
         return Err(refused().into());
     }
-    crate::serve::serve_blob(&state.blobs, &headers, spec).await
+    let backend = state.backend_for_record(&record)?;
+    crate::serve::serve_blob(&backend, &headers, spec).await
 }
 
 /// Revoke a grant by id. Tenant-authenticated; the bearer token is not
@@ -1265,8 +1396,9 @@ async fn download_version<B: BlobStore>(
         )
         .into());
     }
+    let backend = state.residencies.get(&version.blob_residency)?.clone();
     crate::serve::serve_blob(
-        &state.blobs,
+        &backend,
         &headers,
         crate::serve::ServeSpec {
             content_type: &version.content_type,

@@ -20,7 +20,34 @@ use surql::schema::{
 /// All tables in this cluster, in application order (`blob` before `file`
 /// so record links always target an existing table definition).
 pub fn tables() -> Vec<TableDefinition> {
-    vec![blob_table(), file_table(), file_version_table()]
+    vec![
+        blob_table(),
+        file_table(),
+        file_version_table(),
+        tenant_storage_table(),
+    ]
+}
+
+/// Tenant residency pinning: where a tenant's NEW content lands.
+/// Absent means `local`. Existing content is untouched by
+/// reassignment; blob rows record their residency at sighting and
+/// serving resolves from the row.
+fn tenant_storage_table() -> TableDefinition {
+    table_schema("tenant_storage")
+        .with_mode(TableMode::Schemafull)
+        .with_fields([
+            built(string_field("tenant_id").assertion("$value != ''")),
+            // A configured residency name: lowercase alphanumeric so
+            // blob row ids parse unambiguously.
+            built(string_field("residency").assertion("$value != ''")),
+            built(
+                datetime_field("created_at")
+                    .default("time::now()")
+                    .readonly(true),
+            ),
+            built(datetime_field("updated_at").value("time::now()")),
+        ])
+        .with_indexes([unique_index("uniq_tenant_storage", ["tenant_id"])])
 }
 
 /// Shorthand: every schema field is built `build_unchecked` because the

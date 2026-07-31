@@ -22,13 +22,43 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None => ObjectStore::open(&config.blob_root),
     };
     let blobs = open_blobs()?;
+    // Named residencies open beside local; the master key, when set,
+    // seals content in every one of them.
+    let build_residencies =
+        || -> Result<copal_server::app::Residencies<ObjectStore>, Box<dyn std::error::Error>> {
+            let mut named = std::collections::HashMap::new();
+            for (name, backend_config) in &config.residencies {
+                if !copal_store::repo::tenant::valid_residency_name(name) {
+                    return Err(format!(
+                        "residency name {name} is invalid: 1..=32 lowercase alphanumeric",
+                    )
+                    .into());
+                }
+                let mut backend = ObjectStore::open_backend(backend_config)?;
+                if let Some(key) = &config.blob_encryption_key {
+                    backend = backend.with_cipher(key)?;
+                }
+                named.insert(name.clone(), backend);
+            }
+            Ok(copal_server::app::Residencies {
+                local: open_blobs()?,
+                named,
+            })
+        };
+    let residencies = build_residencies()?;
+    if !residencies.named.is_empty() {
+        tracing::info!(
+            count = residencies.named.len(),
+            "named storage residencies configured",
+        );
+    }
     let policy = match &config.blocked_extensions {
         Some(list) => copal_core::ExtensionPolicy::from_list(list),
         None => copal_core::ExtensionPolicy::standard(),
     };
     let registry = copal_server::pipeline::standard_registry(
         store.clone(),
-        blobs.clone(),
+        residencies.clone(),
         policy,
         config.enforce_type_match,
     );
@@ -40,7 +70,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let mut state = AppState::new(store.clone(), blobs)
         .with_flow(registry.clone())
-        .with_auth(config.auth.clone());
+        .with_auth(config.auth.clone())
+        .with_residencies(residencies.named.clone());
     state.limits = copal_server::app::Limits {
         max_upload_bytes: config.max_upload_bytes,
         upload_lease_secs: config.upload_lease_secs,
@@ -142,7 +173,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // interval loop; each sweep is failure-isolated inside it.
     tokio::spawn(copal_server::sweeps::run_forever(
         store.clone(),
-        open_blobs()?,
+        build_residencies()?,
         config.sweeps,
         instance_id,
     ));

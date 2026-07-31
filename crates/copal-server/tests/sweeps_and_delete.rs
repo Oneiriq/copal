@@ -168,10 +168,15 @@ async fn gc_marks_then_collects_unreferenced_content() {
     // nothing, and the object stays. Two references: b's current link
     // plus b's version-1 history row; a's links dropped with its
     // tombstone.
-    let report = run_pass(&store, &blobs, &config).await;
+    let report = run_pass(
+        &store,
+        &copal_server::app::Residencies::local_only(blobs.clone()),
+        &config,
+    )
+    .await;
     assert_eq!(report.blobs_collected, 0);
     assert_eq!(
-        blob_repo::recount_inbound_links(&store, &digest)
+        blob_repo::recount_inbound_links(&store, "local", &digest)
             .await
             .unwrap(),
         2
@@ -185,15 +190,25 @@ async fn gc_marks_then_collects_unreferenced_content() {
         Body::empty(),
     );
     router.clone().oneshot(delete).await.unwrap();
-    let report = run_pass(&store, &blobs, &config).await;
+    let report = run_pass(
+        &store,
+        &copal_server::app::Residencies::local_only(blobs.clone()),
+        &config,
+    )
+    .await;
     assert_eq!(report.blobs_marked, 1);
     assert_eq!(report.blobs_collected, 0);
 
     // ...second pass (grace already elapsed at zero) collects row AND
     // bytes.
-    let report = run_pass(&store, &blobs, &config).await;
+    let report = run_pass(
+        &store,
+        &copal_server::app::Residencies::local_only(blobs.clone()),
+        &config,
+    )
+    .await;
     assert_eq!(report.blobs_collected, 1);
-    assert!(blob_repo::get_location(&store, &digest)
+    assert!(blob_repo::get_location(&store, "local", &digest)
         .await
         .unwrap()
         .is_none());
@@ -220,13 +235,23 @@ async fn relink_during_grace_cancels_collection() {
         gc_grace_secs: 3_600,
         ..SweepConfig::default()
     };
-    let report = run_pass(&store, &blobs, &config).await;
+    let report = run_pass(
+        &store,
+        &copal_server::app::Residencies::local_only(blobs.clone()),
+        &config,
+    )
+    .await;
     assert_eq!(report.blobs_marked, 1);
 
     // Same content uploaded again during grace: the next pass must
     // CLEAR the mark, not collect.
     upload_file(&router, "back.bin", payload).await;
-    let report = run_pass(&store, &blobs, &config).await;
+    let report = run_pass(
+        &store,
+        &copal_server::app::Residencies::local_only(blobs.clone()),
+        &config,
+    )
+    .await;
     assert_eq!(report.blobs_collected, 0);
     assert_eq!(report.blobs_refreshed, 1);
 
@@ -235,7 +260,12 @@ async fn relink_during_grace_cancels_collection() {
         gc_grace_secs: 0,
         ..SweepConfig::default()
     };
-    let report = run_pass(&store, &blobs, &zero).await;
+    let report = run_pass(
+        &store,
+        &copal_server::app::Residencies::local_only(blobs.clone()),
+        &zero,
+    )
+    .await;
     assert_eq!(report.blobs_collected, 0);
 }
 
@@ -260,7 +290,12 @@ async fn staging_sweep_removes_only_aged_entries() {
         staging_ttl_secs: 3_600,
         ..SweepConfig::default()
     };
-    let report = run_pass(&store, &blobs, &config).await;
+    let report = run_pass(
+        &store,
+        &copal_server::app::Residencies::local_only(blobs.clone()),
+        &config,
+    )
+    .await;
     assert_eq!(report.staging_removed, 1);
     assert!(!staging.join(&old).exists());
     assert!(staging.join(&fresh).exists(), "fresh staging must survive");
@@ -298,6 +333,7 @@ async fn stale_scanning_files_fail_after_the_age_ceiling() {
         &store,
         &tenant,
         &id,
+        "local",
         &digest,
         5,
         "test",
@@ -307,7 +343,12 @@ async fn stale_scanning_files_fail_after_the_age_ceiling() {
     .unwrap();
 
     // A fresh scan is untouched at the default ceiling...
-    let report = run_pass(&store, &blobs, &SweepConfig::default()).await;
+    let report = run_pass(
+        &store,
+        &copal_server::app::Residencies::local_only(blobs.clone()),
+        &SweepConfig::default(),
+    )
+    .await;
     assert_eq!(report.stale_scans_failed, 0);
 
     // ...and reaped at a zero ceiling.
@@ -315,7 +356,12 @@ async fn stale_scanning_files_fail_after_the_age_ceiling() {
         scan_stale_secs: 0,
         ..SweepConfig::default()
     };
-    let report = run_pass(&store, &blobs, &zero).await;
+    let report = run_pass(
+        &store,
+        &copal_server::app::Residencies::local_only(blobs.clone()),
+        &zero,
+    )
+    .await;
     assert_eq!(report.stale_scans_failed, 1);
     let record = file_repo::get_file(&store, &tenant, &id)
         .await
@@ -336,7 +382,7 @@ async fn a_live_run_shields_its_scanning_file_from_the_stale_sweep() {
     let blobs = ObjectStore::open(dir.path().to_str().unwrap()).unwrap();
     let registry = standard_registry(
         store.clone(),
-        blobs.clone(),
+        copal_server::app::Residencies::local_only(blobs.clone()),
         ExtensionPolicy::standard(),
         false,
     );
@@ -352,7 +398,12 @@ async fn a_live_run_shields_its_scanning_file_from_the_stale_sweep() {
         scan_stale_secs: 0,
         ..SweepConfig::default()
     };
-    let report = run_pass(&store, &blobs, &zero).await;
+    let report = run_pass(
+        &store,
+        &copal_server::app::Residencies::local_only(blobs.clone()),
+        &zero,
+    )
+    .await;
     assert_eq!(
         report.stale_scans_failed, 0,
         "a pending/running pipeline must not be failed out from under its worker",

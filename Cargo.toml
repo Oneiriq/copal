@@ -5,6 +5,7 @@ members = [
     "crates/copal-store",
     "crates/copal-blob",
     "crates/copal-sign",
+    "crates/copal-flow",
     "crates/copal-server",
 ]
 
@@ -21,6 +22,7 @@ copal-core = { path = "crates/copal-core" }
 copal-store = { path = "crates/copal-store" }
 copal-blob = { path = "crates/copal-blob" }
 copal-sign = { path = "crates/copal-sign" }
+copal-flow = { path = "crates/copal-flow" }
 
 # Schema, query building, and the SurrealDB client all come from surql-rs.
 # Pinned to the rolling feature branch that accumulates every capability

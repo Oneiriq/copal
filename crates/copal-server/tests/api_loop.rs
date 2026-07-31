@@ -557,3 +557,84 @@ async fn pagination_pages_are_disjoint_and_complete() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
+
+/// The runs API over a test registry: sync returns output, async goes
+/// through a worker tick, status carries the journal.
+#[tokio::test]
+async fn runs_api_executes_workflows() {
+    use copal_flow::FlowRegistry;
+    let store = copal_store::Store::connect(copal_store::StoreConfig::memory())
+        .await
+        .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let blobs = copal_blob::FsBlobStore::open(dir.path().to_str().unwrap()).unwrap();
+    let registry = FlowRegistry::new()
+        .activity("stamp", |input: serde_json::Value| async move {
+            let mut out = input;
+            out["stamped"] = serde_json::Value::Bool(true);
+            Ok(out)
+        })
+        .workflow("stamping", &["stamp"], 1);
+    let state = AppState::new(store, blobs).with_flow(registry);
+    let engine = state.flow.clone();
+    let router = build_router(state);
+
+    // Sync mode returns the output inline.
+    let sync = req(
+        "POST",
+        "/v1/runs",
+        Some("acme"),
+        Body::from(json!({"workflow": "stamping", "input": {"n": 1}, "mode": "sync"}).to_string()),
+    );
+    let response = router.clone().oneshot(sync).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_body(response).await;
+    assert_eq!(body["output"]["stamped"], true);
+
+    // Async mode: 202, pending until a worker tick, then completed with
+    // journal.
+    let start = req(
+        "POST",
+        "/v1/runs",
+        Some("acme"),
+        Body::from(json!({"workflow": "stamping", "input": {"n": 2}}).to_string()),
+    );
+    let response = router.clone().oneshot(start).await.unwrap();
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let run_id = json_body(response).await["run_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    assert!(engine.tick("test-worker").await.unwrap());
+    let status = req(
+        "GET",
+        &format!("/v1/runs/{run_id}"),
+        Some("acme"),
+        Body::empty(),
+    );
+    let body = json_body(router.clone().oneshot(status).await.unwrap()).await;
+    assert_eq!(body["status"], "completed");
+    assert_eq!(body["output"]["stamped"], true);
+    assert_eq!(body["steps"].as_array().unwrap().len(), 1);
+
+    // Unknown workflows are refused at the door.
+    let unknown = req(
+        "POST",
+        "/v1/runs",
+        Some("acme"),
+        Body::from(json!({"workflow": "nope"}).to_string()),
+    );
+    let response = router.clone().oneshot(unknown).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+    // Foreign tenants cannot see the run.
+    let foreign = req(
+        "GET",
+        &format!("/v1/runs/{run_id}"),
+        Some("globex"),
+        Body::empty(),
+    );
+    let response = router.clone().oneshot(foreign).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}

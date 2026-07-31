@@ -14,6 +14,7 @@ use futures::StreamExt as _;
 
 use copal_blob::{BlobStore, StoredBlob};
 use copal_core::{CopalError, FileId, FileRecord, FileSpec, FileState, TenantId};
+use copal_flow::{FlowEngine, FlowRegistry, RunSpec};
 use copal_sign::GrantToken;
 use copal_store::repo::{
     blob as blob_repo, file as file_repo, grant as grant_repo, version as version_repo,
@@ -47,20 +48,31 @@ pub struct AppState<B: BlobStore> {
     pub store: Store,
     pub blobs: B,
     pub limits: Limits,
+    /// Durable execution over the same store; empty registry by
+    /// default -- unknown workflows are refused at the door.
+    pub flow: FlowEngine,
     /// Identifies this process as an upload-claim owner, so stale
     /// leases name the instance that died holding them.
     pub instance_id: String,
 }
 
 impl<B: BlobStore> AppState<B> {
-    /// State with default limits and a fresh instance id.
+    /// State with default limits, an empty flow registry, and a fresh
+    /// instance id.
     pub fn new(store: Store, blobs: B) -> Self {
         Self {
+            flow: FlowEngine::new(store.clone(), FlowRegistry::new()),
             store,
             blobs,
             limits: Limits::default(),
             instance_id: ulid::Ulid::new().to_string().to_ascii_lowercase(),
         }
+    }
+
+    /// Install a populated activity/workflow registry.
+    pub fn with_flow(mut self, registry: FlowRegistry) -> Self {
+        self.flow = FlowEngine::new(self.store.clone(), registry);
+        self
     }
 }
 
@@ -82,6 +94,8 @@ pub fn build_router<B: BlobStore>(state: AppState<B>) -> Router {
             "/v1/files/{id}/content",
             put(upload_content::<B>).get(download_content::<B>),
         )
+        .route("/v1/runs", post(start_run::<B>))
+        .route("/v1/runs/{id}", get(get_run::<B>))
         .route("/v1/files/{id}/versions", get(list_versions::<B>))
         .route(
             "/v1/files/{id}/versions/{number}/content",
@@ -516,4 +530,97 @@ async fn download_version<B: BlobStore>(
         Body::from_stream(stream),
     );
     Ok(response.into_response())
+}
+
+/// Request body for starting a run.
+#[derive(Debug, Deserialize)]
+struct StartRunRequest {
+    workflow: String,
+    #[serde(default)]
+    input: serde_json::Value,
+    #[serde(default)]
+    file: Option<String>,
+    #[serde(default)]
+    idempotency_key: Option<String>,
+    /// "async" (default) enqueues for a worker; "sync" executes
+    /// in-request over the same journal.
+    #[serde(default)]
+    mode: Option<String>,
+}
+
+/// Start a workflow run.
+async fn start_run<B: BlobStore>(
+    State(state): State<AppState<B>>,
+    headers: HeaderMap,
+    Json(request): Json<StartRunRequest>,
+) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
+    let tenant = tenant_from(&headers)?;
+    let subject = match &request.file {
+        Some(raw) => Some(FileId::parse(raw)?),
+        None => None,
+    };
+    let spec = RunSpec {
+        input: request.input,
+        subject,
+        idempotency_key: request.idempotency_key,
+    };
+    match request.mode.as_deref() {
+        Some("sync") => {
+            let (run_id, output) = state
+                .flow
+                .run_sync(&tenant, &request.workflow, spec)
+                .await?;
+            Ok((
+                StatusCode::OK,
+                Json(json!({ "run_id": run_id, "output": output })),
+            ))
+        }
+        None | Some("async") => {
+            let (run_id, created) = state.flow.enqueue(&tenant, &request.workflow, spec).await?;
+            let status = if created {
+                StatusCode::ACCEPTED
+            } else {
+                StatusCode::OK
+            };
+            Ok((status, Json(json!({ "run_id": run_id }))))
+        }
+        Some(other) => Err(CopalError::validation(format!("unknown mode {other:?}")).into()),
+    }
+}
+
+/// Run status plus its journal.
+async fn get_run<B: BlobStore>(
+    State(state): State<AppState<B>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let tenant = tenant_from(&headers)?;
+    let (run, steps) = state
+        .flow
+        .run_state(&tenant, &id)
+        .await?
+        .ok_or_else(|| CopalError::not_found(format!("run {id}")))?;
+    let steps: Vec<serde_json::Value> = steps
+        .into_iter()
+        .map(|s| {
+            json!({
+                "step": s.step_key,
+                "attempt": s.attempt,
+                "status": s.status,
+                "error": s.step_error,
+                "started_at": s.started_at,
+                "ended_at": s.ended_at,
+            })
+        })
+        .collect();
+    Ok(Json(json!({
+        "run_id": run.run_id(),
+        "workflow": run.workflow_key,
+        "status": run.status,
+        "output": run.output,
+        "error": run.run_error,
+        "created_at": run.created_at,
+        "ended_at": run.ended_at,
+        "steps": steps,
+    })))
 }

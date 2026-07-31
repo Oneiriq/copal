@@ -16,7 +16,7 @@
 use std::time::Duration;
 
 use copal_blob::BlobStore;
-use copal_store::repo::{blob as blob_repo, file as file_repo};
+use copal_store::repo::{blob as blob_repo, file as file_repo, flow as flow_repo};
 use copal_store::Store;
 
 /// Sweep cadence and retention knobs.
@@ -49,6 +49,7 @@ impl Default for SweepConfig {
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct SweepReport {
     pub reaped_uploads: u64,
+    pub reaped_runs: u64,
     pub staging_removed: u64,
     pub blobs_marked: u64,
     pub blobs_collected: u64,
@@ -63,6 +64,11 @@ pub async fn run_pass<B: BlobStore>(store: &Store, blobs: &B, config: &SweepConf
     match file_repo::reap_expired_uploads(store).await {
         Ok(reaped) => report.reaped_uploads = reaped.len() as u64,
         Err(err) => tracing::warn!(error = %err, "reap sweep failed"),
+    }
+
+    match flow_repo::reap_expired_runs(store).await {
+        Ok(reaped) => report.reaped_runs = reaped,
+        Err(err) => tracing::warn!(error = %err, "run reap sweep failed"),
     }
 
     match blobs
@@ -133,6 +139,7 @@ pub async fn run_forever<B: BlobStore>(store: Store, blobs: B, config: SweepConf
         if report != SweepReport::default() {
             tracing::info!(
                 reaped = report.reaped_uploads,
+                runs = report.reaped_runs,
                 staging = report.staging_removed,
                 marked = report.blobs_marked,
                 collected = report.blobs_collected,

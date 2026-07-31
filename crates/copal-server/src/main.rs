@@ -34,6 +34,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.sweeps,
     ));
 
+    // Durable execution worker: claims pending runs and executes them
+    // over the journal. The production registry starts empty until the
+    // processing activities land; the worker idles harmlessly.
+    tokio::spawn(copal_flow::run_worker(
+        copal_flow::FlowEngine::new(store.clone(), copal_flow::FlowRegistry::new()),
+        format!(
+            "worker-{}",
+            ulid::Ulid::new().to_string().to_ascii_lowercase()
+        ),
+        2,
+    ));
+
     let listener = tokio::net::TcpListener::bind(&config.bind).await?;
     tracing::info!(addr = %listener.local_addr()?, "listening");
     axum::serve(listener, router).await?;

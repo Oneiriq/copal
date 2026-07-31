@@ -13,6 +13,7 @@
 
 pub mod core;
 pub mod delivery;
+pub mod flow;
 
 use surql::schema::{generate_table_sql, TableDefinition};
 use surql::types::reserved::check_reserved_word;
@@ -21,6 +22,7 @@ use surql::types::reserved::check_reserved_word;
 pub fn tables() -> Vec<TableDefinition> {
     let mut tables = core::tables();
     tables.extend(delivery::tables());
+    tables.extend(flow::tables());
     tables
 }
 

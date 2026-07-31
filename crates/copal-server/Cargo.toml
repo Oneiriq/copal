@@ -13,6 +13,7 @@ copal-core = { workspace = true }
 copal-store = { workspace = true }
 copal-blob = { workspace = true }
 copal-sign = { workspace = true }
+copal-flow = { workspace = true }
 axum = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

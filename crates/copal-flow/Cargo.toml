@@ -1,0 +1,21 @@
+[package]
+name = "copal-flow"
+description = "Copal durable execution: activity registry and the journaled pipeline engine."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+copal-core = { workspace = true }
+copal-store = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true }
+ulid = { workspace = true }
+futures = { workspace = true }
+
+[dev-dependencies]
+surrealdb = { version = "3", default-features = false, features = ["kv-mem"] }

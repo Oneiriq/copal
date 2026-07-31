@@ -80,8 +80,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     // Credential management joins the admin surface only when the
     // gateway is configured.
-    let admin_extras =
-        s3_cipher.map(|cipher| copal_server::s3::s3_admin_router(state.clone(), cipher));
+    let admin_extras = s3_cipher
+        .as_ref()
+        .map(|cipher| copal_server::s3::s3_admin_router(state.clone(), cipher.clone()));
+
+    // Webhooks exist only with the blob master key: endpoint signing
+    // secrets are stored sealed under it, same custody rule as the S3
+    // credentials. The dispatcher wakes on the outbox live query.
+    let webhook_cipher = match &config.blob_encryption_key {
+        Some(key) => Some(copal_blob::crypto::BlobCipher::from_hex(key)?),
+        None => {
+            tracing::info!("webhooks disabled: COPAL_BLOB_ENCRYPTION_KEY is unset");
+            None
+        }
+    };
+    let webhook_routes = webhook_cipher
+        .as_ref()
+        .map(|cipher| copal_server::webhooks::webhook_router(state.clone(), cipher.clone()));
+    if let Some(cipher) = webhook_cipher {
+        tokio::spawn(copal_server::webhooks::run_forever(
+            store.clone(),
+            cipher,
+            instance_id.clone(),
+        ));
+    }
 
     // With a dedicated admin bind, the tenant listener never carries
     // admin routes at all; otherwise everything shares one router.
@@ -98,12 +120,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     tracing::error!(error = %err, "admin listener failed");
                 }
             });
-            copal_server::app::api_router_with_cors(state, cors)
+            let mut router = copal_server::app::api_router_with_cors(state, cors);
+            if let Some(webhooks) = webhook_routes {
+                router = router.merge(webhooks);
+            }
+            router
         }
         None => {
             let mut router = copal_server::app::build_router_with_cors(state, cors);
             if let Some(extras) = admin_extras {
                 router = router.merge(extras);
+            }
+            if let Some(webhooks) = webhook_routes {
+                router = router.merge(webhooks);
             }
             router
         }

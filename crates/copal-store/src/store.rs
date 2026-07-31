@@ -93,4 +93,20 @@ impl Store {
     pub(crate) fn client(&self) -> &DatabaseClient {
         &self.client
     }
+
+    /// A live-query wake stream for a table: one unit item per change
+    /// notification. Carries no payload on purpose; consumers read
+    /// their own durable rows on wake, so a dropped or coalesced
+    /// notification costs latency and never data. The stream ends when
+    /// the connection drops; callers restart it.
+    pub async fn watch(
+        &self,
+        table: &str,
+    ) -> copal_core::Result<impl futures::Stream<Item = ()> + Send + Unpin> {
+        use futures::StreamExt as _;
+        let live = surql::connection::LiveQuery::<serde_json::Value>::start(&self.client, table)
+            .await
+            .map_err(|e| CopalError::Store(format!("live query: {e}")))?;
+        Ok(live.map(|_| ()))
+    }
 }

@@ -162,6 +162,38 @@ download: their bytes flow only through issued grants. Listings walk
 the live-path index in key order; `delimiter` collapses shared segments
 into `CommonPrefixes`.
 
+## Events and webhooks
+
+Terminal state transitions (`file.ready`, `file.quarantined`,
+`file.failed`, `file.deleted`) write outbox rows inside the database
+engine, in the same transaction as the state change. Every face
+produces events this way: REST, resumable sessions, the S3 gateway,
+the processing pipeline, and the sweeps, none of which carry eventing
+code. `GET /v1/events` lists a tenant's recent events.
+
+```
+POST   /v1/webhooks               register: { "url": ..., "events": [...] }
+GET    /v1/webhooks               list endpoints (never secrets)
+DELETE /v1/webhooks/{id}          deactivate
+GET    /v1/webhooks/deliveries    delivery attempts and outcomes
+```
+
+The register response carries the signing secret exactly once. Every
+delivery is an HTTP POST with `x-copal-event`, `x-copal-delivery`, and
+`x-copal-signature: sha256=<hex>`, the HMAC of the exact body bytes
+under that secret; verify it before trusting the payload. The `events`
+filter takes dotted actions; empty means everything.
+
+Delivery is at-least-once: dedupe on the event `id` in the body. A
+non-2xx answer retries on exponential backoff (30 seconds doubling,
+capped at one hour) up to eight attempts, then the delivery reads
+`failed` in the deliveries listing. The dispatcher wakes on a live
+query over the outbox, so delivery latency is normally milliseconds.
+
+Webhooks require `COPAL_BLOB_ENCRYPTION_KEY`: signing needs the secret
+back, and Copal stores such secrets sealed or not at all, the same
+custody rule as S3 gateway credentials.
+
 ## Grants
 
 `POST /v1/files/{id}/url` issues a capability for a servable file. The body

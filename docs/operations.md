@@ -60,13 +60,20 @@ GET    /v1/admin/tenants/{tenant}/s3-credentials
 DELETE /v1/admin/tenants/{tenant}/s3-credentials/{access_key_id}
 ```
 
-Rotating the blob master key invalidates sealed credentials (they open
-under the key that sealed them); re-mint gateway credentials as part of
-any master-key rotation.
+Webhook endpoint secrets follow the same rule: stored sealed under the
+master key, returned once at registration, read back only to sign
+deliveries. The webhook surface and its dispatcher exist only when the
+key is configured.
+
+Rotating the blob master key invalidates sealed credentials and
+webhook secrets (they open under the key that sealed them); re-mint
+gateway credentials and re-register webhook endpoints as part of any
+master-key rotation.
 
 Custody and lifecycle actions land in the audit trail: `key.minted`,
 `key.revoked`, `s3credential.minted`, `s3credential.revoked`,
-`grant.issued`, `grant.revoked`, `file.removed`. When
+`webhook.registered`, `webhook.removed`, `grant.issued`,
+`grant.revoked`, `file.removed`. When
 the proxy forwards a client origin (`x-forwarded-for`), the first hop
 is recorded on the row for forensics; it plays no part in
 authorization. Rotate the operator token with zero downtime by moving

@@ -879,6 +879,7 @@ dependencies = [
  "hmac",
  "http-body-util",
  "oneiriq-janus",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -908,6 +909,7 @@ name = "copal-store"
 version = "0.1.0"
 dependencies = [
  "copal-core",
+ "futures",
  "oneiriq-surql",
  "serde",
  "serde_json",

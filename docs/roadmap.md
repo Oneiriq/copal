@@ -55,9 +55,10 @@ shipped first from this tier, then the S3-compatible ingest gateway
 (SigV4, the object plane, ListObjectsV2 with delimiter collapse,
 sealed gateway credentials).
 
-1. Eventing: LIVE SELECT drives webhooks and GraphQL subscriptions.
-   Database-native live queries make real-time file events cheap in a
-   way S3-family competitors cannot copy without changing databases.
+1. Eventing: the engine outbox and signed webhooks shipped (events
+   born in the same transaction as the state change, LIVE SELECT as
+   the dispatcher wake). Remaining: GraphQL subscriptions over the
+   same outbox, which needs the Janus runtime subscription seam.
 2. Derivatives on the existing flow engine: thumbnails and transcodes
    as registered workflows, removing the recurring hosted-transform
    tax that drives the alternatives market.

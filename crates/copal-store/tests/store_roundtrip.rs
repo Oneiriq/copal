@@ -344,3 +344,39 @@ async fn path_keyset_advances_past_the_cursor() {
     let found = file::find_by_path(&store, &t, "c.txt").await.unwrap();
     assert_eq!(found.unwrap().path, "c.txt");
 }
+
+#[tokio::test]
+async fn live_watch_wakes_on_outbox_writes() {
+    // The dispatcher's wake path: a LIVE SELECT on `file_event` yields
+    // when the engine outbox event fires on a terminal transition.
+    use futures::StreamExt as _;
+    let store = fresh_store().await;
+    let t = tenant();
+    let mut wake = store.watch("file_event").await.unwrap();
+
+    let f = create(&store, &t, "watched.txt").await;
+    file::claim_upload(&store, &t, &f.id, "w", 900)
+        .await
+        .unwrap();
+    file::transition(
+        &store,
+        &t,
+        &f.id,
+        FileState::Uploading,
+        FileState::Failed,
+        Default::default(),
+    )
+    .await
+    .unwrap();
+
+    let woke = tokio::time::timeout(std::time::Duration::from_secs(5), wake.next())
+        .await
+        .expect("live notification within five seconds");
+    assert!(woke.is_some(), "stream yielded a wake item");
+
+    let events = copal_store::repo::eventing::undispatched_events(&store, 10)
+        .await
+        .unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].action, "file.failed");
+}

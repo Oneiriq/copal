@@ -95,6 +95,28 @@ fn file_table() -> TableDefinition {
             index("idx_file_expiry", ["expires_at"]),
             index("idx_file_blob", ["blob"]),
         ])
+        // The outbox: terminal-state transitions write a `file_event`
+        // row in the SAME transaction as the state change, so every
+        // face (REST, tus, S3, pipeline, sweeps) produces events with
+        // no eventing code of its own, and no event can be lost
+        // between a commit and a crash.
+        .with_events([event(
+            "file_event_outbox",
+            "$event = 'UPDATE' AND $before.state != $after.state AND $after.state INSIDE \
+             ['ready', 'quarantined', 'failed', 'deleted']",
+            "CREATE file_event CONTENT { \
+             tenant_id: $after.tenant_id, \
+             file: $after.id, \
+             action: 'file.' + $after.state, \
+             payload: { \
+             path: $after.path, \
+             state: $after.state, \
+             content_type: $after.content_type, \
+             digest: $after.digest, \
+             size_bytes: $after.size_bytes, \
+             version: $after.version_count \
+             } }",
+        )])
 }
 
 fn blob_table() -> TableDefinition {

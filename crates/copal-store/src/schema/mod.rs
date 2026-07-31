@@ -14,6 +14,7 @@
 pub mod auth;
 pub mod core;
 pub mod delivery;
+pub mod eventing;
 pub mod flow;
 pub mod tus;
 
@@ -27,6 +28,7 @@ pub fn tables() -> Vec<TableDefinition> {
     tables.extend(flow::tables());
     tables.extend(auth::tables());
     tables.extend(tus::tables());
+    tables.extend(eventing::tables());
     tables
 }
 

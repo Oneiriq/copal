@@ -307,10 +307,14 @@ pub async fn run_pass(
                 match attempt_delivery(store, cipher, http, &delivery, allow_private).await {
                     Ok(status) => {
                         report.delivered += 1;
+                        crate::metrics::incr(
+                            "copal_webhook_deliveries_total{outcome=\"delivered\"}",
+                        );
                         tracing::debug!(status, delivery = %delivery.delivery_id(), "delivered");
                     }
                     Err(AttemptOutcome::Retry(status)) => {
                         report.retried += 1;
+                        crate::metrics::incr("copal_webhook_deliveries_total{outcome=\"retry\"}");
                         let _ = eventing::record_attempt_failure(
                             store,
                             &delivery.delivery_id(),
@@ -321,6 +325,7 @@ pub async fn run_pass(
                     }
                     Err(AttemptOutcome::Terminal(reason)) => {
                         report.failed += 1;
+                        crate::metrics::incr("copal_webhook_deliveries_total{outcome=\"failed\"}");
                         tracing::warn!(reason, delivery = %delivery.delivery_id(), "terminal");
                         // Jump straight past the cap: the endpoint or
                         // event is gone, retrying cannot help.

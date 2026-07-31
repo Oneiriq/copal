@@ -90,11 +90,13 @@ From the July 2026 audit, in the order they matter:
    carry them. Remaining: webhooks, usage, and edge tokens (each
    needs a resource shape the contract can express), then
    subscriptions over the outbox via the Janus runtime seam.
-6. Metrics and traces, then cached usage counters for large tenants.
+6. Metrics shipped: a guarded Prometheus endpoint over process
+   counters. Remaining: OTel traces, and cached usage counters for
+   tenants with enough files that the aggregate stops being cheap.
 
 ## Tier 4: platform depth
 
-1. Metrics and traces (`/metrics`, OTel spans).
+1. OTel spans (the `/metrics` endpoint shipped).
 2. Key scopes (read-only, upload-only) and key expiry.
 3. Retention policies, legal hold, WORM for the compliance tier.
 4. SDK publishing pipelines for the four generated clients.

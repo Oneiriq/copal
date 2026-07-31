@@ -10,6 +10,7 @@ pub mod contract;
 pub mod edge;
 pub mod error;
 pub mod graphql;
+pub mod metrics;
 pub mod netguard;
 pub mod pipeline;
 pub mod s3;

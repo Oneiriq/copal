@@ -117,6 +117,9 @@ pub async fn run_pass<B: BlobStore>(
         Err(err) => tracing::warn!(error = %err, "gc sweep failed"),
     }
 
+    crate::metrics::add("copal_blobs_collected_total", report.blobs_collected);
+    crate::metrics::add("copal_reaped_uploads_total", report.reaped_uploads);
+    crate::metrics::add("copal_reaped_runs_total", report.reaped_runs);
     report
 }
 

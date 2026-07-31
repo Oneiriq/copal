@@ -207,6 +207,26 @@ SurrealDB import, then start the server (schema application is
 idempotent). Run one maintenance pass afterward; derived refcounts
 recompute on their own.
 
+## Metrics
+
+`GET /metrics` on the admin surface serves Prometheus text, guarded by
+the admin token: request volumes and error rates are operator data.
+Deployments that split `COPAL_ADMIN_BIND` keep the scrape off the
+tenant-facing network along with key custody.
+
+| Series | Meaning |
+| --- | --- |
+| `copal_http_responses_total{class}` | Responses by status class, counted at the outermost layer, so timeouts and refusals are included. |
+| `copal_http_request_duration_seconds_sum` / `_count` | Total served time and request count; their ratio is the mean. Quantiles would require buckets the process does not compute, so none are claimed. |
+| `copal_uploads_completed_total`, `copal_uploaded_bytes_total` | Content finished through the shared finalize path, whichever face carried it. |
+| `copal_quota_refusals_total` | Uploads refused for exceeding a tenant ceiling. |
+| `copal_webhook_deliveries_total{outcome}` | Delivery attempts by outcome: delivered, retry, failed. |
+| `copal_blobs_collected_total`, `copal_reaped_uploads_total`, `copal_reaped_runs_total` | Sweep work, accumulated across passes. |
+
+Counters are process-local and reset on restart, which is what
+Prometheus expects; the database holds the durable truth for
+everything they summarize.
+
 ## Health endpoints
 
 `/healthz` is liveness: the process answers. `/readyz` is readiness:

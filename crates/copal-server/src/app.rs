@@ -177,6 +177,7 @@ impl<B: BlobStore> AppState<B> {
         let (used, _) = copal_store::repo::tenant::usage(&self.store, tenant).await?;
         let remaining = (quota - used).max(0) as u64;
         if remaining == 0 {
+            crate::metrics::incr("copal_quota_refusals_total");
             return Err(CopalError::conflict(format!(
                 "storage quota reached: {used} of {quota} bytes used",
             ))
@@ -184,6 +185,7 @@ impl<B: BlobStore> AppState<B> {
         }
         if let Some(declared) = declared {
             if declared > remaining {
+                crate::metrics::incr("copal_quota_refusals_total");
                 return Err(CopalError::conflict(format!(
                     "upload of {declared} bytes exceeds remaining quota of {remaining} bytes",
                 ))
@@ -206,6 +208,16 @@ pub fn build_router<B: BlobStore + 'static>(state: AppState<B>) -> Router {
     build_router_with_cors(state, None)
 }
 
+/// Count every served response and its latency. One layer at the
+/// outermost edge, so what it measures is what clients experienced,
+/// timeouts and refusals included.
+async fn measure(request: Request, next: axum::middleware::Next) -> Response {
+    let started = std::time::Instant::now();
+    let response = next.run(request).await;
+    crate::metrics::observe_request(response.status().as_u16(), started.elapsed().as_secs_f64());
+    response
+}
+
 /// [`build_router`] with an optional CORS allowlist for browser
 /// clients. `None` attaches no CORS layer at all: closed by default.
 pub fn build_router_with_cors<B: BlobStore + 'static>(
@@ -216,7 +228,7 @@ pub fn build_router_with_cors<B: BlobStore + 'static>(
     if let Some(origins) = cors_origins {
         router = router.layer(cors_layer(origins));
     }
-    router
+    router.layer(axum::middleware::from_fn(measure))
 }
 
 /// [`api_router`] with the same optional CORS allowlist, for the
@@ -229,7 +241,7 @@ pub fn api_router_with_cors<B: BlobStore + 'static>(
     if let Some(origins) = cors_origins {
         router = router.layer(cors_layer(origins));
     }
-    router
+    router.layer(axum::middleware::from_fn(measure))
 }
 
 /// The strict allowlist CORS layer for configured origins.
@@ -373,7 +385,25 @@ pub fn admin_router<B: BlobStore + 'static>(state: AppState<B>) -> Router {
                 .get(get_quota::<B>)
                 .delete(clear_quota::<B>),
         )
+        .route("/metrics", get(metrics_scrape::<B>))
         .with_state(state)
+}
+
+/// Prometheus scrape. Guarded by the admin token like everything else
+/// on this surface: request volumes and error rates are operator
+/// data, not public.
+async fn metrics_scrape<B: BlobStore>(
+    State(state): State<AppState<B>>,
+    headers: HeaderMap,
+) -> Result<([(axum::http::HeaderName, &'static str); 1], String), ApiError> {
+    crate::auth::require_admin(&state, &headers)?;
+    Ok((
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; version=0.0.4",
+        )],
+        crate::metrics::render(),
+    ))
 }
 
 /// A tenant's own usage and ceiling.
@@ -1156,6 +1186,8 @@ pub(crate) async fn finalize_new_content<B: BlobStore>(
     size_bytes: u64,
     storage_path: &str,
 ) -> Result<copal_core::FileRecord, ApiError> {
+    crate::metrics::incr("copal_uploads_completed_total");
+    crate::metrics::add("copal_uploaded_bytes_total", size_bytes);
     blob_repo::record_sighting(&state.store, digest, size_bytes, residency, storage_path).await?;
 
     // One CAS finishes the upload and mints the version number; the

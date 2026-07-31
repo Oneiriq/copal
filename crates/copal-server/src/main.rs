@@ -1,7 +1,7 @@
 //! Copal server binary.
 
 use copal_blob::FsBlobStore;
-use copal_server::{build_router, AppState, Config};
+use copal_server::{AppState, Config};
 use copal_store::Store;
 
 #[tokio::main]
@@ -40,9 +40,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     state.limits = copal_server::app::Limits {
         max_upload_bytes: config.max_upload_bytes,
         upload_lease_secs: config.upload_lease_secs,
+        request_timeout_secs: config.request_timeout_secs,
+        transfer_timeout_secs: config.transfer_timeout_secs,
     };
     tracing::info!(instance = %state.instance_id, "upload-claim owner id");
     let instance_id = state.instance_id.clone();
+    let cors = config.cors_origins.as_deref();
     // With a dedicated admin bind, the tenant listener never carries
     // admin routes at all; otherwise everything shares one router.
     let router = match &config.admin_bind {
@@ -55,9 +58,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     tracing::error!(error = %err, "admin listener failed");
                 }
             });
-            copal_server::app::api_router(state)
+            copal_server::app::api_router_with_cors(state, cors)
         }
-        None => build_router(state),
+        None => copal_server::app::build_router_with_cors(state, cors),
     };
 
     // Maintenance: claim reaping, staging TTL, and content GC share one
@@ -83,6 +86,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let listener = tokio::net::TcpListener::bind(&config.bind).await?;
     tracing::info!(addr = %listener.local_addr()?, "listening");
-    axum::serve(listener, router).await?;
+    // Drain in-flight requests on SIGTERM or ctrl-c. Background tasks
+    // stop with the process; their leases make that safe.
+    axum::serve(listener, router)
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
+    tracing::info!("drained; goodbye");
     Ok(())
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut sig) => {
+                sig.recv().await;
+            }
+            Err(_) => std::future::pending::<()>().await,
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        () = ctrl_c => {},
+        () = terminate => {},
+    }
+    tracing::info!("shutdown signal received; draining");
 }

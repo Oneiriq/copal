@@ -98,6 +98,10 @@ async fn re_upload_mints_versions_and_history_stays_readable() {
     assert_eq!(listed[0]["number"], 2);
     assert_eq!(listed[1]["number"], 1);
     assert_ne!(listed[0]["digest"], listed[1]["digest"]);
+    assert!(
+        listed[0]["metadata_snapshot"].is_object(),
+        "each version serves the metadata as it stood: {listed:?}",
+    );
     assert!(body["next_before"].is_null(), "short page has no cursor");
 
     // Bounded pages walk the history without overlap.
@@ -139,6 +143,7 @@ async fn failed_re_upload_keeps_serving_the_previous_version() {
     state.limits = Limits {
         max_upload_bytes: 32,
         upload_lease_secs: 900,
+        ..Limits::default()
     };
     let router = build_router(state);
 
@@ -172,8 +177,8 @@ async fn failed_re_upload_keeps_serving_the_previous_version() {
         "failed"
     );
 
-    // ...and the previous version KEEPS SERVING: servability is
-    // digest-based, not state-based.
+    // ...and the previous version KEEPS SERVING: servability follows
+    // the digest.
     let (status, bytes) = get_bytes(&router, &format!("/v1/files/{id}/content")).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(&bytes[..], b"good content");

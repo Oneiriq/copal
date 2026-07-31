@@ -266,6 +266,7 @@ async fn oversized_uploads_are_413_and_retryable() {
     let (router, _dir) = test_router_with(Limits {
         max_upload_bytes: 16,
         upload_lease_secs: 900,
+        ..Limits::default()
     })
     .await;
 
@@ -919,4 +920,143 @@ async fn ascending_file_listing_walks_with_its_own_cursors() {
         vec!["w1.txt", "w2.txt", "w3.txt"],
         "ascending walk yields oldest-first exactly once each",
     );
+}
+
+#[tokio::test]
+async fn hardening_surfaces_answer_correctly() {
+    // Readiness probes both planes.
+    let (router, _dir) = test_router().await;
+    let response = router
+        .clone()
+        .oneshot(req("GET", "/readyz", None, Body::empty()))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_body(response).await;
+    assert_eq!(body["store"], "ok");
+    assert_eq!(body["blobs"], "ok");
+
+    // A zero-second request deadline times ordinary routes out with
+    // 408, proving the layer sits on the router.
+    let (slow_router, _dir2) = test_router_with(Limits {
+        request_timeout_secs: 0,
+        ..Limits::default()
+    })
+    .await;
+    let response = slow_router
+        .clone()
+        .oneshot(req("GET", "/v1/files", Some("acme"), Body::empty()))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::REQUEST_TIMEOUT);
+
+    // CORS: an allowlisted origin gets the headers, and only that
+    // origin does. Unconfigured routers send none at all.
+    let store = Store::connect(StoreConfig::memory()).await.unwrap();
+    let dir3 = tempfile::tempdir().unwrap();
+    let blobs = FsBlobStore::open(dir3.path().to_str().unwrap()).unwrap();
+    let state = AppState::new(store, blobs);
+    let allowed = ["https://app.example.com".to_owned()];
+    let cors_router = copal_server::app::build_router_with_cors(state, Some(&allowed));
+
+    let mut preflight = req("OPTIONS", "/v1/files", None, Body::empty());
+    preflight
+        .headers_mut()
+        .insert("origin", "https://app.example.com".parse().unwrap());
+    preflight
+        .headers_mut()
+        .insert("access-control-request-method", "GET".parse().unwrap());
+    let response = cors_router.clone().oneshot(preflight).await.unwrap();
+    assert_eq!(
+        response.headers()["access-control-allow-origin"],
+        "https://app.example.com",
+    );
+
+    let mut hostile = req("OPTIONS", "/v1/files", None, Body::empty());
+    hostile
+        .headers_mut()
+        .insert("origin", "https://evil.example.com".parse().unwrap());
+    hostile
+        .headers_mut()
+        .insert("access-control-request-method", "GET".parse().unwrap());
+    let response = cors_router.clone().oneshot(hostile).await.unwrap();
+    assert!(
+        response
+            .headers()
+            .get("access-control-allow-origin")
+            .is_none(),
+        "unlisted origins get no CORS grant",
+    );
+
+    let mut on_plain = req("GET", "/healthz", None, Body::empty());
+    on_plain
+        .headers_mut()
+        .insert("origin", "https://app.example.com".parse().unwrap());
+    let response = router.clone().oneshot(on_plain).await.unwrap();
+    assert!(
+        response
+            .headers()
+            .get("access-control-allow-origin")
+            .is_none(),
+        "an unconfigured router carries no CORS layer",
+    );
+}
+
+#[tokio::test]
+async fn upload_digest_assertion_verifies_intent() {
+    let (router, _dir) = test_router().await;
+    let payload = b"assert me";
+    let true_digest = {
+        use sha2::{Digest as _, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(payload);
+        hex::encode(hasher.finalize())
+    };
+
+    let create = req(
+        "POST",
+        "/v1/files",
+        Some("acme"),
+        Body::from(json!({"path": "asserted.txt"}).to_string()),
+    );
+    let response = router.clone().oneshot(create).await.unwrap();
+    let id = json_body(response).await["id"].as_str().unwrap().to_owned();
+
+    // A wrong declared digest fails the upload and leaves the record
+    // retryable.
+    let mut wrong = req(
+        "PUT",
+        &format!("/v1/files/{id}/content"),
+        Some("acme"),
+        Body::from(&payload[..]),
+    );
+    wrong
+        .headers_mut()
+        .insert("x-copal-digest", "a".repeat(64).parse().unwrap());
+    let response = router.clone().oneshot(wrong).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let meta = req(
+        "GET",
+        &format!("/v1/files/{id}"),
+        Some("acme"),
+        Body::empty(),
+    );
+    assert_eq!(
+        json_body(router.clone().oneshot(meta).await.unwrap()).await["state"],
+        "failed"
+    );
+
+    // The right digest uploads cleanly.
+    let mut right = req(
+        "PUT",
+        &format!("/v1/files/{id}/content"),
+        Some("acme"),
+        Body::from(&payload[..]),
+    );
+    right
+        .headers_mut()
+        .insert("x-copal-digest", true_digest.parse().unwrap());
+    let response = router.clone().oneshot(right).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(json_body(response).await["state"], "ready");
 }

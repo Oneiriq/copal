@@ -23,6 +23,9 @@ Every value comes from the environment. Defaults target local development.
 | `COPAL_GC_GRACE_SECS` | `86400` | A blob must stay unreferenced this long before its bytes go. |
 | `COPAL_GC_BATCH` | `1000` | Blob rows per GC batch query. The pass loops batches until the population is covered. |
 | `COPAL_SCAN_STALE_SECS` | `3600` | Files stuck in `scanning` with no live run are failed after this age. |
+| `COPAL_REQUEST_TIMEOUT_SECS` | `30` | Deadline for ordinary requests (408 past it). |
+| `COPAL_TRANSFER_TIMEOUT_SECS` | `3600` | Deadline for the byte routes; ends slow-drip connections. |
+| `COPAL_CORS_ORIGINS` | unset | Comma-separated browser-origin allowlist. Unset attaches no CORS layer at all. |
 
 ## Key custody
 
@@ -74,6 +77,31 @@ window aborts the collection and the fresh bytes stay.
 3. Orphans with no run at all (a crash between upload completion and
    enqueue) are failed automatically by the stale-scan sweep. A failed file
    with a digest keeps serving its previous content and accepts a re-upload.
+
+## Backup and restore
+
+Back up the blob plane first, then the metadata plane. That order
+makes every metadata reference in the backup point at bytes the
+backup already holds; anything uploaded between the two passes is
+simply absent from both. The reverse order can capture records whose
+bytes are missing.
+
+The GC grace period (`COPAL_GC_GRACE_SECS`, default one day) covers
+the other direction: a blob unreferenced at backup time still has its
+bytes for the full grace window, so a restore inside that window
+never resurrects a record whose content is gone.
+
+Restore in the same order: bytes into the blob root, then the
+SurrealDB import, then start the server (schema application is
+idempotent). Run one maintenance pass afterward; derived refcounts
+recompute on their own.
+
+## Health endpoints
+
+`/healthz` is liveness: the process answers. `/readyz` is readiness:
+one store round trip plus one blob-plane call must both succeed, so
+orchestrators gate traffic on real dependencies. The container image
+health check uses `/readyz`.
 
 ## Deployment security posture
 

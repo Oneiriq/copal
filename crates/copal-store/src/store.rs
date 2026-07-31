@@ -79,6 +79,16 @@ impl Store {
         Ok(())
     }
 
+    /// One cheap round trip proving the metadata plane answers.
+    /// Readiness probes call this; it carries no schema assumptions.
+    pub async fn ping(&self) -> copal_core::Result<()> {
+        self.client
+            .query("RETURN 1;")
+            .await
+            .map_err(|e| CopalError::Store(format!("ping: {e}")))?;
+        Ok(())
+    }
+
     /// Borrow the underlying client for repository functions.
     pub(crate) fn client(&self) -> &DatabaseClient {
         &self.client

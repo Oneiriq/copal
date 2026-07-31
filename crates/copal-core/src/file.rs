@@ -102,6 +102,9 @@ pub struct FileVersion {
     pub content_type: String,
     pub size_bytes: u64,
     pub digest: ContentDigest,
+    /// The file's metadata as it stood when this version completed.
+    #[serde(default)]
+    pub metadata_snapshot: serde_json::Value,
     pub created_by: String,
     pub created_at: String,
 }

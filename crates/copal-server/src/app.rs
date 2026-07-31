@@ -31,6 +31,12 @@ use crate::error::ApiError;
 pub struct Limits {
     pub max_upload_bytes: usize,
     pub upload_lease_secs: u32,
+    /// Deadline for ordinary (non-streaming) requests.
+    pub request_timeout_secs: u64,
+    /// Deadline for the byte routes: uploads, downloads, redemptions.
+    /// Generous by default; its job is ending slow-drip connections,
+    /// never legitimate transfers.
+    pub transfer_timeout_secs: u64,
 }
 
 impl Default for Limits {
@@ -38,6 +44,8 @@ impl Default for Limits {
         Self {
             max_upload_bytes: 1 << 30,
             upload_lease_secs: 900,
+            request_timeout_secs: 30,
+            transfer_timeout_secs: 3_600,
         }
     }
 }
@@ -94,41 +102,116 @@ impl<B: BlobStore> AppState<B> {
 /// upload path consumes the raw request stream. JSON routes keep axum's
 /// small built-in default limit.
 pub fn build_router<B: BlobStore + 'static>(state: AppState<B>) -> Router {
-    api_router(state.clone()).merge(admin_router(state))
+    build_router_with_cors(state, None)
+}
+
+/// [`build_router`] with an optional CORS allowlist for browser
+/// clients. `None` attaches no CORS layer at all: closed by default.
+pub fn build_router_with_cors<B: BlobStore + 'static>(
+    state: AppState<B>,
+    cors_origins: Option<&[String]>,
+) -> Router {
+    let mut router = api_router(state.clone()).merge(admin_router(state));
+    if let Some(origins) = cors_origins {
+        router = router.layer(cors_layer(origins));
+    }
+    router
+}
+
+/// [`api_router`] with the same optional CORS allowlist, for the
+/// split-listener deployment shape.
+pub fn api_router_with_cors<B: BlobStore + 'static>(
+    state: AppState<B>,
+    cors_origins: Option<&[String]>,
+) -> Router {
+    let mut router = api_router(state);
+    if let Some(origins) = cors_origins {
+        router = router.layer(cors_layer(origins));
+    }
+    router
+}
+
+/// The strict allowlist CORS layer for configured origins.
+fn cors_layer(origins: &[String]) -> tower_http::cors::CorsLayer {
+    use axum::http::{HeaderName, HeaderValue, Method};
+    let origins: Vec<HeaderValue> = origins.iter().filter_map(|o| o.parse().ok()).collect();
+    tower_http::cors::CorsLayer::new()
+        .allow_origin(origins)
+        .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE])
+        .allow_headers([
+            axum::http::header::AUTHORIZATION,
+            axum::http::header::CONTENT_TYPE,
+            axum::http::header::IF_NONE_MATCH,
+            axum::http::header::RANGE,
+            HeaderName::from_static("x-copal-tenant"),
+            HeaderName::from_static("x-copal-digest"),
+        ])
+        .expose_headers([
+            axum::http::header::ETAG,
+            axum::http::header::CONTENT_RANGE,
+            axum::http::header::ACCEPT_RANGES,
+            axum::http::header::CONTENT_DISPOSITION,
+        ])
+        .max_age(std::time::Duration::from_secs(3600))
 }
 
 /// The tenant-facing API: files, runs, grants, and both faces.
+///
+/// Two timeout classes: byte routes get the transfer deadline, every
+/// other route gets the request deadline. Both exist to end slow-drip
+/// connections, and a timed-out request answers 408.
 pub fn api_router<B: BlobStore + 'static>(state: AppState<B>) -> Router {
+    let request_timeout = state.limits.request_timeout_secs;
+    let request_deadline = tower_http::timeout::TimeoutLayer::with_status_code(
+        StatusCode::REQUEST_TIMEOUT,
+        std::time::Duration::from_secs(request_timeout),
+    );
+    let transfer_deadline = tower_http::timeout::TimeoutLayer::with_status_code(
+        StatusCode::REQUEST_TIMEOUT,
+        std::time::Duration::from_secs(state.limits.transfer_timeout_secs),
+    );
+
+    let transfer_routes = Router::new()
+        .route(
+            "/v1/files/{id}/content",
+            put(upload_content::<B>).get(download_content::<B>),
+        )
+        .route(
+            "/v1/files/{id}/versions/{number}/content",
+            get(download_version::<B>),
+        )
+        .route(
+            "/v1/grants/{grant_ref}",
+            get(redeem_grant::<B>).delete(revoke_grant::<B>),
+        )
+        .layer(transfer_deadline)
+        .with_state(state.clone());
+
     Router::new()
         .route("/healthz", get(healthz))
+        .route("/readyz", get(readyz::<B>))
         .route("/v1/files", post(create_file::<B>).get(list_files::<B>))
         .route(
             "/v1/files/{id}",
             get(get_file::<B>).delete(delete_file::<B>),
         )
-        .route(
-            "/v1/files/{id}/content",
-            put(upload_content::<B>).get(download_content::<B>),
-        )
         .route("/v1/runs", post(start_run::<B>).get(list_runs::<B>))
         .route("/v1/runs/{id}", get(get_run::<B>))
         .route("/v1/runs/{id}/retry", post(retry_run::<B>))
         .route("/v1/files/{id}/versions", get(list_versions::<B>))
-        .route(
-            "/v1/files/{id}/versions/{number}/content",
-            get(download_version::<B>),
-        )
         .route("/v1/files/{id}/url", post(issue_grant::<B>))
-        // One pattern, two readings: GET takes the full bearer token,
-        // DELETE takes the bare grant id (with tenant auth).
-        .route(
-            "/v1/grants/{grant_ref}",
-            get(redeem_grant::<B>).delete(revoke_grant::<B>),
-        )
+        .layer(request_deadline)
         .with_state(state.clone())
+        .merge(transfer_routes)
         // The second face: /graphql, served by Janus from the same
-        // contract, dispatching into the same repositories.
-        .merge(crate::graphql::graphql_router(state))
+        // contract, dispatching into the same repositories. Queries are
+        // ordinary requests, so the request deadline applies.
+        .merge(crate::graphql::graphql_router(state).layer(
+            tower_http::timeout::TimeoutLayer::with_status_code(
+                StatusCode::REQUEST_TIMEOUT,
+                std::time::Duration::from_secs(request_timeout),
+            ),
+        ))
 }
 
 /// The operator surface alone: key custody and the audit trail,
@@ -152,6 +235,19 @@ pub fn admin_router<B: BlobStore + 'static>(state: AppState<B>) -> Router {
 
 async fn healthz() -> &'static str {
     "ok"
+}
+
+/// Readiness: both planes must answer. Liveness stays `/healthz`.
+async fn readyz<B: BlobStore>(
+    State(state): State<AppState<B>>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    state.store.ping().await?;
+    // Any digest works: an absent object still proves the plane
+    // answers, and errors surface as 500.
+    let probe = copal_core::ContentDigest::parse("0".repeat(64).as_str())
+        .map_err(|e| ApiError(CopalError::Store(e.to_string())))?;
+    state.blobs.exists(&probe).await?;
+    Ok(Json(json!({ "store": "ok", "blobs": "ok" })))
 }
 
 /// Request body for minting an API key.
@@ -235,15 +331,24 @@ async fn revoke_key<B: BlobStore>(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Audit-listing query parameters.
+#[derive(Debug, Deserialize)]
+struct AuditListQuery {
+    #[serde(default)]
+    limit: Option<i64>,
+}
+
 /// A tenant's audit trail, newest first (admin surface).
 async fn list_audit<B: BlobStore>(
     State(state): State<AppState<B>>,
     headers: HeaderMap,
     Path(tenant): Path<String>,
+    axum::extract::Query(params): axum::extract::Query<AuditListQuery>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     crate::auth::require_admin(&state, &headers)?;
     let tenant = TenantId::parse(&tenant)?;
-    let events = copal_store::repo::auth::list_audit(&state.store, &tenant, 200).await?;
+    let limit = params.limit.unwrap_or(200).clamp(1, 1_000);
+    let events = copal_store::repo::auth::list_audit(&state.store, &tenant, limit).await?;
     Ok(Json(json!({ "items": events })))
 }
 
@@ -431,6 +536,20 @@ async fn upload_content<B: BlobStore>(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let tenant = crate::auth::authenticate(&state, request.headers()).await?;
     let id = parse_id(&id)?;
+    // Optional integrity assertion: the client declares the digest it
+    // intends to send, and a mismatch fails the upload after the
+    // bytes are hashed. The mistargeted content is inert (content
+    // addressing stores it under its TRUE digest; nothing links it,
+    // so GC reclaims it) and the record stays retryable.
+    let expected_digest = request
+        .headers()
+        .get("x-copal-digest")
+        .and_then(|v| v.to_str().ok())
+        .map(|raw| {
+            copal_core::ContentDigest::parse(raw)
+                .map_err(|_| CopalError::validation("malformed x-copal-digest header"))
+        })
+        .transpose()?;
 
     file_repo::claim_upload(
         &state.store,
@@ -495,6 +614,27 @@ async fn upload_content<B: BlobStore>(
         size_bytes,
         storage_path,
     } = stored;
+
+    if let Some(expected) = expected_digest {
+        if expected != digest {
+            // The record returns to retryable; the stray object sits
+            // unlinked until GC collects it.
+            let _ = file_repo::transition(
+                &state.store,
+                &tenant,
+                &id,
+                FileState::Uploading,
+                FileState::Failed,
+                Default::default(),
+            )
+            .await;
+            return Err(CopalError::validation(format!(
+                "digest mismatch: client declared {expected}, content hashed to {digest}",
+            ))
+            .into());
+        }
+    }
+
     blob_repo::record_sighting(&state.store, &digest, size_bytes, "local", &storage_path).await?;
 
     // One CAS finishes the upload and mints the version number; the

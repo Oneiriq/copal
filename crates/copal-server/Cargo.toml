@@ -33,8 +33,10 @@ oneiriq-janus = { git = "ssh://git@github.com/Oneiriq/janus.git", branch = "main
     "graphql",
 ] }
 async-graphql = { version = "7", features = ["dynamic-schema"] }
+tower-http = { version = "0.6", features = ["timeout", "cors"] }
 
 [dev-dependencies]
+sha2 = { workspace = true }
 tempfile = { workspace = true }
 ulid = { workspace = true }
 tower = { version = "0.5", features = ["util"] }

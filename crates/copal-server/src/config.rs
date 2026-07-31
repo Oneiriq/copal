@@ -30,6 +30,12 @@ pub struct Config {
     pub enforce_type_match: bool,
     /// Request authentication mode and the admin gate.
     pub auth: crate::auth::AuthConfig,
+    /// Deadline for ordinary requests.
+    pub request_timeout_secs: u64,
+    /// Deadline for streaming byte routes.
+    pub transfer_timeout_secs: u64,
+    /// CORS allowlist origins; unset means no CORS layer at all.
+    pub cors_origins: Option<Vec<String>>,
 }
 
 fn env_or(key: &str, default: &str) -> String {
@@ -76,6 +82,14 @@ impl Config {
                     .unwrap_or_default(),
                 admin_token: std::env::var("COPAL_ADMIN_TOKEN").ok(),
             },
+            request_timeout_secs: env_parse("COPAL_REQUEST_TIMEOUT_SECS", 30),
+            transfer_timeout_secs: env_parse("COPAL_TRANSFER_TIMEOUT_SECS", 3_600),
+            cors_origins: std::env::var("COPAL_CORS_ORIGINS").ok().map(|raw| {
+                raw.split(',')
+                    .map(|o| o.trim().to_owned())
+                    .filter(|o| !o.is_empty())
+                    .collect()
+            }),
             sweeps: crate::sweeps::SweepConfig {
                 interval_secs: env_parse("COPAL_SWEEP_INTERVAL_SECS", 60),
                 staging_ttl_secs: env_parse("COPAL_STAGING_TTL_SECS", 86_400),

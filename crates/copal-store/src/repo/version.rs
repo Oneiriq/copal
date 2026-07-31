@@ -42,6 +42,8 @@ struct VersionRow {
     content_type: String,
     size_bytes: u64,
     digest: String,
+    #[serde(default)]
+    metadata_snapshot: serde_json::Value,
     created_by: String,
     created_at: String,
 }
@@ -53,6 +55,7 @@ impl VersionRow {
             content_type: self.content_type,
             size_bytes: self.size_bytes,
             digest: ContentDigest::parse(self.digest)?,
+            metadata_snapshot: self.metadata_snapshot,
             created_by: self.created_by,
             created_at: self.created_at,
         })

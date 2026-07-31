@@ -58,5 +58,7 @@ jobs:
 
       - name: Dependency audit
         run: |
-          command -v cargo-audit >/dev/null 2>&1 || cargo install --locked cargo-audit
+          if ! command -v cargo-audit >/dev/null 2>&1; then
+            curl -fsSL "https://github.com/rustsec/rustsec/releases/download/cargo-audit%2Fv0.22.2/cargo-audit-x86_64-unknown-linux-musl-v0.22.2.tgz"               | tar -xz --strip-components=1 -C "$HOME/.cargo/bin"
+          fi
           cargo audit

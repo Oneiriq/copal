@@ -155,6 +155,37 @@ impl<B: BlobStore> AppState<B> {
         let name = record.blob_residency.as_deref().unwrap_or("local");
         Ok(self.residencies.get(name)?.clone())
     }
+
+    /// Enforce the tenant quota before bytes move: refuses outright
+    /// when usage already meets the ceiling or a declared size would
+    /// cross it, and returns the remaining headroom so streaming
+    /// ceilings can clamp to it. `None` means unlimited.
+    pub async fn quota_headroom(
+        &self,
+        tenant: &TenantId,
+        declared: Option<u64>,
+    ) -> Result<Option<u64>, ApiError> {
+        let Some(quota) = copal_store::repo::tenant::get_quota(&self.store, tenant).await? else {
+            return Ok(None);
+        };
+        let (used, _) = copal_store::repo::tenant::usage(&self.store, tenant).await?;
+        let remaining = (quota - used).max(0) as u64;
+        if remaining == 0 {
+            return Err(CopalError::conflict(format!(
+                "storage quota reached: {used} of {quota} bytes used",
+            ))
+            .into());
+        }
+        if let Some(declared) = declared {
+            if declared > remaining {
+                return Err(CopalError::conflict(format!(
+                    "upload of {declared} bytes exceeds remaining quota of {remaining} bytes",
+                ))
+                .into());
+            }
+        }
+        Ok(Some(remaining))
+    }
 }
 
 /// Build the full router (tenant API plus admin surface) over any
@@ -272,6 +303,7 @@ pub fn api_router<B: BlobStore + 'static>(state: AppState<B>) -> Router {
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz::<B>))
         .route("/v1/files", post(create_file::<B>).get(list_files::<B>))
+        .route("/v1/usage", get(tenant_usage::<B>))
         .route(
             "/v1/files/{id}",
             get(get_file::<B>).delete(delete_file::<B>),
@@ -326,7 +358,98 @@ pub fn admin_router<B: BlobStore + 'static>(state: AppState<B>) -> Router {
             "/v1/admin/tenants/{tenant}/storage",
             put(assign_storage::<B>).get(get_storage::<B>),
         )
+        .route(
+            "/v1/admin/tenants/{tenant}/quota",
+            put(set_quota::<B>)
+                .get(get_quota::<B>)
+                .delete(clear_quota::<B>),
+        )
         .with_state(state)
+}
+
+/// A tenant's own usage and ceiling.
+async fn tenant_usage<B: BlobStore>(
+    State(state): State<AppState<B>>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let tenant = crate::auth::authenticate(&state, &headers).await?;
+    let (bytes, files) = copal_store::repo::tenant::usage(&state.store, &tenant).await?;
+    let quota = copal_store::repo::tenant::get_quota(&state.store, &tenant).await?;
+    Ok(Json(json!({
+        "bytes": bytes,
+        "files": files,
+        "quota_bytes": quota,
+    })))
+}
+
+/// Quota assignment body.
+#[derive(Debug, Deserialize)]
+struct SetQuotaRequest {
+    max_bytes: i64,
+}
+
+/// Set a tenant's storage ceiling.
+async fn set_quota<B: BlobStore>(
+    State(state): State<AppState<B>>,
+    headers: HeaderMap,
+    Path(tenant): Path<String>,
+    Json(request): Json<SetQuotaRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    crate::auth::require_admin(&state, &headers)?;
+    let tenant = TenantId::parse(&tenant)?;
+    copal_store::repo::tenant::set_quota(&state.store, &tenant, request.max_bytes).await?;
+    copal_store::repo::auth::record_audit(
+        &state.store,
+        &tenant,
+        "admin",
+        "tenant.quota_set",
+        &request.max_bytes.to_string(),
+        forwarded_origin(&headers).as_deref(),
+        None,
+    )
+    .await?;
+    Ok(Json(json!({ "max_bytes": request.max_bytes })))
+}
+
+/// A tenant's quota and current usage, admin view.
+async fn get_quota<B: BlobStore>(
+    State(state): State<AppState<B>>,
+    headers: HeaderMap,
+    Path(tenant): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    crate::auth::require_admin(&state, &headers)?;
+    let tenant = TenantId::parse(&tenant)?;
+    let quota = copal_store::repo::tenant::get_quota(&state.store, &tenant).await?;
+    let (bytes, files) = copal_store::repo::tenant::usage(&state.store, &tenant).await?;
+    Ok(Json(json!({
+        "max_bytes": quota,
+        "bytes": bytes,
+        "files": files,
+    })))
+}
+
+/// Return a tenant to unlimited; no quota reads as 404.
+async fn clear_quota<B: BlobStore>(
+    State(state): State<AppState<B>>,
+    headers: HeaderMap,
+    Path(tenant): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    crate::auth::require_admin(&state, &headers)?;
+    let tenant = TenantId::parse(&tenant)?;
+    if !copal_store::repo::tenant::clear_quota(&state.store, &tenant).await? {
+        return Err(CopalError::not_found("no quota is set").into());
+    }
+    copal_store::repo::auth::record_audit(
+        &state.store,
+        &tenant,
+        "admin",
+        "tenant.quota_cleared",
+        "",
+        forwarded_origin(&headers).as_deref(),
+        None,
+    )
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Storage assignment body.
@@ -873,6 +996,13 @@ async fn upload_content<B: BlobStore>(
         })
         .transpose()?;
 
+    let declared_len = request
+        .headers()
+        .get(axum::http::header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|raw| raw.parse::<u64>().ok());
+    let headroom = state.quota_headroom(&tenant, declared_len).await?;
+
     let (residency, backend) = state.residency_for(&tenant).await?;
 
     file_repo::claim_upload(
@@ -888,7 +1018,10 @@ async fn upload_content<B: BlobStore>(
     // stream yields an error, the writer aborts, and only inert staging
     // garbage remains. The sentinel message is what the error arm
     // below maps to 413.
-    let max = state.limits.max_upload_bytes as u64;
+    let max = match headroom {
+        Some(remaining) => (state.limits.max_upload_bytes as u64).min(remaining),
+        None => state.limits.max_upload_bytes as u64,
+    };
     let mut running_total = 0u64;
     let body = request
         .into_body()

@@ -233,6 +233,17 @@ revalidations leave the counter alone, and a revoked or expired grant stops
 revalidating as well. Range requests consume per request, so media seeking
 should use TTL-bounded grants without `max_uses`.
 
+## Usage and quotas
+
+`GET /v1/usage` reports the tenant's live files and logical bytes (the
+sum of current file sizes; version history and dedupe play no part)
+plus the quota ceiling when one is set. Quotas are assigned on the
+admin surface. Enforcement happens before bytes move: an upload whose
+declared length would cross the ceiling refuses with 409, a resumable
+session past the headroom refuses at creation, and undeclared streams
+are clamped to the remaining headroom in flight. Deleting files
+releases their usage immediately.
+
 ## Edge tokens
 
 `POST /v1/files/{id}/edge-url` issues a `cg2` token: a stateless HMAC

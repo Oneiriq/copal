@@ -25,7 +25,28 @@ pub fn tables() -> Vec<TableDefinition> {
         file_table(),
         file_version_table(),
         tenant_storage_table(),
+        tenant_quota_table(),
     ]
+}
+
+/// Tenant storage quota: a ceiling on logical bytes (the sum of live
+/// files' current sizes). Absence means unlimited. Version history
+/// and dedupe play no part in the accounting; the number a tenant
+/// sees is the number the ceiling compares against.
+fn tenant_quota_table() -> TableDefinition {
+    table_schema("tenant_quota")
+        .with_mode(TableMode::Schemafull)
+        .with_fields([
+            built(string_field("tenant_id").assertion("$value != ''")),
+            built(int_field("max_bytes").assertion("$value >= 0")),
+            built(
+                datetime_field("created_at")
+                    .default("time::now()")
+                    .readonly(true),
+            ),
+            built(datetime_field("updated_at").value("time::now()")),
+        ])
+        .with_indexes([unique_index("uniq_tenant_quota", ["tenant_id"])])
 }
 
 /// Tenant residency pinning: where a tenant's NEW content lands.

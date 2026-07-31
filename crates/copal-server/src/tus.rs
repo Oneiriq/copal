@@ -125,6 +125,7 @@ async fn create_session<B: BlobStore>(
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.parse().ok())
         .ok_or_else(|| CopalError::validation("Upload-Length is required"))?;
+    state.quota_headroom(&tenant, Some(upload_length)).await?;
     if upload_length as usize > state.limits.max_upload_bytes {
         return Err(CopalError::PayloadTooLarge(format!(
             "upload exceeds {} bytes",

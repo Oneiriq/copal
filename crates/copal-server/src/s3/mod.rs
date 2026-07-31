@@ -414,6 +414,16 @@ async fn put_object<B: BlobStore>(
     };
     let id = record.id.clone();
 
+    let declared_len = parts
+        .headers
+        .get(header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|raw| raw.parse::<u64>().ok());
+    let headroom = match state.quota_headroom(&tenant, declared_len).await {
+        Ok(headroom) => headroom,
+        Err(err) => return copal_to_s3(err.0),
+    };
+
     let (residency, backend) = match state.residency_for(&tenant).await {
         Ok(resolved) => resolved,
         Err(err) => return copal_to_s3(err.0),
@@ -433,7 +443,10 @@ async fn put_object<B: BlobStore>(
 
     // Same in-stream ceiling as the REST upload; aws-chunked framing
     // is decoded first when the client signed a streaming payload.
-    let max = state.limits.max_upload_bytes as u64;
+    let max = match headroom {
+        Some(remaining) => (state.limits.max_upload_bytes as u64).min(remaining),
+        None => state.limits.max_upload_bytes as u64,
+    };
     let mut running_total = 0u64;
     let raw_stream = body.into_data_stream().map(|chunk| match chunk {
         Ok(bytes) => Ok(bytes),

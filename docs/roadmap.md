@@ -42,8 +42,9 @@ The items that gate running Copal anywhere real.
 4. Per-tenant blob keys, building on the shipped encryption at rest
    (chunked AEAD, plaintext digests, non-destructive enablement).
    The data-residency story below depends on this.
-5. Per-tenant quotas and usage accounting (bytes stored, request
-   rates), replacing the documented proxy-level interim.
+5. Per-tenant byte quotas and usage accounting shipped (logical
+   usage, pre-flight refusals, in-stream headroom clamps on every
+   upload face). Request-rate limits remain at the proxy.
 
 ## Tier 3: moat expansion
 

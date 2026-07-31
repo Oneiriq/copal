@@ -115,6 +115,21 @@ Every instance that runs sweeps must configure the residencies whose
 rows it may collect; a row whose residency is unknown to the instance
 is collected in the database and its bytes logged as unreachable.
 
+## Quotas
+
+```
+PUT    /v1/admin/tenants/{tenant}/quota    body: { "max_bytes": 10737418240 }
+GET    /v1/admin/tenants/{tenant}/quota    ceiling plus current usage
+DELETE /v1/admin/tenants/{tenant}/quota    return to unlimited
+```
+
+The ceiling compares against logical usage: the sum of live files'
+current sizes, which is also what `GET /v1/usage` shows the tenant.
+Physical storage can be lower (dedupe) or higher (version history
+until GC); the accounting follows what tenants can see and delete.
+Enforcement is per upload with one aggregate query; the audit trail
+records `tenant.quota_set` and `tenant.quota_cleared`.
+
 ## Maintenance sweeps
 
 One interval loop runs five failure-isolated passes: expired upload claims to

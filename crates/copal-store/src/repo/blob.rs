@@ -223,14 +223,24 @@ pub async fn clear_unreferenced(
     Ok(())
 }
 
+/// Whether a row currently exists for this digest. The GC calls this
+/// immediately before deleting object bytes: a row re-created between
+/// the row-delete and the object-delete (an identical-content upload
+/// re-registering after the full grace period) aborts the collection.
+pub async fn row_exists(store: &Store, digest: &ContentDigest) -> copal_core::Result<bool> {
+    let row = surql::query::crud::get_record(store.client(), &rid(digest)?)
+        .await
+        .map_err(|e| map_store_err("row_exists", e))?;
+    Ok(row.is_some())
+}
+
 /// Collect a blob row whose mark has aged past the grace period.
 ///
 /// Returns whether the row was deleted; the CALLER then removes the
-/// object bytes. Row-before-object ordering plus the caller's fresh
-/// recount narrows the resurrection race to the instant between the
-/// two deletions; the remaining window (an identical-content upload
-/// re-registering in that instant, after the full grace period) is a
-/// known hazard queued for a collection-lock hardening.
+/// object bytes after re-checking [`row_exists`]. Row-before-object
+/// ordering, the fresh recount, and the existence re-check narrow the
+/// resurrection race to the instant between that check and the
+/// filesystem delete.
 pub async fn collect_expired(
     store: &Store,
     digest: &ContentDigest,

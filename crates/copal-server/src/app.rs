@@ -750,10 +750,18 @@ pub(crate) async fn start_run_core<B: BlobStore>(
     match request.mode.as_deref() {
         Some("sync") => {
             let (run_id, output) = state.flow.run_sync(tenant, &request.workflow, spec).await?;
-            Ok((
-                StatusCode::OK,
-                json!({ "run_id": run_id, "output": output }),
-            ))
+            match output {
+                Some(output) => Ok((
+                    StatusCode::OK,
+                    json!({ "run_id": run_id, "output": output, "status": "completed" }),
+                )),
+                // A worker raced the claim: pending, poll the run —
+                // NOT a completed run with null output.
+                None => Ok((
+                    StatusCode::ACCEPTED,
+                    json!({ "run_id": run_id, "status": "pending" }),
+                )),
+            }
         }
         None | Some("async") => {
             let (run_id, created) = state.flow.enqueue(tenant, &request.workflow, spec).await?;

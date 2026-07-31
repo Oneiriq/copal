@@ -226,15 +226,54 @@ pub async fn list_runs(
         .map_err(|e| map_store_err("list_runs", e))
 }
 
-/// Claim the oldest pending run for `owner`, or `None` when the queue
-/// is empty. Select-then-CAS: losing the CAS to a rival just means
-/// trying the next candidate.
+/// Claim ONE SPECIFIC pending run — the sync path claims exactly the
+/// run it just enqueued, never a neighbor it would then abandon.
+pub async fn claim_specific(
+    store: &Store,
+    run_id: &str,
+    owner: &str,
+    lease_secs: u32,
+) -> copal_core::Result<Option<RunRow>> {
+    let query = Query::new()
+        .update_set(run_rid(run_id)?.to_string())
+        .map_err(|e| map_store_err("claim", e))?
+        .set("status", Value::from("running"))
+        .map_err(|e| map_store_err("claim", e))?
+        .set("lease_owner", Value::from(owner))
+        .map_err(|e| map_store_err("claim", e))?
+        .set_expr(
+            "lease_expires_at",
+            raw(format!("time::now() + {lease_secs}s")),
+        )
+        .map_err(|e| map_store_err("claim", e))?
+        .set_expr("started_at", raw("time::now()"))
+        .map_err(|e| map_store_err("claim", e))?
+        .where_(eq("status", "pending"))
+        .return_after();
+    let rows: Vec<RunRow> = query_records(store.client(), &query)
+        .await
+        .map_err(|e| map_store_err("claim", e))?;
+    Ok(rows.into_iter().next())
+}
+
+/// Claim a pending run for `owner`, or `None` when the queue is empty.
+///
+/// Select-then-CAS over a small candidate WINDOW rather than the
+/// single oldest row: each worker starts at an owner-derived offset
+/// into the window, so a fleet of idle workers spreads across
+/// different candidates instead of all CASing the same row and
+/// retrying. Ordering stays oldest-first overall — the window is the
+/// queue head, and a drained window falls through to a fresh select.
 pub async fn claim_next_pending(
     store: &Store,
     owner: &str,
     lease_secs: u32,
 ) -> copal_core::Result<Option<RunRow>> {
-    for _ in 0..8 {
+    // Cheap stable hash of the owner id for the starting offset.
+    let owner_hash: usize = owner.bytes().fold(0usize, |acc, b| {
+        acc.wrapping_mul(31).wrapping_add(b as usize)
+    });
+    for _ in 0..4 {
         let find = Query::new()
             .select(None)
             .from_table(RUN_TABLE)
@@ -242,38 +281,43 @@ pub async fn claim_next_pending(
             .where_(eq("status", "pending"))
             .order_by("created_at", "ASC")
             .map_err(|e| map_store_err("claim", e))?
-            .limit(1)
+            .limit(4)
             .map_err(|e| map_store_err("claim", e))?;
-        let mut candidates: Vec<RunRow> = query_records(store.client(), &find)
+        let candidates: Vec<RunRow> = query_records(store.client(), &find)
             .await
             .map_err(|e| map_store_err("claim", e))?;
-        let Some(candidate) = candidates.pop() else {
+        if candidates.is_empty() {
             return Ok(None);
-        };
-
-        let query = Query::new()
-            .update_set(run_rid(&candidate.run_id())?.to_string())
-            .map_err(|e| map_store_err("claim", e))?
-            .set("status", Value::from("running"))
-            .map_err(|e| map_store_err("claim", e))?
-            .set("lease_owner", Value::from(owner))
-            .map_err(|e| map_store_err("claim", e))?
-            .set_expr(
-                "lease_expires_at",
-                raw(format!("time::now() + {lease_secs}s")),
-            )
-            .map_err(|e| map_store_err("claim", e))?
-            .set_expr("started_at", raw("time::now()"))
-            .map_err(|e| map_store_err("claim", e))?
-            .where_(eq("status", "pending"))
-            .return_after();
-        let rows: Vec<RunRow> = query_records(store.client(), &query)
-            .await
-            .map_err(|e| map_store_err("claim", e))?;
-        if let Some(claimed) = rows.into_iter().next() {
-            return Ok(Some(claimed));
         }
-        // Lost the race for this candidate; try the next.
+
+        let start = owner_hash % candidates.len();
+        for offset in 0..candidates.len() {
+            let candidate = &candidates[(start + offset) % candidates.len()];
+            let query = Query::new()
+                .update_set(run_rid(&candidate.run_id())?.to_string())
+                .map_err(|e| map_store_err("claim", e))?
+                .set("status", Value::from("running"))
+                .map_err(|e| map_store_err("claim", e))?
+                .set("lease_owner", Value::from(owner))
+                .map_err(|e| map_store_err("claim", e))?
+                .set_expr(
+                    "lease_expires_at",
+                    raw(format!("time::now() + {lease_secs}s")),
+                )
+                .map_err(|e| map_store_err("claim", e))?
+                .set_expr("started_at", raw("time::now()"))
+                .map_err(|e| map_store_err("claim", e))?
+                .where_(eq("status", "pending"))
+                .return_after();
+            let rows: Vec<RunRow> = query_records(store.client(), &query)
+                .await
+                .map_err(|e| map_store_err("claim", e))?;
+            if let Some(claimed) = rows.into_iter().next() {
+                return Ok(Some(claimed));
+            }
+            // Lost this candidate; try the next in the window.
+        }
+        // Whole window went to rivals; select a fresh one.
     }
     Ok(None)
 }

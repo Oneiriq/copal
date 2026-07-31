@@ -149,33 +149,42 @@ impl FlowEngine {
         .await
     }
 
-    /// Enqueue, claim, and execute in-process; returns the run output.
-    /// Same journal as the async path — sync means "do not wait for a
+    /// Enqueue, claim, and execute in-process. `Some(output)` means the
+    /// run completed here (or an idempotent replay had already
+    /// completed); `None` means a worker holds it and the caller polls
+    /// — DISTINCT from a run whose output is legitimately null. Same
+    /// journal as the async path — sync means "do not wait for a
     /// worker", not "skip durability".
     pub async fn run_sync(
         &self,
         tenant: &TenantId,
         workflow_key: &str,
         spec: RunSpec,
-    ) -> copal_core::Result<(String, Value)> {
+    ) -> copal_core::Result<(String, Option<Value>)> {
         let (run_id, created) = self.enqueue(tenant, workflow_key, spec).await?;
         if !created {
-            // Idempotent replay: report the existing run's state.
+            // Idempotent replay: report the existing run's state; a
+            // still-running original reads as pending, not as output.
             let run = flow_repo::get_run(&self.store, tenant, &run_id)
                 .await?
                 .ok_or_else(|| CopalError::not_found("run"))?;
-            return Ok((run_id, run.output.unwrap_or(Value::Null)));
+            let output = match run.status.as_str() {
+                "completed" => Some(run.output.unwrap_or(Value::Null)),
+                _ => None,
+            };
+            return Ok((run_id, output));
         }
-        let claimed = flow_repo::claim_next_pending(&self.store, "sync", self.lease_secs)
-            .await?
-            .filter(|run| run.run_id() == run_id);
+        // Claim exactly the run just enqueued — never a neighbor this
+        // path would then abandon to its lease.
+        let claimed =
+            flow_repo::claim_specific(&self.store, &run_id, "sync", self.lease_secs).await?;
         match claimed {
             Some(run) => {
                 let output = self.execute_claimed(&run).await?;
-                Ok((run_id, output))
+                Ok((run_id, Some(output)))
             }
             // A worker got there first; the caller polls like anyone.
-            None => Ok((run_id, Value::Null)),
+            None => Ok((run_id, None)),
         }
     }
 

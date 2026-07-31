@@ -138,7 +138,15 @@ async fn gc_pass<B: BlobStore>(
                     // Row first, then object: the guarded DELETE
                     // re-checks the aged mark, and a row that no longer
                     // exists cannot be linked by a completing upload.
+                    // Before the bytes go, one final existence check: a
+                    // row RE-CREATED since the delete (identical
+                    // content re-uploaded in the window) aborts the
+                    // collection — the fresh row's bytes stay.
                     if blob_repo::collect_expired(store, &digest, config.gc_grace_secs).await? {
+                        if blob_repo::row_exists(store, &digest).await? {
+                            tracing::info!(digest = %digest, "collection aborted: blob resurrected");
+                            continue;
+                        }
                         blobs.delete(&digest).await?;
                         report.blobs_collected += 1;
                     }

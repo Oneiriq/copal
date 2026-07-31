@@ -49,7 +49,7 @@ async fn pipeline_threads_output_to_input() {
         )
         .await
         .unwrap();
-    assert_eq!(output, json!({"n": 18}));
+    assert_eq!(output, Some(json!({"n": 18})));
 
     let (run, steps) = engine
         .run_state(&tenant(), &run_id)
@@ -176,7 +176,7 @@ async fn per_step_retry_ceiling_applies_within_one_execution() {
         )
         .await
         .unwrap();
-    assert_eq!(output, json!({"ok": true}));
+    assert_eq!(output, Some(json!({"ok": true})));
     let (run, steps) = engine.run_state(&tenant(), &run_id).await.unwrap().unwrap();
     assert_eq!(run.status, "completed");
     assert_eq!(steps.len(), 3, "two failed attempts plus the success");
@@ -226,4 +226,38 @@ async fn idempotent_enqueue_and_lease_reap() {
     assert!(engine.tick("healthy-worker").await.unwrap());
     let (run, _) = engine.run_state(&tenant(), &first).await.unwrap().unwrap();
     assert_eq!(run.status, "completed");
+}
+
+#[tokio::test]
+async fn sync_replay_of_an_unfinished_run_reads_pending_not_null_output() {
+    let store = fresh_store().await;
+    let registry = FlowRegistry::new()
+        .activity("noop", |input| async move { Ok(input) })
+        .workflow("wf", &["noop"], 1);
+    let engine = FlowEngine::new(store.clone(), registry);
+
+    // Enqueue, then let a rival worker CLAIM it (still running).
+    let spec = || RunSpec {
+        input: serde_json::json!({}),
+        subject: None,
+        idempotency_key: Some("race".into()),
+    };
+    let (run_id, created) = engine.enqueue(&tenant(), "wf", spec()).await.unwrap();
+    assert!(created);
+    let claimed = copal_store::repo::flow::claim_specific(&store, &run_id, "rival", 300)
+        .await
+        .unwrap();
+    assert!(claimed.is_some());
+
+    // A sync start with the same key must NOT report null output for
+    // the still-running original — it reports pending (None).
+    let (replay_id, output) = engine.run_sync(&tenant(), "wf", spec()).await.unwrap();
+    assert_eq!(replay_id, run_id);
+    assert_eq!(output, None, "running replay must read as pending");
+
+    // And claim_specific refuses a second claim of the same run.
+    let second = copal_store::repo::flow::claim_specific(&store, &run_id, "late", 300)
+        .await
+        .unwrap();
+    assert!(second.is_none());
 }

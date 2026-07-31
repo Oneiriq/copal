@@ -277,3 +277,49 @@ async fn the_sdl_document_is_served_for_discovery() {
     .unwrap();
     assert_eq!(sdl.trim(), checked_in.trim());
 }
+
+#[tokio::test]
+async fn runs_resource_serves_and_actions_dispatch() {
+    let (router, _dir) = test_router().await;
+
+    // Empty listing through the contract vocabulary.
+    let response = router
+        .clone()
+        .oneshot(graphql(
+            r#"{ runs(status: "failed") { items { id workflow status } nextCursor } }"#,
+            json!({}),
+            Some("acme"),
+        ))
+        .await
+        .unwrap();
+    let body = json_body(response).await;
+    assert!(body["errors"].is_null(), "{body}");
+    assert_eq!(body["data"]["runs"]["items"].as_array().unwrap().len(), 0);
+
+    // runStart dispatches into the flow engine: an unregistered
+    // workflow is refused at the door with the coded error.
+    let response = router
+        .clone()
+        .oneshot(graphql(
+            r#"mutation { runStart(workflow: "nope") }"#,
+            json!({}),
+            Some("acme"),
+        ))
+        .await
+        .unwrap();
+    let body = json_body(response).await;
+    assert_eq!(body["errors"][0]["extensions"]["code"], "not_found");
+
+    // runRetry on a missing run is the same refusal.
+    let response = router
+        .clone()
+        .oneshot(graphql(
+            r#"mutation { runRetry(id: "01ZZZZZZZZZZZZZZZZZZZZZZZZ") }"#,
+            json!({}),
+            Some("acme"),
+        ))
+        .await
+        .unwrap();
+    let body = json_body(response).await;
+    assert_eq!(body["errors"][0]["extensions"]["code"], "not_found");
+}

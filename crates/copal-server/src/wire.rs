@@ -7,6 +7,7 @@
 //! contract is the allowlist.
 
 use copal_core::FileRecord;
+use copal_store::repo::flow::RunRow;
 
 /// A file in contract shape.
 pub fn wire_file(record: &FileRecord) -> serde_json::Value {
@@ -20,6 +21,19 @@ pub fn wire_file(record: &FileRecord) -> serde_json::Value {
     map.remove("upload_lease_owner");
     map.remove("upload_lease_expires_at");
     value
+}
+
+/// A workflow run in contract shape.
+pub fn wire_run(run: &RunRow) -> serde_json::Value {
+    serde_json::json!({
+        "id": run.run_id(),
+        "workflow": run.workflow_key,
+        "status": run.status,
+        "output": run.output,
+        "error": run.run_error,
+        "created_at": run.created_at,
+        "ended_at": run.ended_at,
+    })
 }
 
 #[cfg(test)]

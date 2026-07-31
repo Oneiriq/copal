@@ -39,10 +39,16 @@ pub fn upload_run_key(file: &FileId, digest: &ContentDigest) -> String {
 }
 
 /// Build the standard registry over the given planes.
+///
+/// `enforce_type_match`: when set, a file whose sniffed content type
+/// contradicts its declared type is QUARANTINED instead of merely
+/// annotated — the declared-type lie becomes a blocking verdict.
+/// Unsniffable content never blocks (unverifiable is not a lie).
 pub fn standard_registry<B: BlobStore>(
     store: Store,
     blobs: B,
     policy: ExtensionPolicy,
+    enforce_type_match: bool,
 ) -> FlowRegistry {
     let sniff_blobs = blobs.clone();
     let finalize_store = store;
@@ -81,6 +87,14 @@ pub fn standard_registry<B: BlobStore>(
                     Some(extension) => {
                         out["verdict"] = json!("blocked");
                         out["verdict_reason"] = json!(format!("blocked extension .{extension}"));
+                    }
+                    None if enforce_type_match && out["type_matches"] == json!(false) => {
+                        out["verdict"] = json!("blocked");
+                        out["verdict_reason"] = json!(format!(
+                            "declared {} but content is {}",
+                            out["declared_type"].as_str().unwrap_or("unknown"),
+                            out["sniffed_type"].as_str().unwrap_or("unknown"),
+                        ));
                     }
                     None => {
                         out["verdict"] = json!("clean");

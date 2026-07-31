@@ -19,6 +19,21 @@ export interface FilePage {
   next_cursor?: string | null
 }
 
+export interface Run {
+  id: string
+  workflow: string
+  status: string
+  output?: unknown
+  error?: string
+  createdAt: string
+  endedAt?: string
+}
+
+export interface RunPage {
+  items: Run[]
+  next_cursor?: string | null
+}
+
 export class Client {
   constructor(private baseUrl: string, private tenant: string) {}
 
@@ -54,6 +69,26 @@ export class Client {
 
   removeFile(id: string): Promise<void> {
     return this.request('DELETE', `/v1/files/${id}`)
+  }
+
+  listRuns(limit?: number, cursor?: string): Promise<RunPage> {
+    const query = new URLSearchParams()
+    if (limit !== undefined) query.set('limit', String(limit))
+    if (cursor !== undefined) query.set('cursor', cursor)
+    const suffix = query.size > 0 ? `?${query}` : ''
+    return this.request('GET', `/v1/runs${suffix}`)
+  }
+
+  getRun(id: string): Promise<Run> {
+    return this.request('GET', `/v1/runs/${id}`)
+  }
+
+  startRun(input: Record<string, unknown>): Promise<Record<string, unknown>> {
+    return this.request('POST', `/v1/runs`, input)
+  }
+
+  retryRun(id: string): Promise<Record<string, unknown>> {
+    return this.request('POST', `/v1/runs/${id}/retry`)
   }
 
 }

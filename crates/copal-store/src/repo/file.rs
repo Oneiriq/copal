@@ -362,6 +362,31 @@ pub async fn reap_expired_uploads(store: &Store) -> copal_core::Result<Vec<FileR
     rows.into_iter().map(FileRow::into_domain).collect()
 }
 
+/// Sweep files stuck in `scanning` past the age ceiling to `failed`
+/// (retryable; the digest stays, so prior content keeps serving).
+///
+/// This is the recovery for the crash window between upload completion
+/// and pipeline enqueue: with normal operation the failed-run
+/// propagation handles pipeline failures, so anything old in
+/// `scanning` was orphaned by a crash. `updated_at` is the engine's
+/// write timestamp — nothing touches the row while a pipeline runs, so
+/// its age is time since completion.
+pub async fn reap_stale_scans(store: &Store, older_than_secs: u32) -> copal_core::Result<u64> {
+    FileState::Scanning.ensure_transition(FileState::Failed)?;
+    let query = Query::new()
+        .update_set(TABLE)
+        .map_err(|e| map_store_err("reap_scans", e))?
+        .set("state", Value::from(FileState::Failed.as_str()))
+        .map_err(|e| map_store_err("reap_scans", e))?
+        .where_(eq("state", FileState::Scanning.as_str()))
+        .where_str(format!("updated_at < time::now() - {older_than_secs}s"))
+        .return_after();
+    let rows: Vec<Value> = query_records(store.client(), &query)
+        .await
+        .map_err(|e| map_store_err("reap_scans", e))?;
+    Ok(rows.len() as u64)
+}
+
 /// Finish an upload: one CAS moves `uploading -> ready`, writes the
 /// payload columns, links the blob, and atomically increments
 /// `version_count` — whose returned value IS the new version number.

@@ -29,6 +29,21 @@ type FilePage struct {
 	NextCursor *string `json:"next_cursor"`
 }
 
+type Run struct {
+	ID string `json:"id"`
+	Workflow string `json:"workflow"`
+	Status string `json:"status"`
+	Output any `json:"output"`
+	Error *string `json:"error"`
+	CreatedAt string `json:"created_at"`
+	EndedAt *string `json:"ended_at"`
+}
+
+type RunPage struct {
+	Items []Run `json:"items"`
+	NextCursor *string `json:"next_cursor"`
+}
+
 type Client struct {
 	BaseURL string
 	Tenant  string
@@ -109,5 +124,48 @@ func (c *Client) IssueUrlFile(id string, input map[string]any) (map[string]any, 
 
 func (c *Client) RemoveFile(id string) error {
 	return c.request("DELETE", "/v1/files" + "/" + id, nil, nil)
+}
+
+func (c *Client) ListRuns(limit int, cursor string) (*RunPage, error) {
+	query := url.Values{}
+	if limit > 0 {
+		query.Set("limit", fmt.Sprint(limit))
+	}
+	if cursor != "" {
+		query.Set("cursor", cursor)
+	}
+	path := "/v1/runs"
+	if encoded := query.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+	var page RunPage
+	if err := c.request("GET", path, nil, &page); err != nil {
+		return nil, err
+	}
+	return &page, nil
+}
+
+func (c *Client) GetRun(id string) (*Run, error) {
+	var out Run
+	if err := c.request("GET", "/v1/runs/"+id, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) StartRun(input map[string]any) (map[string]any, error) {
+	out := map[string]any{}
+	if err := c.request("POST", "/v1/runs", input, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) RetryRun(id string) (map[string]any, error) {
+	out := map[string]any{}
+	if err := c.request("POST", "/v1/runs" + "/" + id + "/retry", nil, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 

@@ -29,9 +29,13 @@ pub struct SweepConfig {
     /// A blob must be continuously unreferenced this long before its
     /// bytes go.
     pub gc_grace_secs: u32,
-    /// Blob rows visited per pass; larger populations continue next
-    /// tick rather than stalling a pass.
+    /// Blob rows per GC batch query; the pass loops batches until a
+    /// short page, so the whole population is visited every pass.
     pub gc_batch: i64,
+    /// Files stuck in `scanning` longer than this are failed
+    /// (retryable). Covers the crash window between upload completion
+    /// and pipeline enqueue; live pipelines finish far sooner.
+    pub scan_stale_secs: u32,
 }
 
 impl Default for SweepConfig {
@@ -41,6 +45,7 @@ impl Default for SweepConfig {
             staging_ttl_secs: 86_400,
             gc_grace_secs: 86_400,
             gc_batch: 1_000,
+            scan_stale_secs: 3_600,
         }
     }
 }
@@ -50,6 +55,7 @@ impl Default for SweepConfig {
 pub struct SweepReport {
     pub reaped_uploads: u64,
     pub reaped_runs: u64,
+    pub stale_scans_failed: u64,
     pub staging_removed: u64,
     pub blobs_marked: u64,
     pub blobs_collected: u64,
@@ -69,6 +75,11 @@ pub async fn run_pass<B: BlobStore>(store: &Store, blobs: &B, config: &SweepConf
     match flow_repo::reap_expired_runs(store).await {
         Ok(reaped) => report.reaped_runs = reaped,
         Err(err) => tracing::warn!(error = %err, "run reap sweep failed"),
+    }
+
+    match file_repo::reap_stale_scans(store, config.scan_stale_secs).await {
+        Ok(failed) => report.stale_scans_failed = failed,
+        Err(err) => tracing::warn!(error = %err, "stale scan sweep failed"),
     }
 
     match blobs
@@ -93,41 +104,57 @@ async fn gc_pass<B: BlobStore>(
     config: &SweepConfig,
     report: &mut SweepReport,
 ) -> copal_core::Result<()> {
-    let rows = blob_repo::list_blobs(store, config.gc_batch).await?;
-    for row in rows {
-        let digest = match row.digest() {
-            Ok(digest) => digest,
-            Err(err) => {
-                tracing::warn!(id = %row.id, error = %err, "unparseable blob id; skipping");
+    // Keyset batches until a short page: the whole population is
+    // visited every pass, whatever its size.
+    let mut after = None;
+    loop {
+        let rows = blob_repo::list_blobs(store, config.gc_batch, after.as_ref()).await?;
+        let drained = (rows.len() as i64) < config.gc_batch;
+        let mut last = None;
+        for row in rows {
+            let digest = match row.digest() {
+                Ok(digest) => digest,
+                Err(err) => {
+                    tracing::warn!(id = %row.id, error = %err, "unparseable blob id; skipping");
+                    continue;
+                }
+            };
+            last = Some(digest.clone());
+            // The derived truth, freshly computed — never the cache.
+            let live = blob_repo::recount_inbound_links(store, &digest).await?;
+            if live > 0 {
+                if row.unreferenced_since.is_some() || row.refcount != live {
+                    blob_repo::clear_unreferenced(store, &digest, live).await?;
+                    report.blobs_refreshed += 1;
+                }
                 continue;
             }
-        };
-        // The derived truth, freshly computed — never the cache.
-        let live = blob_repo::recount_inbound_links(store, &digest).await?;
-        if live > 0 {
-            if row.unreferenced_since.is_some() || row.refcount != live {
-                blob_repo::clear_unreferenced(store, &digest, live).await?;
-                report.blobs_refreshed += 1;
-            }
-            continue;
-        }
-        match row.unreferenced_since {
-            None => {
-                blob_repo::mark_unreferenced(store, &digest).await?;
-                report.blobs_marked += 1;
-            }
-            Some(_) => {
-                // Row first, then object: the guarded DELETE re-checks
-                // the aged mark, and a row that no longer exists cannot
-                // be linked by a completing upload.
-                if blob_repo::collect_expired(store, &digest, config.gc_grace_secs).await? {
-                    blobs.delete(&digest).await?;
-                    report.blobs_collected += 1;
+            match row.unreferenced_since {
+                None => {
+                    blob_repo::mark_unreferenced(store, &digest).await?;
+                    report.blobs_marked += 1;
+                }
+                Some(_) => {
+                    // Row first, then object: the guarded DELETE
+                    // re-checks the aged mark, and a row that no longer
+                    // exists cannot be linked by a completing upload.
+                    if blob_repo::collect_expired(store, &digest, config.gc_grace_secs).await? {
+                        blobs.delete(&digest).await?;
+                        report.blobs_collected += 1;
+                    }
                 }
             }
         }
+        if drained {
+            return Ok(());
+        }
+        match last {
+            Some(digest) => after = Some(digest),
+            // A full page of unparseable ids cannot advance the cursor;
+            // stop rather than loop in place.
+            None => return Ok(()),
+        }
     }
-    Ok(())
 }
 
 /// The interval loop the server spawns.

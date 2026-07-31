@@ -40,6 +40,9 @@ pub struct RunRow {
     pub output: Option<Value>,
     #[serde(default)]
     pub run_error: Option<String>,
+    /// Subject file link, serialized as a record id string.
+    #[serde(default)]
+    pub file: Option<String>,
     pub created_at: String,
     #[serde(default)]
     pub ended_at: Option<String>,
@@ -49,6 +52,13 @@ impl RunRow {
     /// The bare run id (record prefix stripped).
     pub fn run_id(&self) -> String {
         strip_record_prefix(&self.id, RUN_TABLE).to_owned()
+    }
+
+    /// The subject file id, when a subject link is armed.
+    pub fn file_id(&self) -> Option<copal_core::Result<FileId>> {
+        self.file
+            .as_deref()
+            .map(|raw| FileId::parse(strip_record_prefix(raw, "file")))
     }
 }
 
@@ -164,6 +174,58 @@ pub async fn get_run(
     Ok(Some(row))
 }
 
+/// Keyset position for run listings, mirroring the file listing shape.
+#[derive(Debug, Clone)]
+pub struct RunListPosition {
+    pub created_at: String,
+    pub id: String,
+}
+
+/// List a tenant's runs, keyset-paginated; newest first unless
+/// `ascending`. A status filter rides idx_run_ops
+/// (tenant_id, status, created_at).
+pub async fn list_runs(
+    store: &Store,
+    tenant: &TenantId,
+    limit: i64,
+    after: Option<&RunListPosition>,
+    ascending: bool,
+    status: Option<&str>,
+) -> copal_core::Result<Vec<RunRow>> {
+    let (cmp, dir) = if ascending {
+        (">", "ASC")
+    } else {
+        ("<", "DESC")
+    };
+    let mut query = Query::new()
+        .select(None)
+        .from_table(RUN_TABLE)
+        .map_err(|e| map_store_err("list_runs", e))?
+        .where_(eq("tenant_id", tenant.as_str()));
+    if let Some(status) = status {
+        query = query.where_(eq("status", status));
+    }
+    if let Some(position) = after {
+        let position_rid =
+            run_rid(&position.id).map_err(|e| CopalError::validation(format!("cursor: {e}")))?;
+        query = query.where_str(format!(
+            "(created_at {cmp} d'{ts}' OR (created_at = d'{ts}' AND id {cmp} {id}))",
+            ts = position.created_at,
+            id = position_rid,
+        ));
+    }
+    let query = query
+        .order_by("created_at", dir)
+        .map_err(|e| map_store_err("list_runs", e))?
+        .order_by("id", dir)
+        .map_err(|e| map_store_err("list_runs", e))?
+        .limit(limit)
+        .map_err(|e| map_store_err("list_runs", e))?;
+    query_records(store.client(), &query)
+        .await
+        .map_err(|e| map_store_err("list_runs", e))
+}
+
 /// Claim the oldest pending run for `owner`, or `None` when the queue
 /// is empty. Select-then-CAS: losing the CAS to a rival just means
 /// trying the next candidate.
@@ -255,6 +317,32 @@ pub async fn finish_run(
         )));
     }
     Ok(())
+}
+
+/// Retry a FAILED run: CAS it back to `pending` with its journal
+/// intact. Returns false when the run is not in `failed` (already
+/// retried, still running, or completed) — the guard rides the UPDATE,
+/// so two racing retries serialize here.
+pub async fn retry_failed(store: &Store, run_id: &str) -> copal_core::Result<bool> {
+    let query = Query::new()
+        .update_set(run_rid(run_id)?.to_string())
+        .map_err(|e| map_store_err("retry", e))?
+        .set("status", Value::from("pending"))
+        .map_err(|e| map_store_err("retry", e))?
+        .set_expr("lease_owner", raw("NONE"))
+        .map_err(|e| map_store_err("retry", e))?
+        .set_expr("lease_expires_at", raw("NONE"))
+        .map_err(|e| map_store_err("retry", e))?
+        .set_expr("run_error", raw("NONE"))
+        .map_err(|e| map_store_err("retry", e))?
+        .set_expr("ended_at", raw("NONE"))
+        .map_err(|e| map_store_err("retry", e))?
+        .where_(eq("status", "failed"))
+        .return_after();
+    let rows: Vec<RunRow> = query_records(store.client(), &query)
+        .await
+        .map_err(|e| map_store_err("retry", e))?;
+    Ok(!rows.is_empty())
 }
 
 /// Test/ops support: force a terminal or stuck run back to `pending`

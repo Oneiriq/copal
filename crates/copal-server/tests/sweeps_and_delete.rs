@@ -265,3 +265,63 @@ async fn staging_sweep_removes_only_aged_entries() {
     assert!(!staging.join(&old).exists());
     assert!(staging.join(&fresh).exists(), "fresh staging must survive");
 }
+
+#[tokio::test]
+async fn stale_scanning_files_fail_after_the_age_ceiling() {
+    use copal_core::{FileSpec, FileState};
+    use copal_store::repo::file as file_repo;
+
+    let (_router, store, blobs, _dir) = stack().await;
+    let tenant = copal_core::TenantId::parse("acme").unwrap();
+
+    // A file stuck in scanning with no pipeline run behind it — the
+    // crash-between-complete-and-enqueue shape, built via the repos.
+    let spec = FileSpec {
+        path: "stuck.txt".into(),
+        content_type: "text/plain".into(),
+        access: copal_core::AccessLevel::Private,
+        metadata: serde_json::Value::Null,
+        idempotency_key: None,
+    };
+    let created = file_repo::create_file(&store, &tenant, &spec, "test")
+        .await
+        .unwrap();
+    let id = created.record.id;
+    file_repo::claim_upload(&store, &tenant, &id, "test-instance", 900)
+        .await
+        .unwrap();
+    let digest = copal_core::ContentDigest::parse("a".repeat(64).as_str()).unwrap();
+    copal_store::repo::blob::record_sighting(&store, &digest, 5, "local", "objects/x")
+        .await
+        .unwrap();
+    file_repo::complete_upload(
+        &store,
+        &tenant,
+        &id,
+        &digest,
+        5,
+        "test",
+        FileState::Scanning,
+    )
+    .await
+    .unwrap();
+
+    // A fresh scan is untouched at the default ceiling...
+    let report = run_pass(&store, &blobs, &SweepConfig::default()).await;
+    assert_eq!(report.stale_scans_failed, 0);
+
+    // ...and reaped at a zero ceiling.
+    let zero = SweepConfig {
+        scan_stale_secs: 0,
+        ..SweepConfig::default()
+    };
+    let report = run_pass(&store, &blobs, &zero).await;
+    assert_eq!(report.stale_scans_failed, 1);
+    let record = file_repo::get_file(&store, &tenant, &id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(record.state, FileState::Failed);
+    // The digest survives: prior content would keep serving.
+    assert!(record.digest.is_some());
+}

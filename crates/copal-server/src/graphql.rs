@@ -18,15 +18,18 @@ use axum::{Json, Router};
 
 use copal_blob::BlobStore;
 use copal_core::{CopalError, FileId, FileState, TenantId};
-use copal_store::repo::file as file_repo;
+use copal_store::repo::{file as file_repo, flow as flow_repo};
 use janus::runtime::graphql::build_schema;
 use janus::runtime::{
     BoxFuture, Dispatcher, JanusContext, JanusError, ListOutput, Middleware, Next, Operation,
     Outcome, Payload, Resolvers, SortDirection,
 };
 
-use crate::app::{decode_cursor, encode_cursor, issue_grant_core, AppState};
-use crate::wire::wire_file;
+use crate::app::{
+    decode_cursor, decode_run_cursor, encode_cursor, encode_run_cursor, issue_grant_core,
+    retry_run_core, start_run_core, AppState, StartRunRequest,
+};
+use crate::wire::{wire_file, wire_run};
 
 /// The per-request tenant, seeded from the transport by the HTTP layer.
 #[derive(Debug, Clone)]
@@ -93,7 +96,11 @@ fn dispatcher<B: BlobStore + 'static>(
     let list_state = state.clone();
     let get_state = state.clone();
     let url_state = state.clone();
-    let remove_state = state;
+    let remove_state = state.clone();
+    let runs_list_state = state.clone();
+    let runs_get_state = state.clone();
+    let runs_start_state = state.clone();
+    let runs_retry_state = state;
 
     let resolvers = Resolvers::new()
         .list("files", move |ctx, args| {
@@ -181,6 +188,104 @@ fn dispatcher<B: BlobStore + 'static>(
                     .await
                     .map_err(to_janus_error)?;
                 Ok(None)
+            }
+        })
+        .list("runs", move |ctx, args| {
+            let state = runs_list_state.clone();
+            async move {
+                let tenant = tenant_of(&ctx)?;
+                let after = args
+                    .cursor
+                    .as_deref()
+                    .map(decode_run_cursor)
+                    .transpose()
+                    .map_err(|e| JanusError::BadRequest(e.0.to_string()))?;
+                let ascending = matches!(&args.sort, Some((_, SortDirection::Asc)));
+                let status = args
+                    .filters
+                    .get("status")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_owned);
+                let limit = i64::from(args.limit);
+                let runs = flow_repo::list_runs(
+                    &state.store,
+                    &tenant,
+                    limit,
+                    after.as_ref(),
+                    ascending,
+                    status.as_deref(),
+                )
+                .await
+                .map_err(to_janus_error)?;
+                let next_cursor = if runs.len() as i64 == limit {
+                    runs.last().map(|last| {
+                        encode_run_cursor(&flow_repo::RunListPosition {
+                            created_at: last.created_at.clone(),
+                            id: last.run_id(),
+                        })
+                    })
+                } else {
+                    None
+                };
+                Ok(ListOutput {
+                    items: runs.iter().map(wire_run).collect(),
+                    next_cursor,
+                })
+            }
+        })
+        .get("runs", move |ctx, args| {
+            let state = runs_get_state.clone();
+            async move {
+                let tenant = tenant_of(&ctx)?;
+                let run = flow_repo::get_run(&state.store, &tenant, &args.id)
+                    .await
+                    .map_err(to_janus_error)?;
+                Ok(run.as_ref().map(wire_run))
+            }
+        })
+        .action("runs", "start", move |ctx, args| {
+            let state = runs_start_state.clone();
+            async move {
+                let tenant = tenant_of(&ctx)?;
+                let request = StartRunRequest {
+                    workflow: args
+                        .input
+                        .get("workflow")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_owned(),
+                    input: args.input.get("input").cloned().unwrap_or_default(),
+                    file: args
+                        .input
+                        .get("file")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_owned),
+                    idempotency_key: args
+                        .input
+                        .get("idempotency_key")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_owned),
+                    mode: args
+                        .input
+                        .get("mode")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_owned),
+                };
+                start_run_core(&state, &tenant, request)
+                    .await
+                    .map(|(_, body)| Some(body))
+                    .map_err(|e| to_janus_error(e.0))
+            }
+        })
+        .action("runs", "retry", move |ctx, args| {
+            let state = runs_retry_state.clone();
+            async move {
+                let tenant = tenant_of(&ctx)?;
+                let run_id = args.id.as_deref().unwrap_or_default();
+                retry_run_core(&state, &tenant, run_id)
+                    .await
+                    .map(Some)
+                    .map_err(|e| to_janus_error(e.0))
             }
         });
 

@@ -80,6 +80,12 @@ fn the_live_graphql_schema_serves_the_generated_sdl_shapes() {
         "file(id: ID!): File",
         "fileIssueUrl(id: ID!, ttlSecs: Int, maxUses: Int): JSON!",
         "fileRemove(id: ID!): Boolean!",
+        "type Run {",
+        "runs(limit: Int = 100, cursor: String, status: String, sort: RunSort): RunPage!",
+        "run(id: ID!): Run",
+        "runStart(workflow: String!, input: JSON, file: String, idempotencyKey: String, \
+         mode: String): JSON!",
+        "runRetry(id: ID!): JSON!",
     ] {
         assert!(sdl.contains(line), "SDL missing {line:?}:\n{sdl}");
     }

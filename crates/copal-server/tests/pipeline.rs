@@ -16,14 +16,25 @@ use copal_server::pipeline::standard_registry;
 use copal_server::{build_router, AppState};
 use copal_store::{Store, StoreConfig};
 
-async fn pipelined_stack() -> (axum::Router, FlowEngine, tempfile::TempDir) {
+async fn pipelined_stack_with(
+    enforce_type_match: bool,
+) -> (axum::Router, FlowEngine, tempfile::TempDir) {
     let store = Store::connect(StoreConfig::memory()).await.unwrap();
     let dir = tempfile::tempdir().unwrap();
     let blobs = FsBlobStore::open(dir.path().to_str().unwrap()).unwrap();
-    let registry = standard_registry(store.clone(), blobs.clone(), ExtensionPolicy::standard());
+    let registry = standard_registry(
+        store.clone(),
+        blobs.clone(),
+        ExtensionPolicy::standard(),
+        enforce_type_match,
+    );
     let state = AppState::new(store, blobs).with_flow(registry);
     let engine = state.flow.clone();
     (build_router(state), engine, dir)
+}
+
+async fn pipelined_stack() -> (axum::Router, FlowEngine, tempfile::TempDir) {
+    pipelined_stack_with(false).await
 }
 
 async fn json_body(response: axum::response::Response) -> Value {
@@ -185,11 +196,141 @@ async fn duplicate_content_reprocessing_dedupes_by_run_key() {
     let response = router.clone().oneshot(upload).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let record = json_body(response).await;
-    // Deduped run already completed, so no worker will finalize this
-    // scan; the finalize replay path is exercised by requeueing in the
-    // journal tests. Here the record self-heals on the next pipeline
-    // pass -- for the slice we assert the dedupe left the run
-    // completed rather than spawning a second.
-    assert_eq!(record["state"], "scanning");
+    // The dedupe hit resolves IN the upload: the completed run's
+    // verdict stands (same file, same path, same bytes), so the fresh
+    // scan finalizes to ready immediately — no worker involved, no
+    // stranded scanning state.
+    assert_eq!(record["state"], "ready");
+    assert_eq!(record["metadata"]["processing"]["verdict"], "clean");
     assert!(!engine.tick("w").await.unwrap(), "no second run enqueued");
+}
+
+#[tokio::test]
+async fn enforcement_quarantines_declared_type_lies() {
+    // Annotate-only by default: the lie is recorded, the file serves.
+    let (router, engine, _dir) = pipelined_stack().await;
+    let (id, _) = create_and_upload(&router, "notes.txt", "text/plain", b"%PDF-1.7 not text").await;
+    assert!(engine.tick("w").await.unwrap());
+    let meta = req(
+        "GET",
+        &format!("/v1/files/{id}"),
+        Some("acme"),
+        Body::empty(),
+    );
+    let record = json_body(router.clone().oneshot(meta).await.unwrap()).await;
+    assert_eq!(record["state"], "ready");
+    assert_eq!(record["metadata"]["processing"]["type_matches"], false);
+
+    // Enforcing: the same lie becomes a blocking verdict.
+    let (router, engine, _dir) = pipelined_stack_with(true).await;
+    let (id, _) = create_and_upload(&router, "notes.txt", "text/plain", b"%PDF-1.7 not text").await;
+    assert!(engine.tick("w").await.unwrap());
+    let meta = req(
+        "GET",
+        &format!("/v1/files/{id}"),
+        Some("acme"),
+        Body::empty(),
+    );
+    let record = json_body(router.clone().oneshot(meta).await.unwrap()).await;
+    assert_eq!(record["state"], "quarantined");
+    assert_eq!(
+        record["metadata"]["processing"]["verdict_reason"],
+        "declared text/plain but content is application/pdf",
+    );
+}
+
+/// The stranded-scanning slice, fully real: a pipeline that fails
+/// because the bytes are unreadable propagates failure to the file,
+/// the failure is visible in the runs listing, and the retry route
+/// recovers everything once the bytes are back.
+#[tokio::test]
+async fn failed_pipeline_propagates_and_retry_recovers() {
+    let (router, engine, dir) = pipelined_stack().await;
+
+    let (id, record) = create_and_upload(&router, "fragile.bin", "text/plain", b"payload").await;
+    assert_eq!(record["state"], "scanning");
+    let digest = record["digest"].as_str().unwrap().to_owned();
+
+    // Sabotage: remove the blob object, so sniff_type cannot read it.
+    let object = dir
+        .path()
+        .join("objects")
+        .join(&digest[0..2])
+        .join(&digest[2..4])
+        .join(&digest);
+    std::fs::remove_file(&object).expect("blob object exists");
+
+    // The worker claims, every sniff attempt fails, the run fails —
+    // and the failure PROPAGATES: the file leaves scanning for failed.
+    assert!(engine.tick("w").await.unwrap());
+    let meta = req(
+        "GET",
+        &format!("/v1/files/{id}"),
+        Some("acme"),
+        Body::empty(),
+    );
+    let record = json_body(router.clone().oneshot(meta).await.unwrap()).await;
+    assert_eq!(record["state"], "failed", "propagation moved the file");
+
+    // The failure is visible in the runs listing.
+    let list = req("GET", "/v1/runs?status=failed", Some("acme"), Body::empty());
+    let body = json_body(router.clone().oneshot(list).await.unwrap()).await;
+    let items = body["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["workflow"], "post_upload");
+    assert!(items[0]["error"].as_str().unwrap().contains("sniff_type"));
+    let run_id = items[0]["id"].as_str().unwrap().to_owned();
+
+    // Restore the bytes (content-addressed: same content, same path).
+    std::fs::write(&object, b"payload").unwrap();
+
+    // Retry: 202, the file returns to scanning, the run to pending.
+    let retry = req(
+        "POST",
+        &format!("/v1/runs/{run_id}/retry"),
+        Some("acme"),
+        Body::from(""),
+    );
+    let response = router.clone().oneshot(retry).await.unwrap();
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let meta = req(
+        "GET",
+        &format!("/v1/files/{id}"),
+        Some("acme"),
+        Body::empty(),
+    );
+    let record = json_body(router.clone().oneshot(meta).await.unwrap()).await;
+    assert_eq!(record["state"], "scanning");
+
+    // A second retry while pending refuses — only failed runs retry.
+    let retry = req(
+        "POST",
+        &format!("/v1/runs/{run_id}/retry"),
+        Some("acme"),
+        Body::from(""),
+    );
+    assert_eq!(
+        router.clone().oneshot(retry).await.unwrap().status(),
+        StatusCode::CONFLICT
+    );
+
+    // The worker finishes the job this time.
+    assert!(engine.tick("w").await.unwrap());
+    let meta = req(
+        "GET",
+        &format!("/v1/files/{id}"),
+        Some("acme"),
+        Body::empty(),
+    );
+    let record = json_body(router.clone().oneshot(meta).await.unwrap()).await;
+    assert_eq!(record["state"], "ready");
+    assert_eq!(record["metadata"]["processing"]["verdict"], "clean");
+    let run = req(
+        "GET",
+        &format!("/v1/runs/{run_id}"),
+        Some("acme"),
+        Body::empty(),
+    );
+    let body = json_body(router.clone().oneshot(run).await.unwrap()).await;
+    assert_eq!(body["status"], "completed");
 }

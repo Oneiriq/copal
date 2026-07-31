@@ -27,6 +27,21 @@ class FilePage:
   items: list[File] = field(default_factory=list)
   next_cursor: str | None = None
 
+@dataclass
+class Run:
+  id: str
+  workflow: str
+  status: str
+  created_at: str
+  output: Any | None = None
+  error: str | None = None
+  ended_at: str | None = None
+
+@dataclass
+class RunPage:
+  items: list[Run] = field(default_factory=list)
+  next_cursor: str | None = None
+
 class Client:
   def __init__(self, base_url: str, tenant: str) -> None:
     self.base_url = base_url.rstrip('/')
@@ -63,4 +78,23 @@ class Client:
 
   def remove_file(self, id: str) -> None:
     return self._request('DELETE', f'/v1/files/{id}')
+
+  def list_runs(self, limit: int | None = None, cursor: str | None = None) -> RunPage:
+    query = {k: v for k, v in {'limit': limit, 'cursor': cursor}.items() if v is not None}
+    suffix = f'?{urllib.parse.urlencode(query)}' if query else ''
+    payload = self._request('GET', f'/v1/runs{suffix}')
+    return RunPage(
+      items=[Run(**{k: v for k, v in item.items() if k in Run.__dataclass_fields__}) for item in payload.get('items', [])],
+      next_cursor=payload.get('next_cursor'),
+    )
+
+  def get_run(self, id: str) -> Run:
+    item = self._request('GET', f'/v1/runs/{id}')
+    return Run(**{k: v for k, v in item.items() if k in Run.__dataclass_fields__})
+
+  def start_run(self, body: dict[str, Any] | None = None) -> Any:
+    return self._request('POST', f'/v1/runs', body or {})
+
+  def retry_run(self, id: str) -> Any:
+    return self._request('POST', f'/v1/runs/{id}/retry')
 

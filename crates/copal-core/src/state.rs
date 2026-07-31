@@ -59,7 +59,10 @@ impl FileState {
             // previous content keeps serving throughout (servability is
             // digest-based, not state-based).
             Ready => &[Uploading, Deleted],
-            Failed => &[Uploading, Deleted],
+            // Failed -> Scanning is a PROCESSING retry: the bytes and
+            // digest already landed; only the pipeline needs to run
+            // again. Callers gate it on digest presence.
+            Failed => &[Uploading, Scanning, Deleted],
             Quarantined => &[Deleted],
             Deleted => &[],
         }

@@ -30,6 +30,27 @@ pub struct FilePage {
     pub next_cursor: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct Run {
+    pub id: String,
+    pub workflow: String,
+    pub status: String,
+    #[serde(default)]
+    pub output: Option<Value>,
+    #[serde(default)]
+    pub error: Option<String>,
+    pub created_at: String,
+    #[serde(default)]
+    pub ended_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RunPage {
+    pub items: Vec<Run>,
+    #[serde(default)]
+    pub next_cursor: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct Client {
     base_url: String,
@@ -74,6 +95,33 @@ impl Client {
         let url = format!("{}/v1/files/{id}", self.base_url);
         self.http.delete(url).header("x-copal-tenant", &self.tenant).send().await?.error_for_status()?;
         Ok(())
+    }
+
+    pub async fn list_runs(&self, limit: Option<u32>, cursor: Option<&str>) -> Result<RunPage, Error> {
+        let mut url = format!("{}/v1/runs", self.base_url);
+        let mut query: Vec<(String, String)> = Vec::new();
+        if let Some(limit) = limit { query.push(("limit".into(), limit.to_string())); }
+        if let Some(cursor) = cursor { query.push(("cursor".into(), cursor.to_string())); }
+        if !query.is_empty() {
+            let joined: Vec<String> = query.iter().map(|(k, v)| format!("{k}={v}")).collect();
+            url = format!("{url}?{}", joined.join("&"));
+        }
+        Ok(self.http.get(url).header("x-copal-tenant", &self.tenant).send().await?.error_for_status()?.json().await?)
+    }
+
+    pub async fn get_run(&self, id: &str) -> Result<Run, Error> {
+        let url = format!("{}/v1/runs/{id}", self.base_url);
+        Ok(self.http.get(url).header("x-copal-tenant", &self.tenant).send().await?.error_for_status()?.json().await?)
+    }
+
+    pub async fn start_run(&self, input: Value) -> Result<Value, Error> {
+        let url = format!("{}/v1/runs", self.base_url);
+        Ok(self.http.post(url).header("x-copal-tenant", &self.tenant).json(&input).send().await?.error_for_status()?.json().await?)
+    }
+
+    pub async fn retry_run(&self, id: &str) -> Result<Value, Error> {
+        let url = format!("{}/v1/runs/{id}/retry", self.base_url);
+        Ok(self.http.post(url).header("x-copal-tenant", &self.tenant).send().await?.error_for_status()?.json().await?)
     }
 
 }

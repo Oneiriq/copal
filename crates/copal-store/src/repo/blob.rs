@@ -152,17 +152,29 @@ impl BlobGcRow {
     }
 }
 
-/// List blob rows for a GC pass, oldest-marked first is not needed --
-/// the pass visits every row it can see. Bounded; a pass over a larger
-/// population continues next tick.
-pub async fn list_blobs(store: &Store, limit: i64) -> copal_core::Result<Vec<BlobGcRow>> {
-    let query = Query::new()
+/// List one batch of blob rows for a GC pass, keyset-ordered by id
+/// (blob ids ARE digests, so the order is total and stable). `after`
+/// resumes past the previous batch — the sweep loops batches until a
+/// short page, so every blob is visited every pass regardless of
+/// population size.
+pub async fn list_blobs(
+    store: &Store,
+    limit: i64,
+    after: Option<&ContentDigest>,
+) -> copal_core::Result<Vec<BlobGcRow>> {
+    let mut query = Query::new()
         .select(Some(vec![
             "id".to_owned(),
             "refcount".to_owned(),
             "unreferenced_since".to_owned(),
         ]))
         .from_table(TABLE)
+        .map_err(|e| map_store_err("list_blobs", e))?;
+    if let Some(after) = after {
+        query = query.where_str(format!("id > {}", rid(after)?));
+    }
+    let query = query
+        .order_by("id", "ASC")
         .map_err(|e| map_store_err("list_blobs", e))?
         .limit(limit)
         .map_err(|e| map_store_err("list_blobs", e))?;

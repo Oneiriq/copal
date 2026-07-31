@@ -23,7 +23,7 @@ use std::sync::Arc;
 use serde_json::Value;
 
 use copal_core::{CopalError, FileId, TenantId};
-use copal_store::repo::flow as flow_repo;
+use copal_store::repo::{file as file_repo, flow as flow_repo};
 use copal_store::Store;
 
 pub use copal_store::repo::flow::{RunRow, StepRow};
@@ -201,6 +201,7 @@ impl FlowEngine {
             Err(err) => {
                 flow_repo::finish_run(&self.store, &run_id, "failed", None, Some(&err.to_string()))
                     .await?;
+                self.fail_scanning_subject(run).await;
                 return Err(err);
             }
         };
@@ -221,6 +222,7 @@ impl FlowEngine {
                     let message = err.to_string();
                     flow_repo::finish_run(&self.store, &run_id, "failed", None, Some(&message))
                         .await?;
+                    self.fail_scanning_subject(run).await;
                     return Err(err);
                 }
             };
@@ -228,6 +230,38 @@ impl FlowEngine {
 
         flow_repo::finish_run(&self.store, &run_id, "completed", Some(&carried), None).await?;
         Ok(carried)
+    }
+
+    /// A terminally failed run fails its scanning subject: the file
+    /// leaves the transient `scanning` state for retryable `failed`
+    /// instead of stranding until the age sweep. Best-effort — a
+    /// conflict means the subject was not scanning (non-pipeline run,
+    /// or something else already moved it), which is fine.
+    async fn fail_scanning_subject(&self, run: &RunRow) {
+        let Some(parsed) = run.file_id() else {
+            return;
+        };
+        let (Ok(file), Ok(tenant)) = (parsed, TenantId::parse(&run.tenant_id)) else {
+            return;
+        };
+        match file_repo::transition(
+            &self.store,
+            &tenant,
+            &file,
+            copal_core::FileState::Scanning,
+            copal_core::FileState::Failed,
+            Default::default(),
+        )
+        .await
+        {
+            Ok(_) => {
+                tracing::warn!(run = %run.run_id(), file = %file, "failed run moved its subject scanning -> failed");
+            }
+            Err(CopalError::Conflict(_)) => {}
+            Err(err) => {
+                tracing::warn!(run = %run.run_id(), file = %file, error = %err, "failed-run propagation could not move the subject");
+            }
+        }
     }
 
     /// Execute one step with journaled attempts and in-process retry up

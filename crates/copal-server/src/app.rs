@@ -17,7 +17,8 @@ use copal_core::{CopalError, FileId, FileSpec, FileState, TenantId};
 use copal_flow::{FlowEngine, FlowRegistry, RunSpec};
 use copal_sign::GrantToken;
 use copal_store::repo::{
-    blob as blob_repo, file as file_repo, grant as grant_repo, version as version_repo,
+    blob as blob_repo, file as file_repo, flow as flow_repo, grant as grant_repo,
+    version as version_repo,
 };
 use copal_store::Store;
 use serde::Deserialize;
@@ -94,8 +95,9 @@ pub fn build_router<B: BlobStore + 'static>(state: AppState<B>) -> Router {
             "/v1/files/{id}/content",
             put(upload_content::<B>).get(download_content::<B>),
         )
-        .route("/v1/runs", post(start_run::<B>))
+        .route("/v1/runs", post(start_run::<B>).get(list_runs::<B>))
         .route("/v1/runs/{id}", get(get_run::<B>))
+        .route("/v1/runs/{id}/retry", post(retry_run::<B>))
         .route("/v1/files/{id}/versions", get(list_versions::<B>))
         .route(
             "/v1/files/{id}/versions/{number}/content",
@@ -355,6 +357,7 @@ async fn upload_content<B: BlobStore>(
     )
     .await?;
 
+    let mut record = record;
     if pipelined {
         // Deterministic idempotency key: a crashed or repeated enqueue
         // dedupes instead of double-processing this content.
@@ -365,7 +368,7 @@ async fn upload_content<B: BlobStore>(
             "declared_type": record.content_type,
             "path": record.path,
         });
-        state
+        let (run_id, created) = state
             .flow
             .enqueue(
                 &tenant,
@@ -377,6 +380,38 @@ async fn upload_content<B: BlobStore>(
                 },
             )
             .await?;
+        if !created {
+            // A dedupe hit means this exact content was processed (or is
+            // being processed) for this file before. A COMPLETED run will
+            // never finalize the fresh scan — resolve it here: same file,
+            // same path, same bytes means the recorded verdict stands and
+            // the annotations are already on the metadata. (A quarantined
+            // verdict cannot reach this path: quarantined files refuse
+            // upload claims.) A FAILED run gets retried so a worker
+            // finishes the scan.
+            match flow_repo::get_run(&state.store, &tenant, &run_id).await? {
+                Some(run) if run.status == "completed" => {
+                    match file_repo::transition(
+                        &state.store,
+                        &tenant,
+                        &id,
+                        FileState::Scanning,
+                        FileState::Ready,
+                        Default::default(),
+                    )
+                    .await
+                    {
+                        Ok(updated) => record = updated,
+                        Err(CopalError::Conflict(_)) => {}
+                        Err(other) => return Err(other.into()),
+                    }
+                }
+                Some(run) if run.status == "failed" => {
+                    let _ = flow_repo::retry_failed(&state.store, &run_id).await?;
+                }
+                _ => {}
+            }
+        }
     }
     Ok(Json(crate::wire::wire_file(&record)))
 }
@@ -610,28 +645,28 @@ async fn download_version<B: BlobStore>(
 }
 
 /// Request body for starting a run.
-#[derive(Debug, Deserialize)]
-struct StartRunRequest {
-    workflow: String,
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct StartRunRequest {
+    pub(crate) workflow: String,
     #[serde(default)]
-    input: serde_json::Value,
+    pub(crate) input: serde_json::Value,
     #[serde(default)]
-    file: Option<String>,
+    pub(crate) file: Option<String>,
     #[serde(default)]
-    idempotency_key: Option<String>,
+    pub(crate) idempotency_key: Option<String>,
     /// "async" (default) enqueues for a worker; "sync" executes
     /// in-request over the same journal.
     #[serde(default)]
-    mode: Option<String>,
+    pub(crate) mode: Option<String>,
 }
 
-/// Start a workflow run.
-async fn start_run<B: BlobStore>(
-    State(state): State<AppState<B>>,
-    headers: HeaderMap,
-    Json(request): Json<StartRunRequest>,
-) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
-    let tenant = tenant_from(&headers)?;
+/// Start a workflow run — the shared core behind the REST handler and
+/// the GraphQL action resolver.
+pub(crate) async fn start_run_core<B: BlobStore>(
+    state: &AppState<B>,
+    tenant: &TenantId,
+    request: StartRunRequest,
+) -> Result<(StatusCode, serde_json::Value), ApiError> {
     let subject = match &request.file {
         Some(raw) => Some(FileId::parse(raw)?),
         None => None,
@@ -643,29 +678,196 @@ async fn start_run<B: BlobStore>(
     };
     match request.mode.as_deref() {
         Some("sync") => {
-            let (run_id, output) = state
-                .flow
-                .run_sync(&tenant, &request.workflow, spec)
-                .await?;
+            let (run_id, output) = state.flow.run_sync(tenant, &request.workflow, spec).await?;
             Ok((
                 StatusCode::OK,
-                Json(json!({ "run_id": run_id, "output": output })),
+                json!({ "run_id": run_id, "output": output }),
             ))
         }
         None | Some("async") => {
-            let (run_id, created) = state.flow.enqueue(&tenant, &request.workflow, spec).await?;
+            let (run_id, created) = state.flow.enqueue(tenant, &request.workflow, spec).await?;
             let status = if created {
                 StatusCode::ACCEPTED
             } else {
                 StatusCode::OK
             };
-            Ok((status, Json(json!({ "run_id": run_id }))))
+            Ok((status, json!({ "run_id": run_id })))
         }
         Some(other) => Err(CopalError::validation(format!("unknown mode {other:?}")).into()),
     }
 }
 
-/// Run status plus its journal.
+/// Start a workflow run.
+async fn start_run<B: BlobStore>(
+    State(state): State<AppState<B>>,
+    headers: HeaderMap,
+    Json(request): Json<StartRunRequest>,
+) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
+    let tenant = tenant_from(&headers)?;
+    let (status, body) = start_run_core(&state, &tenant, request).await?;
+    Ok((status, Json(body)))
+}
+
+/// Retry a failed run — the shared core behind the REST handler and
+/// the GraphQL action resolver.
+///
+/// Order matters: the subject file (when failed) flips back to
+/// `scanning` BEFORE the run CAS, or a claimed worker could finalize
+/// against a still-failed file and read the lost CAS as an idempotent
+/// no-op. A crash between the two writes self-heals: the stale-scan
+/// sweep fails the file again. The retried run gets one fresh attempt
+/// per remaining step (journaled attempts still count toward the
+/// ceiling).
+pub(crate) async fn retry_run_core<B: BlobStore>(
+    state: &AppState<B>,
+    tenant: &TenantId,
+    run_id: &str,
+) -> Result<serde_json::Value, ApiError> {
+    let run = flow_repo::get_run(&state.store, tenant, run_id)
+        .await?
+        .ok_or_else(|| CopalError::not_found(format!("run {run_id}")))?;
+    if run.status != "failed" {
+        return Err(CopalError::conflict(format!(
+            "only failed runs can be retried; run is {}",
+            run.status,
+        ))
+        .into());
+    }
+
+    if let Some(parsed) = run.file_id() {
+        let file_id = parsed?;
+        if let Some(record) = file_repo::get_file(&state.store, tenant, &file_id).await? {
+            if record.state == FileState::Failed {
+                // A run for content that was since re-uploaded must not
+                // resurrect: its finalize would stamp stale annotations.
+                let run_digest = run.input.get("digest").and_then(|v| v.as_str());
+                let file_digest = record.digest.as_ref().map(|d| d.as_str());
+                if let (Some(expected), Some(actual)) = (run_digest, file_digest) {
+                    if expected != actual {
+                        return Err(CopalError::conflict(
+                            "run was superseded by a newer upload; re-upload instead",
+                        )
+                        .into());
+                    }
+                }
+                match file_repo::transition(
+                    &state.store,
+                    tenant,
+                    &file_id,
+                    FileState::Failed,
+                    FileState::Scanning,
+                    Default::default(),
+                )
+                .await
+                {
+                    Ok(_) | Err(CopalError::Conflict(_)) => {}
+                    Err(other) => return Err(other.into()),
+                }
+            }
+        }
+    }
+
+    if !flow_repo::retry_failed(&state.store, run_id).await? {
+        return Err(CopalError::conflict(format!(
+            "run {run_id} is no longer failed (a racing retry or worker moved it)",
+        ))
+        .into());
+    }
+    Ok(json!({ "run_id": run_id, "status": "pending" }))
+}
+
+/// Retry a failed run.
+async fn retry_run<B: BlobStore>(
+    State(state): State<AppState<B>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
+    let tenant = tenant_from(&headers)?;
+    let body = retry_run_core(&state, &tenant, &id).await?;
+    Ok((StatusCode::ACCEPTED, Json(body)))
+}
+
+/// Run-listing query parameters, matching the generated document.
+#[derive(Debug, Deserialize)]
+struct RunListQuery {
+    #[serde(default)]
+    limit: Option<i64>,
+    #[serde(default)]
+    cursor: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    sort: Option<String>,
+}
+
+pub(crate) fn encode_run_cursor(position: &flow_repo::RunListPosition) -> String {
+    hex::encode(format!("{}|{}", position.created_at, position.id))
+}
+
+pub(crate) fn decode_run_cursor(raw: &str) -> Result<flow_repo::RunListPosition, ApiError> {
+    let invalid = || CopalError::validation("malformed cursor");
+    let bytes = hex::decode(raw).map_err(|_| invalid())?;
+    let text = String::from_utf8(bytes).map_err(|_| invalid())?;
+    let (created_at, id) = text.split_once('|').ok_or_else(invalid)?;
+    Ok(flow_repo::RunListPosition {
+        created_at: created_at.to_owned(),
+        id: id.to_owned(),
+    })
+}
+
+const RUN_STATUSES: &[&str] = &["pending", "running", "completed", "failed", "cancelled"];
+
+/// List a tenant's runs.
+async fn list_runs<B: BlobStore>(
+    State(state): State<AppState<B>>,
+    headers: HeaderMap,
+    axum::extract::Query(params): axum::extract::Query<RunListQuery>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let tenant = tenant_from(&headers)?;
+    let limit = params.limit.unwrap_or(100).clamp(1, 100);
+    let after = params
+        .cursor
+        .as_deref()
+        .map(decode_run_cursor)
+        .transpose()?;
+    if let Some(status) = params.status.as_deref() {
+        if !RUN_STATUSES.contains(&status) {
+            return Err(CopalError::validation(format!("unknown status {status:?}")).into());
+        }
+    }
+    let ascending = match params.sort.as_deref() {
+        None | Some("-created_at") => false,
+        Some("created_at") => true,
+        Some(other) => {
+            return Err(CopalError::validation(format!("unknown sort {other:?}")).into());
+        }
+    };
+    let runs = flow_repo::list_runs(
+        &state.store,
+        &tenant,
+        limit,
+        after.as_ref(),
+        ascending,
+        params.status.as_deref(),
+    )
+    .await?;
+    let next_cursor = if runs.len() as i64 == limit {
+        runs.last().map(|last| {
+            encode_run_cursor(&flow_repo::RunListPosition {
+                created_at: last.created_at.clone(),
+                id: last.run_id(),
+            })
+        })
+    } else {
+        None
+    };
+    let items: Vec<serde_json::Value> = runs.iter().map(crate::wire::wire_run).collect();
+    Ok(Json(json!({ "items": items, "next_cursor": next_cursor })))
+}
+
+/// Run status plus its journal. The run itself renders through the
+/// contract wire mapper; the step journal is REST-only detail layered
+/// on top (kept as `run_id` alongside `id` for compatibility).
 async fn get_run<B: BlobStore>(
     State(state): State<AppState<B>>,
     headers: HeaderMap,
@@ -690,14 +892,9 @@ async fn get_run<B: BlobStore>(
             })
         })
         .collect();
-    Ok(Json(json!({
-        "run_id": run.run_id(),
-        "workflow": run.workflow_key,
-        "status": run.status,
-        "output": run.output,
-        "error": run.run_error,
-        "created_at": run.created_at,
-        "ended_at": run.ended_at,
-        "steps": steps,
-    })))
+    let mut body = crate::wire::wire_run(&run);
+    let map = body.as_object_mut().expect("wire_run is an object");
+    map.insert("run_id".into(), json!(run.run_id()));
+    map.insert("steps".into(), json!(steps));
+    Ok(Json(body))
 }

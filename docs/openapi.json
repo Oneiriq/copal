@@ -57,6 +57,49 @@
           "updated_at"
         ],
         "type": "object"
+      },
+      "Run": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "ended_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "output": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "status": {
+            "type": "string"
+          },
+          "workflow": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "workflow",
+          "status",
+          "created_at"
+        ],
+        "type": "object"
       }
     }
   },
@@ -200,6 +243,162 @@
           },
           "required": true
         },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Action result."
+          }
+        }
+      }
+    },
+    "/v1/runs": {
+      "get": {
+        "operationId": "list_runs",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 100,
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Filter by status (indexed).",
+            "in": "query",
+            "name": "status",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Sort order; every value is backed by an index.",
+            "in": "query",
+            "name": "sort",
+            "schema": {
+              "enum": [
+                "created_at",
+                "-created_at"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/Run"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Page of resources."
+          }
+        }
+      },
+      "post": {
+        "description": "Start a workflow run.",
+        "operationId": "start_runs",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "file": {
+                    "type": "string"
+                  },
+                  "idempotency_key": {
+                    "type": "string"
+                  },
+                  "input": {
+                    "type": "object"
+                  },
+                  "mode": {
+                    "type": "string"
+                  },
+                  "workflow": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "workflow"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Action result."
+          }
+        }
+      }
+    },
+    "/v1/runs/{id}": {
+      "get": {
+        "operationId": "get_runs",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Run"
+                }
+              }
+            },
+            "description": "The resource."
+          },
+          "404": {
+            "description": "Not found."
+          }
+        }
+      }
+    },
+    "/v1/runs/{id}/retry": {
+      "post": {
+        "description": "Retry a FAILED run with its journal intact; a failed subject file returns to scanning first, so the pipeline's finalize applies.",
+        "operationId": "retry_runs",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {

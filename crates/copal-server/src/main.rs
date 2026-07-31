@@ -22,7 +22,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(list) => copal_core::ExtensionPolicy::from_list(list),
         None => copal_core::ExtensionPolicy::standard(),
     };
-    let registry = copal_server::pipeline::standard_registry(store.clone(), blobs.clone(), policy);
+    let registry = copal_server::pipeline::standard_registry(
+        store.clone(),
+        blobs.clone(),
+        policy,
+        config.enforce_type_match,
+    );
     let mut state = AppState::new(store.clone(), blobs).with_flow(registry.clone());
     state.limits = copal_server::app::Limits {
         max_upload_bytes: config.max_upload_bytes,

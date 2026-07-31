@@ -22,6 +22,8 @@ pub struct Config {
     pub sweeps: crate::sweeps::SweepConfig,
     /// Comma-separated blocked extension list for the upload pipeline.
     pub blocked_extensions: Option<String>,
+    /// Quarantine declared-type lies instead of merely annotating them.
+    pub enforce_type_match: bool,
 }
 
 fn env_or(key: &str, default: &str) -> String {
@@ -58,11 +60,13 @@ impl Config {
             max_upload_bytes: env_parse("COPAL_MAX_UPLOAD_BYTES", 1 << 30),
             upload_lease_secs: env_parse("COPAL_UPLOAD_LEASE_SECS", 900),
             blocked_extensions: std::env::var("COPAL_BLOCKED_EXTENSIONS").ok(),
+            enforce_type_match: env_parse("COPAL_ENFORCE_TYPE_MATCH", false),
             sweeps: crate::sweeps::SweepConfig {
                 interval_secs: env_parse("COPAL_SWEEP_INTERVAL_SECS", 60),
                 staging_ttl_secs: env_parse("COPAL_STAGING_TTL_SECS", 86_400),
                 gc_grace_secs: env_parse("COPAL_GC_GRACE_SECS", 86_400),
                 gc_batch: env_parse("COPAL_GC_BATCH", 1_000),
+                scan_stale_secs: env_parse("COPAL_SCAN_STALE_SECS", 3_600),
             },
         }
     }

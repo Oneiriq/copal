@@ -25,12 +25,36 @@ type FilePage {
   nextCursor: String
 }
 
+type Run {
+  id: ID!
+  workflow: String!
+  status: String!
+  output: JSON
+  error: String
+  created_at: DateTime!
+  ended_at: DateTime
+}
+
+enum RunSort {
+  CREATED_AT_ASC
+  CREATED_AT_DESC
+}
+
+type RunPage {
+  items: [Run!]!
+  nextCursor: String
+}
+
 type Query {
   files(limit: Int = 100, cursor: String, state: String, sort: FileSort): FilePage!
   file(id: ID!): File
+  runs(limit: Int = 100, cursor: String, status: String, sort: RunSort): RunPage!
+  run(id: ID!): Run
 }
 
 type Mutation {
   fileIssueUrl(id: ID!, ttlSecs: Int, maxUses: Int): JSON!
   fileRemove(id: ID!): Boolean!
+  runStart(workflow: String!, input: JSON, file: String, idempotencyKey: String, mode: String): JSON!
+  runRetry(id: ID!): JSON!
 }

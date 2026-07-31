@@ -127,8 +127,18 @@ pub async fn list_versions(
     store: &Store,
     tenant: &TenantId,
     file: &FileId,
+    limit: i64,
+    before_number: Option<u64>,
 ) -> copal_core::Result<Vec<FileVersion>> {
-    let query = versions_query(tenant, file)?;
+    let mut query = versions_query(tenant, file)?;
+    if let Some(before) = before_number {
+        // Keyset on the monotone version number: newest first, resume
+        // strictly below the last number of the previous page.
+        query = query.where_str(format!("number < {before}"));
+    }
+    let query = query
+        .limit(limit)
+        .map_err(|e| map_store_err("list_versions", e))?;
     let rows: Vec<VersionRow> = query_records(store.client(), &query)
         .await
         .map_err(|e| map_store_err("list_versions", e))?;

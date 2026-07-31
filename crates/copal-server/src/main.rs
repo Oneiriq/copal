@@ -42,6 +42,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         upload_lease_secs: config.upload_lease_secs,
     };
     tracing::info!(instance = %state.instance_id, "upload-claim owner id");
+    let instance_id = state.instance_id.clone();
     let router = build_router(state);
 
     // Maintenance: claim reaping, staging TTL, and content GC share one
@@ -50,6 +51,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         store.clone(),
         FsBlobStore::open(&config.blob_root)?,
         config.sweeps,
+        instance_id,
     ));
 
     // Durable execution worker: claims pending runs and executes them

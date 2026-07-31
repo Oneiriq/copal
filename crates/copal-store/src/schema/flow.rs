@@ -14,7 +14,23 @@ use surql::schema::{
 
 /// All tables in this cluster.
 pub fn tables() -> Vec<TableDefinition> {
-    vec![workflow_run_table(), workflow_step_table()]
+    vec![
+        workflow_run_table(),
+        workflow_step_table(),
+        service_lease_table(),
+    ]
+}
+
+/// Named coordination leases (record id = lease name). One holder at a
+/// time via CAS; expiry makes crashes self-healing. The sweep loop
+/// uses `sweeps` so replicas stop duplicating maintenance work.
+fn service_lease_table() -> TableDefinition {
+    table_schema("service_lease")
+        .with_mode(TableMode::Schemafull)
+        .with_fields([
+            built(string_field("holder").assertion("$value != ''")),
+            built(datetime_field("expires_at").nullable(true)),
+        ])
 }
 
 fn built(builder: surql::schema::FieldBuilder) -> FieldDefinition {

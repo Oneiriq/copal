@@ -694,20 +694,41 @@ async fn revoke_grant<B: BlobStore>(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// List a file's version history, newest first.
+/// Version-listing query parameters: bounded pages, keyset on the
+/// monotone version number.
+#[derive(Debug, Deserialize)]
+struct VersionListQuery {
+    #[serde(default)]
+    limit: Option<i64>,
+    /// Resume strictly below this version number.
+    #[serde(default)]
+    before: Option<u64>,
+}
+
+/// List a file's version history, newest first, paginated.
 async fn list_versions<B: BlobStore>(
     State(state): State<AppState<B>>,
     headers: HeaderMap,
     Path(id): Path<String>,
-) -> Result<Json<Vec<copal_core::FileVersion>>, ApiError> {
+    axum::extract::Query(params): axum::extract::Query<VersionListQuery>,
+) -> Result<Json<serde_json::Value>, ApiError> {
     let tenant = crate::auth::authenticate(&state, &headers).await?;
     let id = parse_id(&id)?;
     // Tenancy and tombstone filtering ride the file fetch.
     file_repo::get_file(&state.store, &tenant, &id)
         .await?
         .ok_or_else(|| CopalError::not_found(format!("file {id}")))?;
-    let versions = version_repo::list_versions(&state.store, &tenant, &id).await?;
-    Ok(Json(versions))
+    let limit = params.limit.unwrap_or(50).clamp(1, 100);
+    let versions =
+        version_repo::list_versions(&state.store, &tenant, &id, limit, params.before).await?;
+    let next_before = if versions.len() as i64 == limit {
+        versions.last().map(|v| v.number)
+    } else {
+        None
+    };
+    Ok(Json(
+        json!({ "items": versions, "next_before": next_before }),
+    ))
 }
 
 /// Serve one historical version's bytes.

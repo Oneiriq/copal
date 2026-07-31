@@ -325,3 +325,75 @@ async fn stale_scanning_files_fail_after_the_age_ceiling() {
     // The digest survives: prior content would keep serving.
     assert!(record.digest.is_some());
 }
+
+#[tokio::test]
+async fn a_live_run_shields_its_scanning_file_from_the_stale_sweep() {
+    use copal_core::ExtensionPolicy;
+    use copal_server::pipeline::standard_registry;
+
+    let store = Store::connect(StoreConfig::memory()).await.unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let blobs = FsBlobStore::open(dir.path().to_str().unwrap()).unwrap();
+    let registry = standard_registry(
+        store.clone(),
+        blobs.clone(),
+        ExtensionPolicy::standard(),
+        false,
+    );
+    let state = copal_server::AppState::new(store.clone(), blobs.clone()).with_flow(registry);
+    let engine = state.flow.clone();
+    let router = copal_server::build_router(state);
+
+    // Upload lands in scanning with a PENDING run behind it.
+    let id = upload_file(&router, "slow-scan.bin", b"large and slow").await;
+
+    // Even at a zero age ceiling, the live run shields the file.
+    let zero = SweepConfig {
+        scan_stale_secs: 0,
+        ..SweepConfig::default()
+    };
+    let report = run_pass(&store, &blobs, &zero).await;
+    assert_eq!(
+        report.stale_scans_failed, 0,
+        "a pending/running pipeline must not be failed out from under its worker",
+    );
+
+    // Once the worker finishes, nothing is stale either.
+    assert!(engine.tick("w").await.unwrap());
+    let meta = req(
+        "GET",
+        &format!("/v1/files/{id}"),
+        Some("acme"),
+        Body::empty(),
+    );
+    let record = json_body(router.clone().oneshot(meta).await.unwrap()).await;
+    assert_eq!(record["state"], "ready");
+}
+
+#[tokio::test]
+async fn the_sweep_lease_elects_one_holder_at_a_time() {
+    use copal_store::repo::flow::try_acquire_lease;
+
+    let (_router, store, _blobs, _dir) = stack().await;
+
+    assert!(try_acquire_lease(&store, "sweeps", "node-a", 300)
+        .await
+        .unwrap());
+    assert!(
+        !try_acquire_lease(&store, "sweeps", "node-b", 300)
+            .await
+            .unwrap(),
+        "a live rival lease must refuse",
+    );
+    // The holder renews freely.
+    assert!(try_acquire_lease(&store, "sweeps", "node-a", 300)
+        .await
+        .unwrap());
+    // An expired lease is up for grabs (zero TTL expires immediately).
+    assert!(try_acquire_lease(&store, "sweeps", "node-a", 0)
+        .await
+        .unwrap());
+    assert!(try_acquire_lease(&store, "sweeps", "node-b", 300)
+        .await
+        .unwrap());
+}

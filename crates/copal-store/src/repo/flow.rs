@@ -363,6 +363,45 @@ pub async fn finish_run(
     Ok(())
 }
 
+/// Acquire (or renew) the named coordination lease for `holder`.
+///
+/// Returns whether the holder owns the lease after the call. The CAS
+/// admits the current holder (renewal), an unarmed lease, or an
+/// expired one; a live rival's lease refuses. A crash between create
+/// and arm leaves `expires_at` NONE, which the next acquire treats as
+/// free — self-healing, like every other lease here.
+pub async fn try_acquire_lease(
+    store: &Store,
+    name: &str,
+    holder: &str,
+    ttl_secs: u32,
+) -> copal_core::Result<bool> {
+    let rid = RecordID::<()>::new("service_lease", name).map_err(|e| map_store_err("lease", e))?;
+    // Ensure the row exists; a create conflict just means a rival (or
+    // an earlier run) already made it.
+    let _ = create_record(
+        store.client(),
+        &rid.to_string(),
+        json!({ "holder": holder }),
+    )
+    .await;
+    let query = Query::new()
+        .update_set(rid.to_string())
+        .map_err(|e| map_store_err("lease", e))?
+        .set("holder", Value::from(holder))
+        .map_err(|e| map_store_err("lease", e))?
+        .set_expr("expires_at", raw(format!("time::now() + {ttl_secs}s")))
+        .map_err(|e| map_store_err("lease", e))?
+        .where_str(format!(
+            "(holder = '{holder}' OR expires_at IS NONE OR expires_at < time::now())",
+        ))
+        .return_after();
+    let rows: Vec<Value> = query_records(store.client(), &query)
+        .await
+        .map_err(|e| map_store_err("lease", e))?;
+    Ok(!rows.is_empty())
+}
+
 /// Retry a FAILED run: CAS it back to `pending` with its journal
 /// intact. Returns false when the run is not in `failed` (already
 /// retried, still running, or completed) — the guard rides the UPDATE,

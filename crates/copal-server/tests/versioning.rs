@@ -92,12 +92,32 @@ async fn re_upload_mints_versions_and_history_stays_readable() {
         Some("acme"),
         Body::empty(),
     );
-    let listed = json_body(router.clone().oneshot(versions).await.unwrap()).await;
-    let listed = listed.as_array().unwrap();
+    let body = json_body(router.clone().oneshot(versions).await.unwrap()).await;
+    let listed = body["items"].as_array().unwrap();
     assert_eq!(listed.len(), 2);
     assert_eq!(listed[0]["number"], 2);
     assert_eq!(listed[1]["number"], 1);
     assert_ne!(listed[0]["digest"], listed[1]["digest"]);
+    assert!(body["next_before"].is_null(), "short page has no cursor");
+
+    // Bounded pages walk the history without overlap.
+    let page = req(
+        "GET",
+        &format!("/v1/files/{id}/versions?limit=1"),
+        Some("acme"),
+        Body::empty(),
+    );
+    let body = json_body(router.clone().oneshot(page).await.unwrap()).await;
+    assert_eq!(body["items"][0]["number"], 2);
+    assert_eq!(body["next_before"], 2);
+    let page = req(
+        "GET",
+        &format!("/v1/files/{id}/versions?limit=1&before=2"),
+        Some("acme"),
+        Body::empty(),
+    );
+    let body = json_body(router.clone().oneshot(page).await.unwrap()).await;
+    assert_eq!(body["items"][0]["number"], 1);
 
     // The superseded version's bytes remain reachable by number.
     let (status, bytes) = get_bytes(&router, &format!("/v1/files/{id}/versions/1/content")).await;

@@ -165,16 +165,37 @@ async fn gc_pass<B: BlobStore>(
     }
 }
 
-/// The interval loop the server spawns.
-pub async fn run_forever<B: BlobStore>(store: Store, blobs: B, config: SweepConfig) {
+/// The interval loop the server spawns. Replicas elect a leader per
+/// pass through the `sweeps` coordination lease: losers skip the pass
+/// entirely, so a fleet does not multiply GC and reap work (every
+/// sweep is CAS-guarded and safe to duplicate — this is about waste
+/// and about not widening the GC resurrection window across
+/// instances). A crashed leader's lease expires and any replica takes
+/// over.
+pub async fn run_forever<B: BlobStore>(
+    store: Store,
+    blobs: B,
+    config: SweepConfig,
+    holder: String,
+) {
     let mut ticker = tokio::time::interval(Duration::from_secs(config.interval_secs.max(1)));
+    let lease_ttl = u32::try_from((config.interval_secs * 3).clamp(90, 3600)).unwrap_or(3600);
     loop {
         ticker.tick().await;
+        match flow_repo::try_acquire_lease(&store, "sweeps", &holder, lease_ttl).await {
+            Ok(true) => {}
+            Ok(false) => continue,
+            Err(err) => {
+                tracing::warn!(error = %err, "sweep lease check failed; skipping pass");
+                continue;
+            }
+        }
         let report = run_pass(&store, &blobs, &config).await;
         if report != SweepReport::default() {
             tracing::info!(
                 reaped = report.reaped_uploads,
                 runs = report.reaped_runs,
+                stale_scans = report.stale_scans_failed,
                 staging = report.staging_removed,
                 marked = report.blobs_marked,
                 collected = report.blobs_collected,

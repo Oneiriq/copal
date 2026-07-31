@@ -66,13 +66,18 @@ master key, returned once at registration, read back only to sign
 deliveries. The webhook surface and its dispatcher exist only when the
 key is configured.
 
-Rotating the blob master key invalidates sealed credentials and
-webhook secrets (they open under the key that sealed them); re-mint
-gateway credentials and re-register webhook endpoints as part of any
-master-key rotation.
+Rotating the blob master key invalidates sealed credentials, webhook
+secrets, and edge keys (they open under the key that sealed them);
+re-mint them as part of any master-key rotation.
+
+Edge keys (`cg2` signing secrets) complete the sealed-secret set:
+minted per tenant, sealed under the master key, returned once for the
+operator to install at the CDN edge, revocable as a whole (which ends
+every token the key signed).
 
 Custody and lifecycle actions land in the audit trail: `key.minted`,
 `key.revoked`, `s3credential.minted`, `s3credential.revoked`,
+`edgekey.minted`, `edgekey.revoked`, `edge.issued`,
 `webhook.registered`, `webhook.removed`, `grant.issued`,
 `grant.revoked`, `file.removed`. When
 the proxy forwards a client origin (`x-forwarded-for`), the first hop

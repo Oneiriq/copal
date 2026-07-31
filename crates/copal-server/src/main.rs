@@ -128,6 +128,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let webhook_routes = webhook_cipher
         .as_ref()
         .map(|cipher| copal_server::webhooks::webhook_router(state.clone(), cipher.clone()));
+    // cg2 edge tokens share the sealed-secret custody rule, so the
+    // surface exists under the same gate.
+    let edge_routes = webhook_cipher
+        .as_ref()
+        .map(|cipher| copal_server::edge::edge_router(state.clone(), cipher.clone()));
+    let edge_admin = webhook_cipher
+        .as_ref()
+        .map(|cipher| copal_server::edge::edge_admin_router(state.clone(), cipher.clone()));
     if let Some(cipher) = webhook_cipher {
         tokio::spawn(copal_server::webhooks::run_forever(
             store.clone(),
@@ -144,6 +152,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Some(extras) = admin_extras {
                 admin = admin.merge(extras);
             }
+            if let Some(extras) = edge_admin {
+                admin = admin.merge(extras);
+            }
             let listener = tokio::net::TcpListener::bind(admin_bind).await?;
             tracing::info!(addr = %listener.local_addr()?, "admin surface listening");
             tokio::spawn(async move {
@@ -155,6 +166,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Some(webhooks) = webhook_routes {
                 router = router.merge(webhooks);
             }
+            if let Some(edge) = edge_routes {
+                router = router.merge(edge);
+            }
             router
         }
         None => {
@@ -164,6 +178,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             if let Some(webhooks) = webhook_routes {
                 router = router.merge(webhooks);
+            }
+            if let Some(edge) = edge_routes {
+                router = router.merge(edge);
+            }
+            if let Some(extras) = edge_admin {
+                router = router.merge(extras);
             }
             router
         }

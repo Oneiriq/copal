@@ -2,6 +2,7 @@
 
 pub mod auth;
 pub mod blob;
+pub mod edge;
 pub mod eventing;
 pub mod file;
 pub mod flow;

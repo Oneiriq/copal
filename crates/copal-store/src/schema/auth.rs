@@ -13,7 +13,32 @@ use surql::schema::{
 
 /// All tables in this cluster.
 pub fn tables() -> Vec<TableDefinition> {
-    vec![api_key_table(), s3_credential_table(), audit_event_table()]
+    vec![
+        api_key_table(),
+        s3_credential_table(),
+        edge_key_table(),
+        audit_event_table(),
+    ]
+}
+
+/// cg2 edge signing keys. Same custody rule as S3 credentials: the
+/// server signs with the secret, so it stores it sealed under the
+/// blob master key; the operator installs the same secret at their
+/// CDN edge. Revoking the key ends every token it signed.
+fn edge_key_table() -> TableDefinition {
+    table_schema("edge_key")
+        .with_mode(TableMode::Schemafull)
+        .with_fields([
+            built(string_field("tenant_id").assertion("$value != ''")),
+            built(string_field("secret_sealed").assertion("$value != ''")),
+            built(datetime_field("revoked_at").nullable(true)),
+            built(
+                datetime_field("created_at")
+                    .default("time::now()")
+                    .readonly(true),
+            ),
+        ])
+        .with_indexes([index("idx_edgekey_tenant", ["tenant_id", "created_at"])])
 }
 
 /// S3 gateway credentials. SigV4 verification derives an HMAC chain

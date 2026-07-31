@@ -233,6 +233,25 @@ revalidations leave the counter alone, and a revoked or expired grant stops
 revalidating as well. Range requests consume per request, so media seeking
 should use TTL-bounded grants without `max_uses`.
 
+## Edge tokens
+
+`POST /v1/files/{id}/edge-url` issues a `cg2` token: a stateless HMAC
+capability signed by the tenant's newest active edge key. The body
+takes `ttl_secs` (default 300, ceiling 86400). `GET /v1/edge/{token}`
+redeems anonymously, verifying the signature, the expiry, and the key
+against the token's own claims; refusals are the same uniform 404 the
+grant family uses.
+
+The point of `cg2` is verification WITHOUT a database hop: a CDN
+worker or reverse proxy holding the same edge secret validates the
+signature and expiry locally and serves its cache, never touching the
+origin for authorization. Edge keys are minted on the admin surface
+(`POST /v1/admin/tenants/{tenant}/edge-keys`), stored sealed under the
+blob master key, and the secret appears once; install that value at
+the edge. Statelessness trades away per-token revocation: a token
+lives until it expires or its whole key is revoked, so keep TTLs
+short and use `cg1` grants where revocation or use counting matters.
+
 ## Runs
 
 ```

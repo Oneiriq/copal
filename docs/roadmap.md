@@ -67,8 +67,11 @@ sealed gateway credentials).
    (filesystem or S3-compatible bucket with its own keys), tenant
    pinning on the admin surface, per-row backend resolution so
    reassignment never strands content, residency-routed collection.
-4. `cg2` HMAC edge tokens for CDN-edge verification without a
-   database hop, beside the stateful `cg1` family.
+4. `cg2` HMAC edge tokens shipped: stateless capabilities under
+   sealed tenant edge keys, verifiable at a CDN worker with no
+   database hop, expiry-bounded with whole-key revocation. The tier
+   is complete; what remains of it lives in the deferred seams above
+   (GraphQL subscriptions, external transformers).
 
 ## Tier 4: platform depth
 

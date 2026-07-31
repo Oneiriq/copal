@@ -944,9 +944,13 @@ dependencies = [
 name = "copal-sign"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "copal-core",
  "hex",
+ "hmac 0.12.1",
  "rand 0.9.5",
+ "serde",
+ "serde_json",
  "sha2 0.10.9",
  "ulid",
 ]

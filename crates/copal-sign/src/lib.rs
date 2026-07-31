@@ -134,17 +134,142 @@ pub fn hash_secret(secret: &str) -> String {
 /// should be "nothing".
 pub fn verify_secret(presented_secret: &str, stored_hash: &str) -> bool {
     let presented = hash_secret(presented_secret);
-    let a = presented.as_bytes();
-    let b = stored_hash.as_bytes();
+    constant_time_eq(presented.as_bytes(), stored_hash.as_bytes())
+}
+
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
     }
     a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
+const EDGE_PREFIX: &str = "cg2";
+
+/// The signed claims inside a `cg2` edge token.
+///
+/// `cg2` is the stateless half of the capability family: an HMAC over
+/// these claims under a tenant edge key, verifiable anywhere the key
+/// is installed (a CDN worker, a reverse proxy) without a database
+/// hop. The price of statelessness is revocation: an issued token
+/// lives until it expires or its whole key is revoked, so keep TTLs
+/// short. `cg1` remains the revocable, use-counted family.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct EdgeClaims {
+    /// The edge key that signed this token.
+    pub key: String,
+    /// Owning tenant.
+    pub tenant: String,
+    /// File the token serves.
+    pub file: String,
+    /// Unix expiry, seconds.
+    pub exp: i64,
+}
+
+/// A parsed-but-unverified edge token: claims plus the material needed
+/// to verify once the key is fetched.
+#[derive(Debug, Clone)]
+pub struct EdgeToken {
+    pub claims: EdgeClaims,
+    payload_b64: String,
+    signature_b64: String,
+}
+
+fn b64(data: &[u8]) -> String {
+    use base64::Engine as _;
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(data)
+}
+
+fn hmac_sign(secret: &str, data: &[u8]) -> Vec<u8> {
+    use hmac::Mac as _;
+    let mut mac = hmac::Hmac::<Sha256>::new_from_slice(secret.as_bytes())
+        .expect("hmac accepts any key length");
+    mac.update(data);
+    mac.finalize().into_bytes().to_vec()
+}
+
+impl EdgeToken {
+    /// Sign claims into the wire form
+    /// `cg2.<b64url payload>.<b64url hmac>`. The signature covers the
+    /// encoded payload bytes exactly, so no canonicalization question
+    /// exists between signer and verifier.
+    pub fn sign(claims: &EdgeClaims, secret: &str) -> copal_core::Result<String> {
+        let payload = serde_json::to_vec(claims)
+            .map_err(|e| CopalError::Store(format!("edge claims encode: {e}")))?;
+        let payload_b64 = b64(&payload);
+        let signature_b64 = b64(&hmac_sign(secret, payload_b64.as_bytes()));
+        Ok(format!("{EDGE_PREFIX}.{payload_b64}.{signature_b64}"))
+    }
+
+    /// Parse the wire form without verifying. The claims name the key;
+    /// the caller fetches it and then calls [`EdgeToken::verify`].
+    /// Rejections are uniform.
+    pub fn parse(raw: &str) -> copal_core::Result<Self> {
+        use base64::Engine as _;
+        let fault = || CopalError::validation("malformed edge token");
+        let mut parts = raw.split('.');
+        let (Some(prefix), Some(payload_b64), Some(signature_b64), None) =
+            (parts.next(), parts.next(), parts.next(), parts.next())
+        else {
+            return Err(fault());
+        };
+        if prefix != EDGE_PREFIX {
+            return Err(fault());
+        }
+        let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(payload_b64)
+            .map_err(|_| fault())?;
+        let claims: EdgeClaims = serde_json::from_slice(&payload).map_err(|_| fault())?;
+        Ok(Self {
+            claims,
+            payload_b64: payload_b64.to_owned(),
+            signature_b64: signature_b64.to_owned(),
+        })
+    }
+
+    /// Verify the signature under `secret` and the expiry against
+    /// `now_unix`, in that order, constant-time on the signature.
+    pub fn verify(&self, secret: &str, now_unix: i64) -> bool {
+        let expected = b64(&hmac_sign(secret, self.payload_b64.as_bytes()));
+        constant_time_eq(expected.as_bytes(), self.signature_b64.as_bytes())
+            && self.claims.exp > now_unix
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn edge_tokens_round_trip_and_refuse_tampering() {
+        let claims = EdgeClaims {
+            key: "01hkey".to_owned(),
+            tenant: "acme".to_owned(),
+            file: "01hfile".to_owned(),
+            exp: 2_000_000_000,
+        };
+        let token = EdgeToken::sign(&claims, "edge-secret").unwrap();
+        assert!(token.starts_with("cg2."));
+
+        let parsed = EdgeToken::parse(&token).unwrap();
+        assert_eq!(parsed.claims, claims);
+        assert!(parsed.verify("edge-secret", 1_900_000_000));
+        assert!(!parsed.verify("wrong-secret", 1_900_000_000), "key binds");
+        assert!(!parsed.verify("edge-secret", 2_000_000_001), "expiry gates");
+
+        // Any byte change in the payload breaks the signature.
+        let mut forged = token.clone();
+        let idx = forged.rfind('.').unwrap() - 1;
+        let original = forged.as_bytes()[idx];
+        let swapped = if original == b'A' { b'B' } else { b'A' };
+        unsafe { forged.as_bytes_mut()[idx] = swapped };
+        if let Ok(tampered) = EdgeToken::parse(&forged) {
+            assert!(!tampered.verify("edge-secret", 1_900_000_000));
+        }
+
+        assert!(EdgeToken::parse("cg2.notb64.sig").is_err());
+        assert!(EdgeToken::parse("cg1.a.b").is_err());
+    }
 
     #[test]
     fn mint_encode_parse_round_trips() {

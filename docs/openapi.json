@@ -22,6 +22,9 @@
           "id": {
             "type": "string"
           },
+          "metadata": {
+            "type": "object"
+          },
           "path": {
             "type": "string"
           },
@@ -48,6 +51,7 @@
           "state",
           "access",
           "content_type",
+          "metadata",
           "version_count",
           "created_at",
           "updated_at"
@@ -115,6 +119,25 @@
       }
     },
     "/v1/files/{id}": {
+      "delete": {
+        "description": "Soft-delete: tombstone the record and free its live path; bytes are reclaimed by garbage collection once nothing references them.",
+        "operationId": "remove_files",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "No content."
+          }
+        }
+      },
       "get": {
         "operationId": "get_files",
         "parameters": [
@@ -140,6 +163,53 @@
           },
           "404": {
             "description": "Not found."
+          }
+        }
+      }
+    },
+    "/v1/files/{id}/url": {
+      "post": {
+        "description": "Issue a signed URL for a servable file.",
+        "operationId": "issue_url_files",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "max_uses": {
+                    "type": "integer"
+                  },
+                  "ttl_secs": {
+                    "type": "integer"
+                  }
+                },
+                "required": [],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Action result."
           }
         }
       }

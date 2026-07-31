@@ -13,7 +13,7 @@ use axum::{Json, Router};
 use futures::StreamExt as _;
 
 use copal_blob::{BlobStore, StoredBlob};
-use copal_core::{CopalError, FileId, FileRecord, FileSpec, FileState, TenantId};
+use copal_core::{CopalError, FileId, FileSpec, FileState, TenantId};
 use copal_flow::{FlowEngine, FlowRegistry, RunSpec};
 use copal_sign::GrantToken;
 use copal_store::repo::{
@@ -82,7 +82,7 @@ impl<B: BlobStore> AppState<B> {
 /// `DefaultBodyLimit` guards extractor-based bodies only, and the
 /// upload path consumes the raw request stream. JSON routes keep axum's
 /// small built-in default limit.
-pub fn build_router<B: BlobStore>(state: AppState<B>) -> Router {
+pub fn build_router<B: BlobStore + 'static>(state: AppState<B>) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
         .route("/v1/files", post(create_file::<B>).get(list_files::<B>))
@@ -108,7 +108,10 @@ pub fn build_router<B: BlobStore>(state: AppState<B>) -> Router {
             "/v1/grants/{grant_ref}",
             get(redeem_grant::<B>).delete(revoke_grant::<B>),
         )
-        .with_state(state)
+        .with_state(state.clone())
+        // The second face: /graphql, served by Janus from the same
+        // contract, dispatching into the same repositories.
+        .merge(crate::graphql::graphql_router(state))
 }
 
 async fn healthz() -> &'static str {
@@ -134,7 +137,7 @@ async fn create_file<B: BlobStore>(
     State(state): State<AppState<B>>,
     headers: HeaderMap,
     Json(spec): Json<FileSpec>,
-) -> Result<(StatusCode, Json<FileRecord>), ApiError> {
+) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
     let tenant = tenant_from(&headers)?;
     let created = file_repo::create_file(&state.store, &tenant, &spec, "api").await?;
     // 201 for a fresh record, 200 for an idempotency-key replay that
@@ -144,25 +147,30 @@ async fn create_file<B: BlobStore>(
     } else {
         StatusCode::OK
     };
-    Ok((status, Json(created.record)))
+    Ok((status, Json(crate::wire::wire_file(&created.record))))
 }
 
-/// Listing query parameters.
+/// Listing query parameters, matching the generated OpenAPI document:
+/// `state` filters (indexed), `sort` is `created_at` or `-created_at`.
 #[derive(Debug, Deserialize)]
 struct ListQuery {
     #[serde(default)]
     limit: Option<i64>,
     #[serde(default)]
     cursor: Option<String>,
+    #[serde(default)]
+    state: Option<String>,
+    #[serde(default)]
+    sort: Option<String>,
 }
 
 /// Encode a page position as an opaque cursor. Hex over a delimited
 /// pair -- opacity is the point; clients never construct these.
-fn encode_cursor(position: &file_repo::ListPosition) -> String {
+pub(crate) fn encode_cursor(position: &file_repo::ListPosition) -> String {
     hex::encode(format!("{}|{}", position.created_at, position.id))
 }
 
-fn decode_cursor(raw: &str) -> Result<file_repo::ListPosition, ApiError> {
+pub(crate) fn decode_cursor(raw: &str) -> Result<file_repo::ListPosition, ApiError> {
     let invalid = || CopalError::validation("malformed cursor");
     let bytes = hex::decode(raw).map_err(|_| invalid())?;
     let text = String::from_utf8(bytes).map_err(|_| invalid())?;
@@ -173,6 +181,11 @@ fn decode_cursor(raw: &str) -> Result<file_repo::ListPosition, ApiError> {
     })
 }
 
+fn parse_state_param(raw: &str) -> Result<FileState, ApiError> {
+    serde_json::from_value(serde_json::Value::String(raw.to_owned()))
+        .map_err(|_| CopalError::validation(format!("unknown state {raw:?}")).into())
+}
+
 async fn list_files<B: BlobStore>(
     State(state): State<AppState<B>>,
     headers: HeaderMap,
@@ -181,7 +194,23 @@ async fn list_files<B: BlobStore>(
     let tenant = tenant_from(&headers)?;
     let limit = params.limit.unwrap_or(100).clamp(1, 100);
     let after = params.cursor.as_deref().map(decode_cursor).transpose()?;
-    let records = file_repo::list_files(&state.store, &tenant, limit, after.as_ref()).await?;
+    let state_filter = params.state.as_deref().map(parse_state_param).transpose()?;
+    let ascending = match params.sort.as_deref() {
+        None | Some("-created_at") => false,
+        Some("created_at") => true,
+        Some(other) => {
+            return Err(CopalError::validation(format!("unknown sort {other:?}")).into());
+        }
+    };
+    let records = file_repo::list_files(
+        &state.store,
+        &tenant,
+        limit,
+        after.as_ref(),
+        ascending,
+        state_filter,
+    )
+    .await?;
     // A full page may have more behind it; the cursor points past the
     // last row either way and a drained next page returns empty.
     let next_cursor = if records.len() as i64 == limit {
@@ -194,22 +223,21 @@ async fn list_files<B: BlobStore>(
     } else {
         None
     };
-    Ok(Json(
-        json!({ "items": records, "next_cursor": next_cursor }),
-    ))
+    let items: Vec<serde_json::Value> = records.iter().map(crate::wire::wire_file).collect();
+    Ok(Json(json!({ "items": items, "next_cursor": next_cursor })))
 }
 
 async fn get_file<B: BlobStore>(
     State(state): State<AppState<B>>,
     headers: HeaderMap,
     Path(id): Path<String>,
-) -> Result<Json<FileRecord>, ApiError> {
+) -> Result<Json<serde_json::Value>, ApiError> {
     let tenant = tenant_from(&headers)?;
     let id = parse_id(&id)?;
     let record = file_repo::get_file(&state.store, &tenant, &id)
         .await?
         .ok_or_else(|| CopalError::not_found(format!("file {id}")))?;
-    Ok(Json(record))
+    Ok(Json(crate::wire::wire_file(&record)))
 }
 
 /// Soft-delete: tombstone the record and free its live path. Bytes go
@@ -237,7 +265,7 @@ async fn upload_content<B: BlobStore>(
     State(state): State<AppState<B>>,
     Path(id): Path<String>,
     request: Request,
-) -> Result<Json<FileRecord>, ApiError> {
+) -> Result<Json<serde_json::Value>, ApiError> {
     let tenant = tenant_from(request.headers())?;
     let id = parse_id(&id)?;
 
@@ -350,7 +378,7 @@ async fn upload_content<B: BlobStore>(
             )
             .await?;
     }
-    Ok(Json(record))
+    Ok(Json(crate::wire::wire_file(&record)))
 }
 
 async fn download_content<B: BlobStore>(
@@ -409,29 +437,29 @@ fn default_grant_ttl() -> u32 {
     900
 }
 
-/// Issue a signed URL for a servable file.
+/// Issue a signed URL for a servable file — the shared core behind the
+/// REST handler and the GraphQL action resolver.
 ///
 /// The response's `url` is relative -- the deployment's public base is
 /// the proxy's business. The token appears exactly once, here; the
 /// store keeps only its hash.
-async fn issue_grant<B: BlobStore>(
-    State(state): State<AppState<B>>,
-    headers: HeaderMap,
-    Path(id): Path<String>,
-    Json(request): Json<IssueGrantRequest>,
-) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
-    let tenant = tenant_from(&headers)?;
-    let id = parse_id(&id)?;
-    if request.ttl_secs == 0 || request.ttl_secs > 31_536_000 {
+pub(crate) async fn issue_grant_core<B: BlobStore>(
+    state: &AppState<B>,
+    tenant: &TenantId,
+    id: &FileId,
+    ttl_secs: u32,
+    max_uses: Option<u32>,
+) -> Result<serde_json::Value, ApiError> {
+    if ttl_secs == 0 || ttl_secs > 31_536_000 {
         return Err(CopalError::validation("ttl_secs must be between 1 and 31536000").into());
     }
-    if request.max_uses == Some(0) {
+    if max_uses == Some(0) {
         return Err(CopalError::validation("max_uses must be at least 1").into());
     }
 
     // Only a servable file gets a URL; a draft link would 404 until
     // upload anyway, and issuing it would leak lifecycle state.
-    let record = file_repo::get_file(&state.store, &tenant, &id)
+    let record = file_repo::get_file(&state.store, tenant, id)
         .await?
         .ok_or_else(|| CopalError::not_found(format!("file {id}")))?;
     if !record.servable_content() {
@@ -445,28 +473,37 @@ async fn issue_grant<B: BlobStore>(
     let token = GrantToken::mint();
     let grant = grant_repo::issue(
         &state.store,
-        &tenant,
-        &id,
+        tenant,
+        id,
         &token.grant_id,
         &token.secret_hash(),
         &grant_repo::GrantSpec {
-            ttl_secs: request.ttl_secs,
-            max_uses: request.max_uses,
+            ttl_secs,
+            max_uses,
             created_by: "api".to_owned(),
         },
     )
     .await?;
 
-    Ok((
-        StatusCode::CREATED,
-        Json(json!({
-            "grant_id": token.grant_id,
-            "token": token.encode(),
-            "url": format!("/v1/grants/{}", token.encode()),
-            "expires_at": grant.expires_at,
-            "max_uses": grant.max_uses,
-        })),
-    ))
+    Ok(json!({
+        "grant_id": token.grant_id,
+        "token": token.encode(),
+        "url": format!("/v1/grants/{}", token.encode()),
+        "expires_at": grant.expires_at,
+        "max_uses": grant.max_uses,
+    }))
+}
+
+async fn issue_grant<B: BlobStore>(
+    State(state): State<AppState<B>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(request): Json<IssueGrantRequest>,
+) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
+    let tenant = tenant_from(&headers)?;
+    let id = parse_id(&id)?;
+    let issued = issue_grant_core(&state, &tenant, &id, request.ttl_secs, request.max_uses).await?;
+    Ok((StatusCode::CREATED, Json(issued)))
 }
 
 /// Redeem a grant token: serve the file with no tenant header.

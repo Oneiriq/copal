@@ -156,23 +156,37 @@ pub struct ListPosition {
     pub id: FileId,
 }
 
-/// List a tenant's live files, newest first, keyset-paginated.
+/// List a tenant's live files, keyset-paginated; newest first unless
+/// `ascending`.
 ///
 /// Keyset rather than offset: a cursor stays correct under concurrent
 /// inserts and deletes, and the predicate rides the index instead of
-/// skipping rows. The tie-break on id makes the order total.
+/// skipping rows. The tie-break on id makes the order total; the
+/// cursor comparison flips with the direction.
 pub async fn list_files(
     store: &Store,
     tenant: &TenantId,
     limit: i64,
     after: Option<&ListPosition>,
+    ascending: bool,
+    state: Option<FileState>,
 ) -> copal_core::Result<Vec<FileRecord>> {
+    let (cmp, dir) = if ascending {
+        (">", "ASC")
+    } else {
+        ("<", "DESC")
+    };
     let mut query = Query::new()
         .select(None)
         .from_table(TABLE)
         .map_err(|e| map_store_err("list_files", e))?
         .where_(eq("tenant_id", tenant.as_str()))
         .where_(is_none("deleted_at"));
+    if let Some(state) = state {
+        // Rides idx_file_listing (tenant_id, state, created_at) — the
+        // filterable claim in the contract is this equality bind.
+        query = query.where_(eq("state", state.as_str()));
+    }
     if let Some(position) = after {
         let position_rid =
             rid(&position.id).map_err(|e| CopalError::validation(format!("cursor: {e}")))?;
@@ -180,15 +194,15 @@ pub async fn list_files(
         // created_at value is the engine's own RFC3339 rendering fed
         // back to it.
         query = query.where_str(format!(
-            "(created_at < d'{ts}' OR (created_at = d'{ts}' AND id < {id}))",
+            "(created_at {cmp} d'{ts}' OR (created_at = d'{ts}' AND id {cmp} {id}))",
             ts = position.created_at,
             id = position_rid,
         ));
     }
     let query = query
-        .order_by("created_at", "DESC")
+        .order_by("created_at", dir)
         .map_err(|e| map_store_err("list_files", e))?
-        .order_by("id", "DESC")
+        .order_by("id", dir)
         .map_err(|e| map_store_err("list_files", e))?
         .limit(limit)
         .map_err(|e| map_store_err("list_files", e))?;

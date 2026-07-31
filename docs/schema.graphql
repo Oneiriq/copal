@@ -1,0 +1,36 @@
+scalar DateTime
+scalar JSON
+
+type File {
+  id: ID!
+  path: String!
+  state: String!
+  access: String!
+  content_type: String!
+  size: Int
+  digest: String
+  metadata: JSON!
+  version_count: Int!
+  created_at: DateTime!
+  updated_at: DateTime!
+}
+
+enum FileSort {
+  CREATED_AT_ASC
+  CREATED_AT_DESC
+}
+
+type FilePage {
+  items: [File!]!
+  nextCursor: String
+}
+
+type Query {
+  files(limit: Int = 100, cursor: String, state: String, sort: FileSort): FilePage!
+  file(id: ID!): File
+}
+
+type Mutation {
+  fileIssueUrl(id: ID!, ttlSecs: Int, maxUses: Int): JSON!
+  fileRemove(id: ID!): Boolean!
+}

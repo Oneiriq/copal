@@ -86,7 +86,7 @@ async fn full_file_lifecycle() {
     assert_eq!(response.status(), StatusCode::OK);
     let ready = json_body(response).await;
     assert_eq!(ready["state"], "ready");
-    assert_eq!(ready["size_bytes"], payload.len());
+    assert_eq!(ready["size"], payload.len());
     let digest = ready["digest"].as_str().unwrap();
     assert_eq!(digest.len(), 64);
 

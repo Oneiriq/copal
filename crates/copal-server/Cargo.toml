@@ -24,6 +24,15 @@ futures = { workspace = true }
 ulid = { workspace = true }
 hex = { workspace = true }
 bytes = { workspace = true }
+# The contract layer, from its own repo. The files contract is defined
+# over copal-store's real schema; the drift gate compares generated
+# artifacts against the checked-in documents, and the RUNTIME serves
+# /graphql from the very same contract object — resolvers dispatch into
+# this crate's repositories through Janus middleware.
+oneiriq-janus = { git = "ssh://git@github.com/Oneiriq/janus.git", branch = "main", features = [
+    "graphql",
+] }
+async-graphql = { version = "7", features = ["dynamic-schema"] }
 
 [dev-dependencies]
 tempfile = { workspace = true }
@@ -31,8 +40,3 @@ ulid = { workspace = true }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 surrealdb = { version = "3", default-features = false, features = ["kv-mem"] }
-# The contract layer, from its own repo: the files contract is defined
-# over copal-store's real schema and the generated OpenAPI document is
-# compared against the checked-in artifact, so schema/API drift fails
-# this crate's tests.
-oneiriq-janus = { git = "ssh://git@github.com/Oneiriq/janus.git", branch = "main" }

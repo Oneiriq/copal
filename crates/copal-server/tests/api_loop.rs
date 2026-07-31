@@ -121,11 +121,12 @@ async fn full_file_lifecycle() {
     assert_eq!(&bytes[..], payload);
     assert_eq!(etag, format!("\"{digest}\""));
 
-    // The listing sees exactly one live file.
+    // The listing sees exactly one live file, enveloped for pagination.
     let list = req("GET", "/v1/files", Some("acme"), Body::empty());
     let response = router.clone().oneshot(list).await.unwrap();
     let listed = json_body(response).await;
-    assert_eq!(listed.as_array().unwrap().len(), 1);
+    assert_eq!(listed["items"].as_array().unwrap().len(), 1);
+    assert!(listed["next_cursor"].is_null());
 }
 
 #[tokio::test]
@@ -494,4 +495,65 @@ async fn grant_expiry_and_validation() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+/// Keyset pagination walks the full set without overlap or misses.
+#[tokio::test]
+async fn pagination_pages_are_disjoint_and_complete() {
+    let (router, _dir) = test_router().await;
+    for n in 0..5 {
+        let create = req(
+            "POST",
+            "/v1/files",
+            Some("acme"),
+            Body::from(json!({ "path": format!("p/{n}.txt") }).to_string()),
+        );
+        assert_eq!(
+            router.clone().oneshot(create).await.unwrap().status(),
+            StatusCode::CREATED
+        );
+    }
+
+    let mut seen = Vec::new();
+    let mut cursor: Option<String> = None;
+    loop {
+        let uri = match &cursor {
+            Some(c) => format!("/v1/files?limit=2&cursor={c}"),
+            None => "/v1/files?limit=2".to_owned(),
+        };
+        let page = json_body(
+            router
+                .clone()
+                .oneshot(req("GET", &uri, Some("acme"), Body::empty()))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let items = page["items"].as_array().unwrap().clone();
+        assert!(items.len() <= 2);
+        for item in &items {
+            seen.push(item["id"].as_str().unwrap().to_owned());
+        }
+        match page["next_cursor"].as_str() {
+            Some(next) => cursor = Some(next.to_owned()),
+            None => break,
+        }
+    }
+    // All five, exactly once, newest first.
+    assert_eq!(seen.len(), 5, "no misses: {seen:?}");
+    let unique: std::collections::BTreeSet<_> = seen.iter().collect();
+    assert_eq!(unique.len(), 5, "no overlaps: {seen:?}");
+
+    // A garbage cursor is a 400, not a scan.
+    let response = router
+        .clone()
+        .oneshot(req(
+            "GET",
+            "/v1/files?cursor=zzzz",
+            Some("acme"),
+            Body::empty(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }

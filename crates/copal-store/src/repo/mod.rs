@@ -3,3 +3,4 @@
 pub mod blob;
 pub mod file;
 pub mod grant;
+pub mod version;

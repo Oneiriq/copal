@@ -71,6 +71,11 @@ pub struct FileRecord {
     pub created_by: String,
     pub created_at: String,
     pub updated_at: String,
+    /// How many versions have completed. 0 until the first upload
+    /// finishes; the completion CAS increments it atomically, which is
+    /// also where version numbers come from.
+    #[serde(default)]
+    pub version_count: u64,
     /// Owner of the active upload claim, when one exists. Operational
     /// visibility: which instance is mid-upload, and whether a claim
     /// has gone stale.
@@ -79,6 +84,26 @@ pub struct FileRecord {
     /// When the active upload claim expires and becomes stealable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upload_lease_expires_at: Option<String>,
+}
+
+impl FileRecord {
+    /// Whether content may be served: bytes exist and the record is not
+    /// quarantined. Deliberately NOT state-based — a re-upload in
+    /// flight (or failed) keeps the previous version serving.
+    pub fn servable_content(&self) -> bool {
+        self.digest.is_some() && self.state != FileState::Quarantined
+    }
+}
+
+/// One frozen version of a file.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileVersion {
+    pub number: u64,
+    pub content_type: String,
+    pub size_bytes: u64,
+    pub digest: ContentDigest,
+    pub created_by: String,
+    pub created_at: String,
 }
 
 /// Result of a create: the record plus whether this call created it.

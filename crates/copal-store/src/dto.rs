@@ -29,6 +29,12 @@ pub(crate) struct FileRow {
     pub created_at: String,
     pub updated_at: String,
     #[serde(default)]
+    pub version_count: u64,
+    /// Raw record id of the current version link; consumed by the
+    /// completion flow as the next version's `prior`.
+    #[serde(default)]
+    pub current_version: Option<String>,
+    #[serde(default)]
     pub upload_lease_owner: Option<String>,
     #[serde(default)]
     pub upload_lease_expires_at: Option<String>,
@@ -66,6 +72,7 @@ impl FileRow {
             created_by: self.created_by,
             created_at: self.created_at,
             updated_at: self.updated_at,
+            version_count: self.version_count,
             upload_lease_owner: self.upload_lease_owner,
             upload_lease_expires_at: self.upload_lease_expires_at,
         })

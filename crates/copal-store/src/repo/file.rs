@@ -147,19 +147,48 @@ pub async fn get_file(
     row.into_domain().map(Some)
 }
 
-/// List a tenant's live files, newest first.
+/// Keyset position: strictly-after this row in (created_at DESC, id
+/// DESC) order. Both values come verbatim from the last row of the
+/// previous page.
+#[derive(Debug, Clone)]
+pub struct ListPosition {
+    pub created_at: String,
+    pub id: FileId,
+}
+
+/// List a tenant's live files, newest first, keyset-paginated.
+///
+/// Keyset rather than offset: a cursor stays correct under concurrent
+/// inserts and deletes, and the predicate rides the index instead of
+/// skipping rows. The tie-break on id makes the order total.
 pub async fn list_files(
     store: &Store,
     tenant: &TenantId,
     limit: i64,
+    after: Option<&ListPosition>,
 ) -> copal_core::Result<Vec<FileRecord>> {
-    let query = Query::new()
+    let mut query = Query::new()
         .select(None)
         .from_table(TABLE)
         .map_err(|e| map_store_err("list_files", e))?
         .where_(eq("tenant_id", tenant.as_str()))
-        .where_(is_none("deleted_at"))
+        .where_(is_none("deleted_at"));
+    if let Some(position) = after {
+        let position_rid =
+            rid(&position.id).map_err(|e| CopalError::validation(format!("cursor: {e}")))?;
+        // Datetime and record literals on the right-hand side; the
+        // created_at value is the engine's own RFC3339 rendering fed
+        // back to it.
+        query = query.where_str(format!(
+            "(created_at < d'{ts}' OR (created_at = d'{ts}' AND id < {id}))",
+            ts = position.created_at,
+            id = position_rid,
+        ));
+    }
+    let query = query
         .order_by("created_at", "DESC")
+        .map_err(|e| map_store_err("list_files", e))?
+        .order_by("id", "DESC")
         .map_err(|e| map_store_err("list_files", e))?
         .limit(limit)
         .map_err(|e| map_store_err("list_files", e))?;
@@ -217,13 +246,15 @@ pub async fn claim_upload(
     owner: &str,
     ttl_secs: u32,
 ) -> copal_core::Result<FileRecord> {
-    for from in [FileState::Draft, FileState::Failed] {
+    // Ready is claimable too: a re-upload starts the next version while
+    // the previous content keeps serving (servability is digest-based).
+    for from in [FileState::Draft, FileState::Failed, FileState::Ready] {
         match transition_with(store, tenant, id, from, FileState::Uploading, |q| {
             with_lease(q, owner, ttl_secs)
         })
         .await
         {
-            Ok(record) => return Ok(record),
+            Ok(row) => return row.into_domain(),
             Err(CopalError::Conflict(_)) => continue,
             Err(other) => return Err(other),
         }
@@ -314,6 +345,75 @@ pub async fn reap_expired_uploads(store: &Store) -> copal_core::Result<Vec<FileR
     rows.into_iter().map(FileRow::into_domain).collect()
 }
 
+/// Finish an upload: one CAS moves `uploading -> ready`, writes the
+/// payload columns, links the blob, and atomically increments
+/// `version_count` — whose returned value IS the new version number.
+/// The frozen version row is then recorded and linked as
+/// `current_version`.
+///
+/// A crash after the CAS leaves the file correct and servable with a
+/// version-history hole that self-identifies (`version_count` exceeds
+/// the version rows); a reconciliation sweep is the queued hardening.
+pub async fn complete_upload(
+    store: &Store,
+    tenant: &TenantId,
+    id: &FileId,
+    digest: &ContentDigest,
+    size_bytes: u64,
+    created_by: &str,
+) -> copal_core::Result<FileRecord> {
+    let blob_rid =
+        RecordID::<()>::new("blob", digest.as_str()).map_err(|e| map_store_err("complete", e))?;
+    let row = transition_with(
+        store,
+        tenant,
+        id,
+        FileState::Uploading,
+        FileState::Ready,
+        |query| {
+            query
+                .set("digest", Value::from(digest.as_str()))
+                .map_err(|e| map_store_err("complete", e))?
+                .set("size_bytes", Value::from(size_bytes))
+                .map_err(|e| map_store_err("complete", e))?
+                .set_expr("blob", raw(blob_rid.to_string()))
+                .map_err(|e| map_store_err("complete", e))?
+                .set_expr("version_count", raw("version_count + 1"))
+                .map_err(|e| map_store_err("complete", e))
+        },
+    )
+    .await?;
+
+    let snapshot = super::version::VersionSnapshot {
+        number: row.version_count,
+        content_type: row.content_type.clone(),
+        size_bytes,
+        digest: digest.clone(),
+        metadata_snapshot: row.metadata.clone(),
+        created_by: created_by.to_owned(),
+        prior_version_id: row.current_version.clone(),
+    };
+    let version_id = super::version::record_version(store, tenant, id, &snapshot).await?;
+
+    let link = Query::new()
+        .update_set(rid(id)?.to_string())
+        .map_err(|e| map_store_err("link_version", e))?
+        .set_expr("current_version", raw(version_id))
+        .map_err(|e| map_store_err("link_version", e))?
+        .where_(eq("tenant_id", tenant.as_str()))
+        .where_(eq("state", FileState::Ready.as_str()))
+        .return_after();
+    let rows: Vec<FileRow> = query_records(store.client(), &link)
+        .await
+        .map_err(|e| map_store_err("link_version", e))?;
+    match rows.into_iter().next() {
+        Some(row) => row.into_domain(),
+        // The file moved (deleted mid-completion): the version row
+        // exists and is armed; report the current truth.
+        None => row.into_domain(),
+    }
+}
+
 /// Guarded state transition: compare-and-swap on `(tenant, id, from)`.
 ///
 /// The transition is validated in the domain first (fast, exhaustive),
@@ -351,11 +451,14 @@ pub async fn transition(
         }
         Ok(query)
     })
-    .await
+    .await?
+    .into_domain()
 }
 
 /// Shared CAS core: `extra` customises the UPDATE (payload columns or a
-/// fresh lease) before the guards land.
+/// fresh lease) before the guards land. Returns the raw row so
+/// orchestration (completion) can read link ids the domain type does
+/// not carry.
 async fn transition_with<F>(
     store: &Store,
     tenant: &TenantId,
@@ -363,7 +466,7 @@ async fn transition_with<F>(
     from: FileState,
     to: FileState,
     extra: F,
-) -> copal_core::Result<FileRecord>
+) -> copal_core::Result<FileRow>
 where
     F: FnOnce(Query) -> copal_core::Result<Query>,
 {
@@ -397,5 +500,5 @@ where
             from.as_str(),
         )));
     };
-    row.into_domain()
+    Ok(row)
 }

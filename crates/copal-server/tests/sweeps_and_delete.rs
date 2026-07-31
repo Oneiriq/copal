@@ -165,14 +165,16 @@ async fn gc_marks_then_collects_unreferenced_content() {
     };
 
     // Still referenced by b: the pass refreshes the cache, collects
-    // nothing, and the object stays.
+    // nothing, and the object stays. Two references — b's current link
+    // plus b's version-1 history row; a's links dropped with its
+    // tombstone.
     let report = run_pass(&store, &blobs, &config).await;
     assert_eq!(report.blobs_collected, 0);
     assert_eq!(
         blob_repo::recount_inbound_links(&store, &digest)
             .await
             .unwrap(),
-        1
+        2
     );
 
     // Delete b too: first pass MARKS (grace clock starts)...

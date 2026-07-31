@@ -55,7 +55,10 @@ impl FileState {
             Draft => &[Uploading, Deleted],
             Uploading => &[Scanning, Ready, Failed, Deleted],
             Scanning => &[Ready, Quarantined, Failed, Deleted],
-            Ready => &[Deleted],
+            // Ready -> Uploading is a re-upload: the next version. The
+            // previous content keeps serving throughout (servability is
+            // digest-based, not state-based).
+            Ready => &[Uploading, Deleted],
             Failed => &[Uploading, Deleted],
             Quarantined => &[Deleted],
             Deleted => &[],
@@ -142,6 +145,11 @@ mod tests {
         Uploading.ensure_transition(Scanning).unwrap();
         Scanning.ensure_transition(Ready).unwrap();
         Ready.ensure_transition(Deleted).unwrap();
+    }
+
+    #[test]
+    fn re_upload_from_ready_is_legal() {
+        Ready.ensure_transition(Uploading).unwrap();
     }
 
     #[test]

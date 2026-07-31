@@ -63,30 +63,53 @@ pub async fn record_sighting(
     }
 }
 
-/// Count the live files referencing `digest` — the authoritative
-/// reference count, served by `idx_file_blob`.
+/// Count everything live that references `digest` — the authoritative
+/// reference count.
+///
+/// Two sources hold a blob alive: current file links (a live file's
+/// `blob` column) and HISTORY (armed `file_version` rows whose file is
+/// itself live) — a superseded version's content must survive until
+/// its file dies. Version rows of deleted files traverse to a
+/// tombstoned file and drop out, so deleting a file releases its whole
+/// history in one recount.
 pub async fn recount_inbound_links(
     store: &Store,
     digest: &ContentDigest,
 ) -> copal_core::Result<i64> {
     let blob_target = rid(digest)?.to_string();
-    let query = Query::new()
+
+    let current = Query::new()
         .select(Some(vec!["count()".to_owned()]))
         .from_table("file")
         .map_err(|e| map_store_err("recount", e))?
         // Record equality against a literal; no quoting operator can
-        // express a record right-hand side, hence the fragment.
+        // express a record right-hand side, hence the fragments here
+        // and below.
         .where_str(format!("blob = {blob_target}"))
         .where_(is_none("deleted_at"))
         .group_all();
-    let rows: Vec<serde_json::Value> = query_records(store.client(), &query)
-        .await
-        .map_err(|e| map_store_err("recount", e))?;
-    Ok(rows
-        .first()
-        .and_then(|r| r.get("count"))
-        .and_then(serde_json::Value::as_i64)
-        .unwrap_or(0))
+
+    let history = Query::new()
+        .select(Some(vec!["count()".to_owned()]))
+        .from_table("file_version")
+        .map_err(|e| map_store_err("recount", e))?
+        .where_str(format!("blob = {blob_target}"))
+        // Record-link traversal: the version's file must be live.
+        .where_str("armed = true AND file.deleted_at IS NONE")
+        .group_all();
+
+    let mut total = 0i64;
+    for query in [current, history] {
+        let rows: Vec<serde_json::Value> = query_records(store.client(), &query)
+            .await
+            .map_err(|e| map_store_err("recount", e))?;
+        total += rows
+            .first()
+            .and_then(|r| r.get("count"))
+            .and_then(serde_json::Value::as_i64)
+            .unwrap_or(0);
+    }
+    Ok(total)
 }
 
 /// Fetch a blob row's storage location, if the content is known.

@@ -13,7 +13,7 @@ pub mod state;
 
 pub use digest::{ContentDigest, DigestBuilder};
 pub use error::CopalError;
-pub use file::{CreatedFile, FileRecord, FileSpec};
+pub use file::{CreatedFile, FileRecord, FileSpec, FileVersion};
 pub use id::{FileId, TenantId};
 pub use state::{AccessLevel, FileState};
 

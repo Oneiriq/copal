@@ -13,7 +13,7 @@
 //!   `file_version` rows at the engine.
 
 use surql::schema::{
-    datetime_field, event, index, int_field, object_field, record_field, string_field,
+    bool_field, datetime_field, event, index, int_field, object_field, record_field, string_field,
     table_schema, unique_index, FieldDefinition, TableDefinition, TableMode,
 };
 
@@ -61,6 +61,9 @@ fn file_table() -> TableDefinition {
             built(string_field("digest").nullable(true)),
             built(string_field("idempotency_key").nullable(true)),
             built(object_field("metadata")),
+            // Incremented atomically by the completion CAS; the value
+            // RETURN AFTER yields IS the new version number.
+            built(int_field("version_count").default("0")),
             built(string_field("created_by")),
             built(
                 datetime_field("created_at")
@@ -133,31 +136,38 @@ fn file_version_table() -> TableDefinition {
     table_schema("file_version")
         .with_mode(TableMode::Schemafull)
         .with_fields([
+            // Scalars are READONLY and land at CREATE. Record links
+            // cannot ride a CREATE payload (JSON strings do not coerce
+            // to records), so the row is created un-armed and one
+            // arming UPDATE sets the links plus `armed = true`; the
+            // freeze event admits exactly that one UPDATE and THROWs
+            // on everything after.
             built(string_field("tenant_id").readonly(true)),
-            built(record_field("file", Some("file")).readonly(true)),
             built(int_field("number").assertion("$value >= 1").readonly(true)),
-            built(record_field("blob", Some("blob")).readonly(true)),
-            built(
-                record_field("prior", Some("file_version"))
-                    .nullable(true)
-                    .readonly(true),
-            ),
             built(string_field("content_type").readonly(true)),
             built(int_field("size_bytes").readonly(true)),
             built(string_field("digest").readonly(true)),
             built(object_field("metadata_snapshot").readonly(true)),
             built(string_field("created_by").readonly(true)),
+            built(record_field("file", Some("file")).nullable(true)),
+            built(record_field("blob", Some("blob")).nullable(true)),
+            built(record_field("prior", Some("file_version")).nullable(true)),
+            built(bool_field("armed").default("false")),
             built(
                 datetime_field("created_at")
                     .default("time::now()")
                     .readonly(true),
             ),
         ])
-        .with_indexes([unique_index("uniq_version_number", ["file", "number"])])
+        .with_indexes([
+            unique_index("uniq_version_number", ["file", "number"]),
+            // History holds blobs alive; the GC recount walks this.
+            index("idx_version_blob", ["blob"]),
+        ])
         .with_events([event(
             "file_version_frozen",
-            "$event = 'UPDATE'",
-            "THROW 'file_version records are immutable'",
+            "$event = 'UPDATE' AND $before.armed = true",
+            "THROW 'file_version records are immutable once armed'",
         )])
 }
 
@@ -188,7 +198,8 @@ mod tests {
     #[test]
     fn file_version_carries_the_freeze_event() {
         let ddl = surql::schema::generate_table_sql(&table("file_version"), false).join("\n");
-        assert!(ddl.contains("THROW 'file_version records are immutable'"));
+        assert!(ddl.contains("THROW 'file_version records are immutable once armed'"));
+        assert!(ddl.contains("$event = 'UPDATE' AND $before.armed = true"));
     }
 
     #[test]

@@ -1,0 +1,148 @@
+{
+  "components": {
+    "schemas": {
+      "File": {
+        "properties": {
+          "access": {
+            "type": "string"
+          },
+          "content_type": {
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "digest": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "size": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "state": {
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "version_count": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "path",
+          "state",
+          "access",
+          "content_type",
+          "version_count",
+          "created_at",
+          "updated_at"
+        ],
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "title": "copal",
+    "version": "0.1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/v1/files": {
+      "get": {
+        "operationId": "list_files",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 100,
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Filter by state (indexed).",
+            "in": "query",
+            "name": "state",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Sort order; every value is backed by an index.",
+            "in": "query",
+            "name": "sort",
+            "schema": {
+              "enum": [
+                "created_at",
+                "-created_at"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/File"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Page of resources."
+          }
+        }
+      }
+    },
+    "/v1/files/{id}": {
+      "get": {
+        "operationId": "get_files",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/File"
+                }
+              }
+            },
+            "description": "The resource."
+          },
+          "404": {
+            "description": "Not found."
+          }
+        }
+      }
+    }
+  }
+}

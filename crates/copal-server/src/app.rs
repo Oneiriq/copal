@@ -15,7 +15,9 @@ use futures::StreamExt as _;
 use copal_blob::{BlobStore, StoredBlob};
 use copal_core::{CopalError, FileId, FileRecord, FileSpec, FileState, TenantId};
 use copal_sign::GrantToken;
-use copal_store::repo::{blob as blob_repo, file as file_repo, grant as grant_repo};
+use copal_store::repo::{
+    blob as blob_repo, file as file_repo, grant as grant_repo, version as version_repo,
+};
 use copal_store::Store;
 use serde::Deserialize;
 use serde_json::json;
@@ -80,6 +82,11 @@ pub fn build_router<B: BlobStore>(state: AppState<B>) -> Router {
             "/v1/files/{id}/content",
             put(upload_content::<B>).get(download_content::<B>),
         )
+        .route("/v1/files/{id}/versions", get(list_versions::<B>))
+        .route(
+            "/v1/files/{id}/versions/{number}/content",
+            get(download_version::<B>),
+        )
         .route("/v1/files/{id}/url", post(issue_grant::<B>))
         // One pattern, two readings: GET takes the full bearer token,
         // DELETE takes the bare grant id (with tenant auth).
@@ -126,13 +133,56 @@ async fn create_file<B: BlobStore>(
     Ok((status, Json(created.record)))
 }
 
+/// Listing query parameters.
+#[derive(Debug, Deserialize)]
+struct ListQuery {
+    #[serde(default)]
+    limit: Option<i64>,
+    #[serde(default)]
+    cursor: Option<String>,
+}
+
+/// Encode a page position as an opaque cursor. Hex over a delimited
+/// pair -- opacity is the point; clients never construct these.
+fn encode_cursor(position: &file_repo::ListPosition) -> String {
+    hex::encode(format!("{}|{}", position.created_at, position.id))
+}
+
+fn decode_cursor(raw: &str) -> Result<file_repo::ListPosition, ApiError> {
+    let invalid = || CopalError::validation("malformed cursor");
+    let bytes = hex::decode(raw).map_err(|_| invalid())?;
+    let text = String::from_utf8(bytes).map_err(|_| invalid())?;
+    let (created_at, id) = text.split_once('|').ok_or_else(invalid)?;
+    Ok(file_repo::ListPosition {
+        created_at: created_at.to_owned(),
+        id: FileId::parse(id)?,
+    })
+}
+
 async fn list_files<B: BlobStore>(
     State(state): State<AppState<B>>,
     headers: HeaderMap,
-) -> Result<Json<Vec<FileRecord>>, ApiError> {
+    axum::extract::Query(params): axum::extract::Query<ListQuery>,
+) -> Result<Json<serde_json::Value>, ApiError> {
     let tenant = tenant_from(&headers)?;
-    let records = file_repo::list_files(&state.store, &tenant, 100).await?;
-    Ok(Json(records))
+    let limit = params.limit.unwrap_or(100).clamp(1, 100);
+    let after = params.cursor.as_deref().map(decode_cursor).transpose()?;
+    let records = file_repo::list_files(&state.store, &tenant, limit, after.as_ref()).await?;
+    // A full page may have more behind it; the cursor points past the
+    // last row either way and a drained next page returns empty.
+    let next_cursor = if records.len() as i64 == limit {
+        records.last().map(|last| {
+            encode_cursor(&file_repo::ListPosition {
+                created_at: last.created_at.clone(),
+                id: last.id.clone(),
+            })
+        })
+    } else {
+        None
+    };
+    Ok(Json(
+        json!({ "items": records, "next_cursor": next_cursor }),
+    ))
 }
 
 async fn get_file<B: BlobStore>(
@@ -242,19 +292,10 @@ async fn upload_content<B: BlobStore>(
     } = stored;
     blob_repo::record_sighting(&state.store, &digest, size_bytes, "local", &storage_path).await?;
 
-    let record = file_repo::transition(
-        &state.store,
-        &tenant,
-        &id,
-        FileState::Uploading,
-        FileState::Ready,
-        file_repo::TransitionSets {
-            digest: Some(digest.clone()),
-            size_bytes: Some(size_bytes),
-            link_blob: Some(digest),
-        },
-    )
-    .await?;
+    // One CAS finishes the upload and mints the version number; the
+    // frozen version row and current_version link follow inside.
+    let record =
+        file_repo::complete_upload(&state.store, &tenant, &id, &digest, size_bytes, "api").await?;
     Ok(Json(record))
 }
 
@@ -268,9 +309,12 @@ async fn download_content<B: BlobStore>(
     let record = file_repo::get_file(&state.store, &tenant, &id)
         .await?
         .ok_or_else(|| CopalError::not_found(format!("file {id}")))?;
-    if !record.state.servable() {
+    // Digest-based servability: a re-upload in flight (or failed) keeps
+    // the previous version serving; only quarantine and never-uploaded
+    // block.
+    if !record.servable_content() {
         return Err(CopalError::conflict(format!(
-            "file is {}, not servable",
+            "file is {} with no servable content",
             record.state.as_str(),
         ))
         .into());
@@ -278,7 +322,7 @@ async fn download_content<B: BlobStore>(
     let digest = record
         .digest
         .as_ref()
-        .ok_or_else(|| CopalError::Store("ready file without digest".into()))?;
+        .ok_or_else(|| CopalError::Store("servable file without digest".into()))?;
     // Stream: bytes never buffer in the server, while the length —
     // known up front for immutable content-addressed objects — still
     // rides Content-Length.
@@ -336,9 +380,9 @@ async fn issue_grant<B: BlobStore>(
     let record = file_repo::get_file(&state.store, &tenant, &id)
         .await?
         .ok_or_else(|| CopalError::not_found(format!("file {id}")))?;
-    if !record.state.servable() {
+    if !record.servable_content() {
         return Err(CopalError::conflict(format!(
-            "file is {}, not servable",
+            "file is {} with no servable content",
             record.state.as_str(),
         ))
         .into());
@@ -400,7 +444,7 @@ async fn redeem_grant<B: BlobStore>(
     let record = file_repo::get_file(&state.store, &tenant, &file_id)
         .await?
         .ok_or_else(refused)?;
-    if !record.state.servable() {
+    if !record.servable_content() {
         return Err(refused().into());
     }
     let digest = record.digest.as_ref().ok_or_else(refused)?;
@@ -426,4 +470,50 @@ async fn revoke_grant<B: BlobStore>(
     let tenant = tenant_from(&headers)?;
     grant_repo::revoke(&state.store, &tenant, &grant_ref).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// List a file's version history, newest first.
+async fn list_versions<B: BlobStore>(
+    State(state): State<AppState<B>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Json<Vec<copal_core::FileVersion>>, ApiError> {
+    let tenant = tenant_from(&headers)?;
+    let id = parse_id(&id)?;
+    // Tenancy and tombstone filtering ride the file fetch.
+    file_repo::get_file(&state.store, &tenant, &id)
+        .await?
+        .ok_or_else(|| CopalError::not_found(format!("file {id}")))?;
+    let versions = version_repo::list_versions(&state.store, &tenant, &id).await?;
+    Ok(Json(versions))
+}
+
+/// Serve one historical version's bytes.
+async fn download_version<B: BlobStore>(
+    State(state): State<AppState<B>>,
+    headers: HeaderMap,
+    Path((id, number)): Path<(String, u64)>,
+) -> Result<Response, ApiError> {
+    let tenant = tenant_from(&headers)?;
+    let id = parse_id(&id)?;
+    let record = file_repo::get_file(&state.store, &tenant, &id)
+        .await?
+        .ok_or_else(|| CopalError::not_found(format!("file {id}")))?;
+    // Quarantine blocks the whole record, history included.
+    if record.state == FileState::Quarantined {
+        return Err(CopalError::conflict("file is quarantined").into());
+    }
+    let version = version_repo::get_version(&state.store, &tenant, &id, number)
+        .await?
+        .ok_or_else(|| CopalError::not_found(format!("version {number} of file {id}")))?;
+    let (len, stream) = state.blobs.open_read(&version.digest).await?;
+    let response = (
+        [
+            (header::CONTENT_TYPE, version.content_type.clone()),
+            (header::CONTENT_LENGTH, len.to_string()),
+            (header::ETAG, format!("\"{}\"", version.digest)),
+        ],
+        Body::from_stream(stream),
+    );
+    Ok(response.into_response())
 }

@@ -56,7 +56,7 @@ async fn create_then_get_then_list() {
     assert_eq!(fetched.metadata["source"], "test");
 
     // The optimistic-create contract: create-then-list must see the file.
-    let listed = file::list_files(&store, &t, 10).await.expect("list");
+    let listed = file::list_files(&store, &t, 10, None).await.expect("list");
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].id, created.id);
 }
@@ -72,7 +72,7 @@ async fn tenancy_is_a_hard_wall() {
         .await
         .unwrap()
         .is_none());
-    assert!(file::list_files(&store, &other, 10)
+    assert!(file::list_files(&store, &other, 10, None)
         .await
         .unwrap()
         .is_empty());

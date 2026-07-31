@@ -1,10 +1,10 @@
-//! Flow cluster: `workflow_run`, `workflow_step` — the durable journal.
+//! Flow cluster: `workflow_run` and `workflow_step`, the durable journal.
 //!
 //! A run is a claimable unit of work over a code-registered workflow; a
 //! step row is the exactly-once record of one activity attempt. The
 //! design premise: at-least-once execution plus the unique
 //! `(run, step_key, attempt)` constraint equals exactly-once RECORDING,
-//! which is what makes replay after a crash deterministic — completed
+//! which is what makes replay after a crash deterministic: completed
 //! steps are skipped by consulting the journal, not by trusting memory.
 
 use surql::schema::{

@@ -3,7 +3,7 @@
 //! This single declaration drives the checked-in artifacts
 //! (`docs/openapi.json`, `docs/schema.graphql`, the four generated
 //! clients), the drift gate in `tests/contract.rs`, AND the live
-//! GraphQL endpoint — the served schema and the published documents
+//! GraphQL endpoint; the served schema and the published documents
 //! cannot disagree because they are the same object.
 
 use janus::{Action, ActionField, ActionOutput, Contract, FieldExposure, Resource, TypeRef};

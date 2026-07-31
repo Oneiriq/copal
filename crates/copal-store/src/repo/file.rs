@@ -1,6 +1,6 @@
 //! File repository: free functions over [`Store`], speaking domain types.
 //!
-//! Every state change is a guarded compare-and-swap — the WHERE clause
+//! Every state change is a guarded compare-and-swap: the WHERE clause
 //! carries the expected current state plus the tenant, and an empty
 //! result means the caller lost the race (or reached across a tenant
 //! boundary, which is indistinguishable by design).
@@ -29,7 +29,7 @@ fn rid(id: &FileId) -> copal_core::Result<RecordID<()>> {
 /// Create a file record in `draft`, or return the original on an
 /// idempotency-key replay.
 ///
-/// A duplicate live path surfaces as `Conflict` via the unique index —
+/// A duplicate live path surfaces as `Conflict` via the unique index;
 /// no pre-read, no separate pending table. A duplicate idempotency key
 /// is NOT a conflict: the retried request gets the original record back
 /// with `created == false`, which is the contract that makes client
@@ -44,7 +44,7 @@ pub async fn create_file(
     let id = FileId::generate();
     // Optional columns are OMITTED when unset, never sent as JSON null:
     // v3 distinguishes NULL from NONE, and `option<string>` accepts
-    // `none | string` only — a null payload key fails coercion.
+    // `none | string` only; a null payload key fails coercion.
     let mut payload = serde_json::Map::new();
     payload.insert("tenant_id".into(), json!(tenant.as_str()));
     payload.insert("path".into(), json!(spec.path));
@@ -154,7 +154,7 @@ pub async fn get_file(
     row.into_domain().map(Some)
 }
 
-/// Fetch one file by id with NO tenant scope — for the anonymous
+/// Fetch one file by id with NO tenant scope, for the anonymous
 /// public-content path only, where the tenant cannot be known before
 /// the row is read. Tombstones still read as absent. Every management
 /// surface uses [`get_file`].
@@ -209,7 +209,7 @@ pub async fn list_files(
         .where_(eq("tenant_id", tenant.as_str()))
         .where_(is_none("deleted_at"));
     if let Some(state) = state {
-        // Rides idx_file_listing (tenant_id, state, created_at) — the
+        // Rides idx_file_listing (tenant_id, state, created_at); the
         // filterable claim in the contract is this equality bind.
         query = query.where_(eq("state", state.as_str()));
     }
@@ -251,7 +251,7 @@ pub struct TransitionSets {
 }
 
 /// The raw SurrealQL fragment selecting an expired lease. A fragment
-/// because the right-hand side is `time::now()` — server time, which no
+/// because the right-hand side is `time::now()`: server time, which no
 /// value-quoting operator can express. Kept in one place; the family's
 /// condition model (`str | Operator`) sanctions raw fragments as
 /// condition entries.
@@ -274,11 +274,11 @@ fn with_lease(query: Query, owner: &str, ttl_secs: u32) -> copal_core::Result<Qu
 /// Claim a file for upload, as `owner`, for `ttl_secs`.
 ///
 /// Tries, in order:
-/// 1. `draft -> uploading` — the fresh-file path;
-/// 2. `failed -> uploading` — the retry path;
-/// 3. stealing an `uploading` claim whose lease has expired — the
+/// 1. `draft -> uploading`, the fresh-file path;
+/// 2. `failed -> uploading`, the retry path;
+/// 3. stealing an `uploading` claim whose lease has expired, the
 ///    crashed-or-disconnected-uploader path. Not a state transition (the
-///    state stays `uploading`), so it deliberately bypasses
+///    state stays `uploading`), so it bypasses
 ///    `ensure_transition`; the guard is the expired lease itself.
 ///
 /// A live claim by anyone (including `owner`) loses with `Conflict`.
@@ -395,9 +395,9 @@ pub async fn reap_expired_uploads(store: &Store) -> copal_core::Result<Vec<FileR
 /// and pipeline enqueue: with normal operation the failed-run
 /// propagation handles pipeline failures, so anything old in
 /// `scanning` was orphaned by a crash. `updated_at` is the engine's
-/// write timestamp — nothing touches the row while a pipeline runs, so
+/// write timestamp; nothing touches the row while a pipeline runs, so
 /// its age is time since completion. A file whose subject run is still
-/// pending or running is NOT stale, however old — a legitimately long
+/// pending or running is NOT stale, however old; a legitimately long
 /// pipeline must not be failed out from under its own worker.
 pub async fn reap_stale_scans(store: &Store, older_than_secs: u32) -> copal_core::Result<u64> {
     FileState::Scanning.ensure_transition(FileState::Failed)?;
@@ -421,7 +421,7 @@ pub async fn reap_stale_scans(store: &Store, older_than_secs: u32) -> copal_core
 
 /// Finish an upload: one CAS moves `uploading -> ready`, writes the
 /// payload columns, links the blob, and atomically increments
-/// `version_count` — whose returned value IS the new version number.
+/// `version_count`, whose returned value IS the new version number.
 /// The frozen version row is then recorded and linked as
 /// `current_version`.
 ///

@@ -1,6 +1,6 @@
 //! The file state machine.
 //!
-//! One record, one `state` column, and a fixed transition table — this is
+//! One record, one `state` column, and a fixed transition table; this is
 //! the load-bearing replacement for the separate pending-files table the
 //! predecessor design carried. The optimistic-create contract holds by
 //! construction: a caller that creates and immediately lists sees the
@@ -56,8 +56,8 @@ impl FileState {
             Uploading => &[Scanning, Ready, Failed, Deleted],
             Scanning => &[Ready, Quarantined, Failed, Deleted],
             // Ready -> Uploading is a re-upload: the next version. The
-            // previous content keeps serving throughout (servability is
-            // digest-based, not state-based).
+            // previous content keeps serving throughout (servability
+            // follows the digest).
             Ready => &[Uploading, Deleted],
             // Failed -> Scanning is a PROCESSING retry: the bytes and
             // digest already landed; only the pipeline needs to run

@@ -9,7 +9,7 @@
 //!   the identity. Verification is a record fetch plus a constant-time
 //!   hash compare; the tenant comes OUT of the key row, so a caller
 //!   cannot name a tenant at all. Every failure is the same uniform
-//!   401 — the credential path is not an oracle.
+//!   401; the credential path is not an oracle.
 //!
 //! Keys are minted and revoked through `/v1/admin/...` routes guarded
 //! by the operator token (`COPAL_ADMIN_TOKEN`), compared hash-first in

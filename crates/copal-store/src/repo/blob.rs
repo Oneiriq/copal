@@ -2,7 +2,7 @@
 //!
 //! The record id is the digest (`blob:<sha256>`), so deduplication is a
 //! CREATE that either succeeds (first sighting) or collides (seen
-//! before) — and the collision is the happy path, not a failure.
+//! before), and the collision is the happy path.
 //!
 //! Reference counting is DERIVED, not incremented. An increment written
 //! before the file link commits drifts upward on a crash-and-retry; an
@@ -63,12 +63,12 @@ pub async fn record_sighting(
     }
 }
 
-/// Count everything live that references `digest` — the authoritative
+/// Count everything live that references `digest`: the authoritative
 /// reference count.
 ///
 /// Two sources hold a blob alive: current file links (a live file's
 /// `blob` column) and HISTORY (armed `file_version` rows whose file is
-/// itself live) — a superseded version's content must survive until
+/// itself live); a superseded version's content must survive until
 /// its file dies. Version rows of deleted files traverse to a
 /// tombstoned file and drop out, so deleting a file releases its whole
 /// history in one recount.
@@ -154,7 +154,7 @@ impl BlobGcRow {
 
 /// List one batch of blob rows for a GC pass, keyset-ordered by id
 /// (blob ids ARE digests, so the order is total and stable). `after`
-/// resumes past the previous batch — the sweep loops batches until a
+/// resumes past the previous batch; the sweep loops batches until a
 /// short page, so every blob is visited every pass regardless of
 /// population size.
 pub async fn list_blobs(

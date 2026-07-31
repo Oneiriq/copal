@@ -198,7 +198,7 @@ async fn duplicate_content_reprocessing_dedupes_by_run_key() {
     let record = json_body(response).await;
     // The dedupe hit resolves IN the upload: the completed run's
     // verdict stands (same file, same path, same bytes), so the fresh
-    // scan finalizes to ready immediately — no worker involved, no
+    // scan finalizes to ready immediately: no worker involved, no
     // stranded scanning state.
     assert_eq!(record["state"], "ready");
     assert_eq!(record["metadata"]["processing"]["verdict"], "clean");
@@ -260,7 +260,7 @@ async fn failed_pipeline_propagates_and_retry_recovers() {
         .join(&digest);
     std::fs::remove_file(&object).expect("blob object exists");
 
-    // The worker claims, every sniff attempt fails, the run fails —
+    // The worker claims, every sniff attempt fails, the run fails,
     // and the failure PROPAGATES: the file leaves scanning for failed.
     assert!(engine.tick("w").await.unwrap());
     let meta = req(
@@ -302,7 +302,7 @@ async fn failed_pipeline_propagates_and_retry_recovers() {
     let record = json_body(router.clone().oneshot(meta).await.unwrap()).await;
     assert_eq!(record["state"], "scanning");
 
-    // A second retry while pending refuses — only failed runs retry.
+    // A second retry while pending refuses; only failed runs retry.
     let retry = req(
         "POST",
         &format!("/v1/runs/{run_id}/retry"),

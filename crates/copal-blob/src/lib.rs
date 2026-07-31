@@ -2,7 +2,7 @@
 //!
 //! Bytes live at content-addressed keys (`ab/cd/<sha256>`) behind the
 //! [`BlobStore`] port. Uploads stream through a staging key while the
-//! digest accumulates, then finalize with a rename — the content address
+//! digest accumulates, then finalize with a rename. The content address
 //! cannot be known until the last byte, and a crash mid-upload leaves
 //! only staging garbage, never a half-written addressed object.
 //!
@@ -75,7 +75,7 @@ pub trait BlobStore: Clone + Send + Sync + 'static {
     ) -> impl std::future::Future<Output = copal_core::Result<bool>> + Send;
 
     /// Remove the object at the digest's address. Removing an absent
-    /// object is a no-op — collection must be replay-safe.
+    /// object is a no-op; collection must be replay-safe.
     fn delete(
         &self,
         digest: &ContentDigest,
@@ -83,7 +83,7 @@ pub trait BlobStore: Clone + Send + Sync + 'static {
 
     /// Delete staging entries older than `ttl`, returning how many were
     /// removed. Age comes from the ULID staging key itself, not from
-    /// backend metadata — every backend gets the same clock.
+    /// backend metadata; every backend gets the same clock.
     fn sweep_staging(
         &self,
         ttl: std::time::Duration,
@@ -197,7 +197,7 @@ impl BlobStore for FsBlobStore {
                 continue;
             }
             let name = entry.name();
-            // The staging key is a ULID, which embeds its mint time —
+            // The staging key is a ULID, which embeds its mint time;
             // no dependency on backend last-modified metadata. Anything
             // unparseable is foreign garbage and old by definition.
             let expired = match ulid::Ulid::from_string(&name.to_ascii_uppercase()) {

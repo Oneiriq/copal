@@ -1,6 +1,6 @@
 //! The standard post-upload pipeline.
 //!
-//! Three activities over the flow engine — this is the durable-journal
+//! Three activities over the flow engine; this is the durable-journal
 //! replacement for the predecessor's blob-created orchestration, using
 //! nothing but Copal's own planes:
 //!
@@ -42,7 +42,7 @@ pub fn upload_run_key(file: &FileId, digest: &ContentDigest) -> String {
 ///
 /// `enforce_type_match`: when set, a file whose sniffed content type
 /// contradicts its declared type is QUARANTINED instead of merely
-/// annotated — the declared-type lie becomes a blocking verdict.
+/// annotated; the declared-type lie becomes a blocking verdict.
 /// Unsniffable content never blocks (unverifiable is not a lie).
 pub fn standard_registry<B: BlobStore>(
     store: Store,

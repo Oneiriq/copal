@@ -1,13 +1,13 @@
 //! Content inspection: magic-byte sniffing and extension policy.
 //!
-//! Pure functions — the pipeline activities wrap them. The sniffer is
-//! deliberately small: it exists to catch declared-type lies and to
+//! Pure functions; the pipeline activities wrap them. The sniffer is
+//! kept small on purpose: it exists to catch declared-type lies and to
 //! feed policy, not to be a full type oracle.
 
 /// Sniff a content type from the first bytes of a payload.
 ///
 /// Returns `None` when nothing definitive matches; callers treat that
-/// as "unverifiable", not "binary garbage".
+/// as "unverifiable" rather than treated as binary garbage.
 pub fn sniff_content_type(prefix: &[u8]) -> Option<&'static str> {
     const SIGNATURES: &[(&[u8], &str)] = &[
         (b"%PDF-", "application/pdf"),

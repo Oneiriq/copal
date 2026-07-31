@@ -27,7 +27,7 @@ pub enum CopalError {
     #[error("not found: {0}")]
     NotFound(String),
 
-    /// The request lost a compare-and-swap race or violates uniqueness —
+    /// The request lost a compare-and-swap race or violates uniqueness;
     /// e.g. an illegal state transition or a duplicate live path.
     #[error("conflict: {0}")]
     Conflict(String),

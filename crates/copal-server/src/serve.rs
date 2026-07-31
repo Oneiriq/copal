@@ -4,14 +4,14 @@
 //! [`serve_blob`], so the security and caching floor cannot vary by
 //! route:
 //!
-//! - `X-Content-Type-Options: nosniff` always — declared types are
+//! - `X-Content-Type-Options: nosniff` always; declared types are
 //!   caller data, and browsers must not second-guess them upward.
 //! - `Content-Disposition` always, with a sanitized filename;
 //!   script-capable types (HTML, SVG, XML) are forced to `attachment`
 //!   so hostile uploads cannot execute under the service origin.
 //! - `Cache-Control` per class: tenant-authed and grant responses are
 //!   `no-store` (a shared cache must never retain a one-time grant's
-//!   bytes); public content — immutable by digest — caches hard.
+//!   bytes); public content, immutable by digest, caches hard.
 //! - `ETag`/`If-None-Match` conditional GETs and single-range
 //!   `Range`/`If-Range` requests, both natural gifts of
 //!   content-addressed storage.
@@ -53,7 +53,7 @@ pub struct ServeSpec<'a> {
 }
 
 /// Types a browser will execute or script against if rendered inline
-/// under our origin — always forced to download.
+/// under our origin; always forced to download.
 fn script_capable(content_type: &str) -> bool {
     let essence = content_type
         .split(';')
@@ -176,9 +176,9 @@ fn base_headers(spec: &ServeSpec<'_>, etag: &str) -> [(header::HeaderName, Strin
 
 /// Whether the request's `If-None-Match` matches `etag`. Weak
 /// comparison per RFC 9110: a `W/` prefix on a candidate is ignored
-/// (our ETags are strong — the digest — so the octets decide).
-/// `If-Range` deliberately does NOT share this: it requires the strong
-/// comparison, so its exact match elsewhere is correct.
+/// (our ETags are strong, the digest itself, so the octets decide).
+/// `If-Range` is excluded on purpose: the RFC requires the strong
+/// comparison there, so its exact match elsewhere is correct.
 pub fn if_none_match_hits(request_headers: &HeaderMap, etag: &str) -> bool {
     request_headers
         .get(header::IF_NONE_MATCH)
@@ -220,7 +220,7 @@ pub async fn serve_blob<B: BlobStore>(
     }
 
     // If-Range: a stale validator downgrades the range request to the
-    // full object — resuming across a re-upload must not splice bytes
+    // full object; resuming across a re-upload must not splice bytes
     // from two different contents.
     let range_header = request_headers
         .get(header::RANGE)

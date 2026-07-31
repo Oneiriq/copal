@@ -85,11 +85,11 @@ impl<B: BlobStore> AppState<B> {
     }
 }
 
-/// Build the full router — tenant API plus admin surface — over any
+/// Build the full router (tenant API plus admin surface) over any
 /// blob backend. Deployments that set `COPAL_ADMIN_BIND` serve
 /// [`api_router`] and [`admin_router`] on separate listeners instead.
 ///
-/// The upload ceiling is enforced inside the upload handler's stream —
+/// The upload ceiling is enforced inside the upload handler's stream;
 /// `DefaultBodyLimit` guards extractor-based bodies only, and the
 /// upload path consumes the raw request stream. JSON routes keep axum's
 /// small built-in default limit.
@@ -259,7 +259,7 @@ async fn create_file<B: BlobStore>(
     let tenant = crate::auth::authenticate(&state, &headers).await?;
     let created = file_repo::create_file(&state.store, &tenant, &spec, "api").await?;
     // 201 for a fresh record, 200 for an idempotency-key replay that
-    // returned the original — retries read as success, not conflict.
+    // returned the original, so retries read as success.
     let status = if created.created {
         StatusCode::CREATED
     } else {
@@ -384,7 +384,7 @@ async fn get_file<B: BlobStore>(
 }
 
 /// Soft-delete: tombstone the record and free its live path. Bytes go
-/// later, via garbage collection, once nothing references them —
+/// later, via garbage collection, once nothing references them;
 /// deletion is a metadata act, reclamation is a sweep.
 async fn delete_file<B: BlobStore>(
     State(state): State<AppState<B>>,
@@ -397,7 +397,7 @@ async fn delete_file<B: BlobStore>(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Soft-delete plus its audit event — shared by the REST handler and
+/// Soft-delete plus its audit event, shared by the REST handler and
 /// the GraphQL action resolver.
 pub(crate) async fn remove_file_core<B: BlobStore>(
     state: &AppState<B>,
@@ -544,7 +544,7 @@ async fn upload_content<B: BlobStore>(
         if !created {
             // A dedupe hit means this exact content was processed (or is
             // being processed) for this file before. A COMPLETED run will
-            // never finalize the fresh scan — resolve it here: same file,
+            // never finalize the fresh scan, so resolve it here: same file,
             // same path, same bytes means the recorded verdict stands and
             // the annotations are already on the metadata. (A quarantined
             // verdict cannot reach this path: quarantined files refuse
@@ -577,14 +577,14 @@ async fn upload_content<B: BlobStore>(
     Ok(Json(crate::wire::wire_file(&record)))
 }
 
-/// Serve `/content` under the file's ACCESS LEVEL — the enforcement
+/// Serve `/content` under the file's ACCESS LEVEL, the enforcement
 /// point of the access model:
 ///
 /// - `public`: anonymous, and cacheable hard (immutable by digest).
 /// - `private` / `tenant`: the owning tenant, `no-store`. (The two
 ///   levels coincide until principals-within-a-tenant exist; keys ARE
 ///   tenant identities today.)
-/// - `grant`: bytes flow ONLY through issued URLs — direct download
+/// - `grant`: bytes flow ONLY through issued URLs; direct download
 ///   refuses even for the owner, because "grant" means every access
 ///   is an auditable, revocable capability.
 async fn download_content<B: BlobStore>(
@@ -660,7 +660,7 @@ fn default_grant_ttl() -> u32 {
     900
 }
 
-/// Issue a signed URL for a servable file — the shared core behind the
+/// Issue a signed URL for a servable file, the shared core behind the
 /// REST handler and the GraphQL action resolver.
 ///
 /// The response's `url` is relative -- the deployment's public base is
@@ -761,7 +761,7 @@ async fn redeem_grant<B: BlobStore>(
     // Every precondition runs BEFORE the use is consumed: a token whose
     // file was since deleted or quarantined must refuse without burning
     // a remaining use, and a 304 revalidation is not a new read. A
-    // Range request IS a read and does consume — media seeking against
+    // Range request IS a read and does consume; media seeking against
     // counted grants should use TTL-only grants (max_uses unset).
     let tenant = TenantId::parse(&grant.tenant_id).map_err(|_| refused())?;
     let file_id = grant.file_id().map_err(|_| refused())?;
@@ -876,12 +876,12 @@ async fn download_version<B: BlobStore>(
     let version = version_repo::get_version(&state.store, &tenant, &id, number)
         .await?
         .ok_or_else(|| CopalError::not_found(format!("version {number} of file {id}")))?;
-    // Grant-only files serve bytes exclusively through issued URLs —
+    // Grant-only files serve bytes exclusively through issued URLs,
     // history included.
     if record.access == copal_core::AccessLevel::Grant {
         return Err(CopalError::forbidden("file is grant-only; redeem an issued URL").into());
     }
-    // A failed CURRENT version is unscanned content — its bytes do not
+    // A failed CURRENT version is unscanned content; its bytes do not
     // serve. Historical versions (different digest) passed their own
     // pipelines and keep serving.
     if record.state == FileState::Failed && record.digest.as_ref() == Some(&version.digest) {
@@ -919,7 +919,7 @@ pub(crate) struct StartRunRequest {
     pub(crate) mode: Option<String>,
 }
 
-/// Start a workflow run — the shared core behind the REST handler and
+/// Start a workflow run, the shared core behind the REST handler and
 /// the GraphQL action resolver.
 pub(crate) async fn start_run_core<B: BlobStore>(
     state: &AppState<B>,
@@ -943,7 +943,7 @@ pub(crate) async fn start_run_core<B: BlobStore>(
                     StatusCode::OK,
                     json!({ "run_id": run_id, "output": output, "status": "completed" }),
                 )),
-                // A worker raced the claim: pending, poll the run —
+                // A worker raced the claim: pending, poll the run,
                 // NOT a completed run with null output.
                 None => Ok((
                     StatusCode::ACCEPTED,
@@ -975,7 +975,7 @@ async fn start_run<B: BlobStore>(
     Ok((status, Json(body)))
 }
 
-/// Retry a failed run — the shared core behind the REST handler and
+/// Retry a failed run, the shared core behind the REST handler and
 /// the GraphQL action resolver.
 ///
 /// Order matters: the subject file (when failed) flips back to

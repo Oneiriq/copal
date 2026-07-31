@@ -2,7 +2,7 @@
 //!
 //! Nothing here restates the API: the schema is built dynamically from
 //! [`crate::contract::contract`] and every field dispatches through the
-//! Janus runtime — resolvers below call the same repositories the REST
+//! Janus runtime; resolvers below call the same repositories the REST
 //! handlers call, and the same wire mapper renders rows, so the two
 //! protocols cannot diverge. Tenancy is a Janus middleware: the HTTP
 //! layer seeds the per-request context through the SAME authenticator
@@ -319,14 +319,14 @@ struct GraphqlState<B: BlobStore> {
 
 /// Build the `/graphql` router: POST executes, GET serves the SDL.
 ///
-/// Panics only on a contract/schema mismatch or missing resolver —
+/// Panics only on a contract/schema mismatch or missing resolver,
 /// construction-time bugs the contract tests catch first.
 pub fn graphql_router<B: BlobStore + 'static>(state: AppState<B>) -> Router {
     let tables = copal_store::schema::tables();
     // Depth and complexity ceilings close the alias-amplification hole
     // (N aliases of files(limit: 100) multiplying into the store). The
     // schema has no cycles, so honest queries sit far below both.
-    // Introspection stays on deliberately: GET /graphql serves the SDL
+    // Introspection stays on by choice: GET /graphql serves the SDL
     // openly, so introspection reveals nothing the contract does not.
     let schema = janus::runtime::graphql::schema_builder(
         &tables,
@@ -375,7 +375,7 @@ async fn execute<B: BlobStore>(
     // Seed the per-request context through the SAME authenticator the
     // REST face uses. A failed authentication seeds nothing, and the
     // RequireTenant middleware rejects each operation with the coded
-    // error — GraphQL convention keeps auth failures in the body.
+    // error; GraphQL convention keeps auth failures in the body.
     let mut ctx = JanusContext::new();
     if let Ok(tenant) = crate::auth::authenticate(&gql.app, &headers).await {
         ctx.insert(Tenant(tenant));

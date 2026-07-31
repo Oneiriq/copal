@@ -1,15 +1,15 @@
 //! Grant tokens for signed URLs.
 //!
-//! A token is `cg1.<grant id>.<secret>`: a stateful capability, not a
-//! stateless signature. The grant row holds `sha256(secret)`; the
+//! A token is `cg1.<grant id>.<secret>`: a stateful capability backed
+//! by a row, with no signature scheme involved. The grant row holds `sha256(secret)`; the
 //! secret itself is never stored, so a database leak does not leak
 //! usable URLs. Because verification is a row lookup, revocation is an
-//! UPDATE, use-counts are enforceable atomically, and — deliberately —
+//! UPDATE, use-counts are enforceable atomically, and, by design,
 //! there is no signing key to distribute, rotate, or lose.
 //!
 //! `cg1` versions the format: a future stateless HMAC mode (for
 //! CDN-edge verification without a database hop) arrives as `cg2`
-//! beside it, not instead of it.
+//! beside it, with `cg1` staying.
 
 use copal_core::CopalError;
 use rand::Rng as _;
@@ -42,14 +42,14 @@ impl GrantToken {
         format!("{PREFIX}.{}.{}", self.grant_id, self.secret)
     }
 
-    /// Parse a wire token. Rejections are uniform — callers surface
+    /// Parse a wire token. Rejections are uniform; callers surface
     /// every failure identically so the token format is not an oracle.
     pub fn parse(raw: &str) -> copal_core::Result<Self> {
         let (grant_id, secret) = parse_token(raw, PREFIX, "malformed grant token")?;
         Ok(Self { grant_id, secret })
     }
 
-    /// `sha256(secret)` in lowercase hex — the only form the store sees.
+    /// `sha256(secret)` in lowercase hex, the only form the store sees.
     pub fn secret_hash(&self) -> String {
         hash_secret(&self.secret)
     }
@@ -58,7 +58,7 @@ impl GrantToken {
 const KEY_PREFIX: &str = "ck1";
 
 /// A minted or parsed tenant API key. Same stateful-capability design
-/// as grant tokens — `ck1.<key id>.<secret>`, the store holds only
+/// as grant tokens: `ck1.<key id>.<secret>`, the store holds only
 /// `sha256(secret)`, revocation is an UPDATE, no signing key exists.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ApiKeyToken {
@@ -89,7 +89,7 @@ impl ApiKeyToken {
         Ok(Self { key_id, secret })
     }
 
-    /// `sha256(secret)` in lowercase hex — the only form the store sees.
+    /// `sha256(secret)` in lowercase hex, the only form the store sees.
     pub fn secret_hash(&self) -> String {
         hash_secret(&self.secret)
     }
@@ -130,7 +130,7 @@ pub fn hash_secret(secret: &str) -> String {
 /// Constant-time equality over the two hash strings.
 ///
 /// The compared values are already digests, so variable-time equality
-/// would leak little — but a capability check is exactly where "little"
+/// would leak little, but a capability check is exactly where "little"
 /// should be "nothing".
 pub fn verify_secret(presented_secret: &str, stored_hash: &str) -> bool {
     let presented = hash_secret(presented_secret);

@@ -1,6 +1,6 @@
 //! The access model, enforced: public serves anonymously and caches
 //! hard, grant-only refuses every direct byte path, tenants stay
-//! invisible to each other — all under keys-mode auth, so anonymity
+//! invisible to each other, all under keys-mode auth, so anonymity
 //! is real. Plus the audit trail: recorded, listable, and
 //! engine-immutable.
 
@@ -107,7 +107,7 @@ async fn public_serves_anonymously_and_caches_hard() {
     let token = mint(&router, "acme", "ci").await;
     let id = seed(&router, &token, "open.txt", "public").await;
 
-    // No credentials at all — and it serves, cacheable forever.
+    // No credentials at all, and it serves, cacheable forever.
     let response = router
         .clone()
         .oneshot(request(
@@ -171,7 +171,7 @@ async fn grant_only_refuses_direct_bytes_but_grants_flow() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 
-    // The issued URL still serves — that is the point of the level.
+    // The issued URL still serves; that is the point of the level.
     let response = router
         .clone()
         .oneshot(request(
@@ -387,7 +387,7 @@ async fn grant_uses_burn_only_on_actual_reads() {
     let etag = response.headers()["etag"].to_str().unwrap().to_owned();
     assert_eq!(uses(store.clone(), grant_id.clone()).await, 1);
 
-    // Revalidations are NOT reads: three 304s, zero consumed — and a
+    // Revalidations are NOT reads: three 304s, zero consumed, and a
     // weak validator (W/ prefix) matches per RFC 9110.
     for validator in [etag.clone(), etag.clone(), format!("W/{etag}")] {
         let mut revalidate = request("GET", &url, None, None, None);

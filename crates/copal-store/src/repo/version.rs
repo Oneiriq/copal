@@ -1,7 +1,7 @@
 //! Version repository: frozen snapshots of completed uploads.
 //!
 //! A version row is created with its scalars (READONLY at the engine)
-//! and then ARMED — one UPDATE setting the record links plus
+//! and then ARMED: one UPDATE setting the record links plus
 //! `armed = true`. The freeze event admits exactly that UPDATE and
 //! THROWs on everything after, so history is immutable at the engine,
 //! not by convention.
@@ -31,7 +31,7 @@ pub struct VersionSnapshot {
     pub digest: ContentDigest,
     pub metadata_snapshot: serde_json::Value,
     pub created_by: String,
-    /// The previous current version's raw record id, if any — the
+    /// The previous current version's raw record id, if any: the
     /// `prior` link that forms the chain.
     pub prior_version_id: Option<String>,
 }
@@ -185,7 +185,7 @@ pub async fn tamper_for_test(
         RecordID::<()>::new(TABLE, trim_table(&row.id)).map_err(|e| map_store_err("tamper", e))?;
     // Target `armed` specifically: it is NOT readonly (arming needs to
     // set it once), so this exercises the freeze EVENT rather than the
-    // per-field READONLY guard — the two layers refuse independently.
+    // per-field READONLY guard; the two layers refuse independently.
     let update = Query::new()
         .update_set(rid.to_string())
         .map_err(|e| map_store_err("tamper", e))?

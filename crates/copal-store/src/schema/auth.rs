@@ -1,9 +1,9 @@
-//! Auth cluster: `api_key` — tenant bearer credentials.
+//! Auth cluster: `api_key`, the tenant bearer credentials.
 //!
 //! A key row is the stateful half of a `ck1.<id>.<secret>` bearer
 //! token: only `sha256(secret)` is stored, verification is a record
 //! fetch plus a constant-time hash compare, and revocation is one
-//! UPDATE. Same capability design as grants — no signing key exists
+//! UPDATE. Same capability design as grants: no signing key exists
 //! anywhere.
 
 use surql::schema::{
@@ -19,7 +19,7 @@ pub fn tables() -> Vec<TableDefinition> {
 /// The audit trail: custody and lifecycle actions, append-only.
 ///
 /// Immutability is engine-enforced with the same THROW-event pattern
-/// that freezes version rows — an UPDATE or DELETE against an audit
+/// that freezes version rows: an UPDATE or DELETE against an audit
 /// event aborts inside SurrealDB itself, not in application code.
 fn audit_event_table() -> TableDefinition {
     table_schema("audit_event")

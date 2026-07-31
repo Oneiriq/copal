@@ -165,7 +165,7 @@ async fn gc_marks_then_collects_unreferenced_content() {
     };
 
     // Still referenced by b: the pass refreshes the cache, collects
-    // nothing, and the object stays. Two references — b's current link
+    // nothing, and the object stays. Two references: b's current link
     // plus b's version-1 history row; a's links dropped with its
     // tombstone.
     let report = run_pass(&store, &blobs, &config).await;
@@ -274,7 +274,7 @@ async fn stale_scanning_files_fail_after_the_age_ceiling() {
     let (_router, store, blobs, _dir) = stack().await;
     let tenant = copal_core::TenantId::parse("acme").unwrap();
 
-    // A file stuck in scanning with no pipeline run behind it — the
+    // A file stuck in scanning with no pipeline run behind it, the
     // crash-between-complete-and-enqueue shape, built via the repos.
     let spec = FileSpec {
         path: "stuck.txt".into(),

@@ -1,8 +1,8 @@
 //! API-key authentication, end to end over both faces.
 //!
 //! Admin mints a key (guarded by the operator token), the bearer works
-//! on REST and GraphQL alike, revocation kills it, and every failure —
-//! absent, malformed, wrong-secret, revoked — is the same uniform 401.
+//! on REST and GraphQL alike, revocation kills it, and every failure
+//! (absent, malformed, wrong-secret, revoked) is the same uniform 401.
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};

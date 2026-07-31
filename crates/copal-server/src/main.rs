@@ -30,7 +30,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     if config.auth.mode == copal_server::auth::AuthMode::TrustedHeader {
         tracing::warn!(
-            "auth mode is TRUSTED HEADER (x-copal-tenant): development only — \
+            "auth mode is TRUSTED HEADER (x-copal-tenant): development only; \
              set COPAL_AUTH_MODE=keys with COPAL_ADMIN_TOKEN for any exposed deployment",
         );
     }

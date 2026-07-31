@@ -2,7 +2,7 @@
 //!
 //! `FileSpec` is what a caller supplies to create a file; `FileRecord` is
 //! what every read path returns. Timestamps stay RFC3339 strings at this
-//! layer — the database owns time (DEFAULT/VALUE clauses), the domain
+//! layer: the database owns time (DEFAULT/VALUE clauses), the domain
 //! only relays it.
 
 use serde::{Deserialize, Serialize};
@@ -88,7 +88,7 @@ pub struct FileRecord {
 
 impl FileRecord {
     /// Whether content may be served: bytes exist and the record is not
-    /// quarantined. Deliberately NOT state-based — a re-upload in
+    /// quarantined. State plays no part here; a re-upload in
     /// flight (or failed) keeps the previous version serving.
     pub fn servable_content(&self) -> bool {
         self.digest.is_some() && self.state != FileState::Quarantined
@@ -109,7 +109,7 @@ pub struct FileVersion {
 /// Result of a create: the record plus whether this call created it.
 ///
 /// `created == false` means an idempotency-key replay returned the
-/// original record — success, not conflict.
+/// original record, reported as success.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreatedFile {
     pub record: FileRecord,

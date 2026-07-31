@@ -1,17 +1,17 @@
 //! The Janus contract gate, live in its first consumer.
 //!
-//! THE contract lives in `copal_server::contract` — the same object
-//! that serves `/graphql` — and is validated here over `copal-store`'s
+//! THE contract lives in `copal_server::contract` (the same object
+//! that serves `/graphql`) and is validated here over `copal-store`'s
 //! REAL schema definitions. Three failure classes become test failures
 //! in this repo:
 //!
 //! 1. Contract-vs-schema drift: exposing a renamed/dropped column, or
 //!    declaring a filter/sort no index can serve, fails validation with
 //!    the offending name.
-//! 2. Artifact drift: every generated artifact — `docs/openapi.json`,
-//!    `docs/schema.graphql`, and the four clients under `clients/` —
+//! 2. Artifact drift: every generated artifact (`docs/openapi.json`,
+//!    `docs/schema.graphql`, and the four clients under `clients/`)
 //!    must match its checked-in copy byte for byte (`COPAL_BLESS=1`
-//!    re-blesses deliberately).
+//!    re-blesses as an explicit step).
 //! 3. Index regressions: dropping `idx_file_listing` (or demoting its
 //!    prefix) breaks the `created_at` sort claim and fails here.
 
@@ -41,12 +41,12 @@ fn generated_artifacts_match_the_checked_in_documents() {
             std::fs::write(&checked_in_path, content).unwrap();
         }
         let checked_in = std::fs::read_to_string(&checked_in_path).unwrap_or_else(|_| {
-            panic!("{checked_in_path} missing — run with COPAL_BLESS=1 to create")
+            panic!("{checked_in_path} missing; run with COPAL_BLESS=1 to create")
         });
         assert_eq!(
             content.trim(),
             checked_in.trim(),
-            "{filename} drifted from its checked-in copy; COPAL_BLESS=1 to re-bless deliberately",
+            "{filename} drifted from its checked-in copy; COPAL_BLESS=1 to re-bless",
         );
     }
 }

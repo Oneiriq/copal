@@ -1,7 +1,7 @@
 //! API-key repository: mint rows, fetch for verification, revoke.
 //!
 //! The verification path is a record fetch by key id (the token
-//! carries it) — no index scan, no tenant input, and the caller does
+//! carries it): no index scan, no tenant input, and the caller does
 //! the constant-time hash compare. Listing never returns hashes.
 
 use serde::Deserialize;
@@ -83,7 +83,7 @@ pub async fn fetch_key(store: &Store, key_id: &str) -> copal_core::Result<Option
         .map_err(|e| CopalError::Store(format!("key row shape: {e}")))
 }
 
-/// List a tenant's keys — hashes never leave the repo here.
+/// List a tenant's keys; hashes never leave the repo here.
 pub async fn list_keys(store: &Store, tenant: &TenantId) -> copal_core::Result<Vec<Value>> {
     let query = Query::new()
         .select(Some(vec![

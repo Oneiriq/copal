@@ -117,8 +117,8 @@ async fn idempotency_key_replay_returns_the_original() {
         .unwrap();
     assert!(first.created);
 
-    // Replay with the same key — even under a different path — is
-    // success returning the ORIGINAL record, not a conflict. The key
+    // Replay with the same key (even under a different path) is
+    // success returning the ORIGINAL record instead of a conflict. The key
     // identifies the request; retries must be safe.
     let mut replay = spec("entirely/different.txt");
     replay.idempotency_key = Some("retry-abc".into());

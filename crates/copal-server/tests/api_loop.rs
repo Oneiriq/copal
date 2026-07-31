@@ -2,7 +2,7 @@
 //!
 //! mem:// metadata plane + tempdir blob plane; no server process, no
 //! container. This is the test that says "Copal is a file service":
-//! create, stream bytes in, read metadata, stream bytes out — plus the
+//! create, stream bytes in, read metadata, stream bytes out, plus the
 //! refusals that make it safe.
 
 use axum::body::Body;
@@ -148,7 +148,7 @@ async fn tenancy_and_validation_refusals() {
     let response = router.clone().oneshot(create).await.unwrap();
     let id = json_body(response).await["id"].as_str().unwrap().to_owned();
 
-    // A different tenant sees 404, not 403 — existence is not leaked.
+    // A different tenant sees 404; existence is never leaked.
     let foreign = req(
         "GET",
         &format!("/v1/files/{id}"),
@@ -311,7 +311,7 @@ async fn oversized_uploads_are_413_and_retryable() {
 
 /// Full grant lifecycle: issue, redeem without any tenant header,
 /// enforce the use limit, and refuse after revocation. Every refusal
-/// is the same 404 — a signed URL is not an oracle.
+/// is the same 404; a signed URL is not an oracle.
 #[tokio::test]
 async fn grant_urls_serve_share_limit_and_revoke() {
     let (router, _dir) = test_router().await;
@@ -476,7 +476,7 @@ async fn grant_expiry_and_validation() {
     router.clone().oneshot(upload).await.unwrap();
 
     // ttl_secs = 0 is rejected at issuance (a link that can never be
-    // redeemed is a caller bug, not a product feature).
+    // redeemed is a caller bug).
     let zero = req(
         "POST",
         &format!("/v1/files/{id}/url"),
@@ -544,7 +544,7 @@ async fn pagination_pages_are_disjoint_and_complete() {
     let unique: std::collections::BTreeSet<_> = seen.iter().collect();
     assert_eq!(unique.len(), 5, "no overlaps: {seen:?}");
 
-    // A garbage cursor is a 400, not a scan.
+    // A garbage cursor answers 400 before any query runs.
     let response = router
         .clone()
         .oneshot(req(
@@ -644,7 +644,7 @@ async fn serving_carries_the_security_and_caching_floor() {
     let (router, _dir) = test_router().await;
     let payload = b"<html><script>alert(1)</script></html>";
 
-    // An HTML upload — declared as text/html — must never render
+    // An HTML upload (declared as text/html) must never render
     // inline under the service origin.
     let create = req(
         "POST",

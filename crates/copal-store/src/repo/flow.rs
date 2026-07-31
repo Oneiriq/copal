@@ -226,7 +226,7 @@ pub async fn list_runs(
         .map_err(|e| map_store_err("list_runs", e))
 }
 
-/// Claim ONE SPECIFIC pending run — the sync path claims exactly the
+/// Claim ONE SPECIFIC pending run: the sync path claims exactly the
 /// run it just enqueued, never a neighbor it would then abandon.
 pub async fn claim_specific(
     store: &Store,
@@ -262,7 +262,7 @@ pub async fn claim_specific(
 /// single oldest row: each worker starts at an owner-derived offset
 /// into the window, so a fleet of idle workers spreads across
 /// different candidates instead of all CASing the same row and
-/// retrying. Ordering stays oldest-first overall — the window is the
+/// retrying. Ordering stays oldest-first overall; the window is the
 /// queue head, and a drained window falls through to a fresh select.
 pub async fn claim_next_pending(
     store: &Store,
@@ -369,7 +369,7 @@ pub async fn finish_run(
 /// admits the current holder (renewal), an unarmed lease, or an
 /// expired one; a live rival's lease refuses. A crash between create
 /// and arm leaves `expires_at` NONE, which the next acquire treats as
-/// free — self-healing, like every other lease here.
+/// free: self-healing, like every other lease here.
 pub async fn try_acquire_lease(
     store: &Store,
     name: &str,
@@ -404,7 +404,7 @@ pub async fn try_acquire_lease(
 
 /// Retry a FAILED run: CAS it back to `pending` with its journal
 /// intact. Returns false when the run is not in `failed` (already
-/// retried, still running, or completed) — the guard rides the UPDATE,
+/// retried, still running, or completed); the guard rides the UPDATE,
 /// so two racing retries serialize here.
 pub async fn retry_failed(store: &Store, run_id: &str) -> copal_core::Result<bool> {
     let query = Query::new()
@@ -452,7 +452,7 @@ pub async fn requeue(store: &Store, run_id: &str) -> copal_core::Result<()> {
     Ok(())
 }
 
-/// Reap expired `running` claims back to `pending` — the journal makes
+/// Reap expired `running` claims back to `pending`; the journal makes
 /// the re-execution skip completed steps, so a crashed worker costs a
 /// lease TTL, not correctness.
 pub async fn reap_expired_runs(store: &Store) -> copal_core::Result<u64> {

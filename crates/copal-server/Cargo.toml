@@ -27,7 +27,7 @@ bytes = { workspace = true }
 # The contract layer, from its own repo. The files contract is defined
 # over copal-store's real schema; the drift gate compares generated
 # artifacts against the checked-in documents, and the RUNTIME serves
-# /graphql from the very same contract object — resolvers dispatch into
+# /graphql from the very same contract object; resolvers dispatch into
 # this crate's repositories through Janus middleware.
 oneiriq-janus = { git = "ssh://git@github.com/Oneiriq/janus.git", branch = "main", features = [
     "graphql",

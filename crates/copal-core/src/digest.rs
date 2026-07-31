@@ -91,7 +91,7 @@ impl DigestBuilder {
 mod tests {
     use super::*;
 
-    /// SHA-256 of the empty string — the canonical test vector.
+    /// SHA-256 of the empty string, the canonical test vector.
     const EMPTY: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
     #[test]

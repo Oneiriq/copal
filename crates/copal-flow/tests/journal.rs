@@ -250,7 +250,7 @@ async fn sync_replay_of_an_unfinished_run_reads_pending_not_null_output() {
     assert!(claimed.is_some());
 
     // A sync start with the same key must NOT report null output for
-    // the still-running original — it reports pending (None).
+    // the still-running original; it reports pending (None).
     let (replay_id, output) = engine.run_sync(&tenant(), "wf", spec()).await.unwrap();
     assert_eq!(replay_id, run_id);
     assert_eq!(output, None, "running replay must read as pending");

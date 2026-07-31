@@ -4,7 +4,7 @@
 //! one operation on one file, held as a bearer token whose secret the
 //! store never sees in the clear. Creation is two-step: the row is
 //! CREATEd inert (no `file` link, no expiry) and then ARMED in one
-//! UPDATE that sets both — record links and server-computed datetimes
+//! UPDATE that sets both, because record links and server-computed datetimes
 //! are UPDATE-side constructs, and an un-armed grant fails every
 //! redemption guard, so a crash between the steps leaves nothing
 //! usable.

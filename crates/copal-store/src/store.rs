@@ -1,6 +1,6 @@
 //! The store handle.
 //!
-//! A cheap `Clone` wrapper over the surql-rs client — one connected store
+//! A cheap `Clone` wrapper over the surql-rs client: one connected store
 //! is shared across handlers, never a global. `connect` speaks any engine
 //! the underlying feature set enables, so `mem://` in tests and
 //! `ws://host:8000` in deployment run identical code.

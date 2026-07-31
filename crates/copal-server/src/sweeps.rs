@@ -1,12 +1,12 @@
 //! Background maintenance: one pass, three sweeps.
 //!
 //! 1. Reap expired upload claims to `failed` (retryable).
-//! 2. Clear staging entries past their TTL — aborted and oversize
+//! 2. Clear staging entries past their TTL; aborted and oversize
 //!    uploads leave inert staging garbage by design; this is where it
 //!    leaves the disk.
 //! 3. Garbage-collect unreferenced content: mark blobs whose derived
-//!    link count is zero, then — a full grace period later, and only
-//!    after a FRESH recount — delete the row and then the object.
+//!    link count is zero, then (a full grace period later, and only
+//!    after a FRESH recount) delete the row and then the object.
 //!    Referenced blobs get their advisory refcount cache refreshed on
 //!    the way past.
 //!
@@ -120,7 +120,7 @@ async fn gc_pass<B: BlobStore>(
                 }
             };
             last = Some(digest.clone());
-            // The derived truth, freshly computed — never the cache.
+            // The derived truth, freshly computed; the cache plays no part.
             let live = blob_repo::recount_inbound_links(store, &digest).await?;
             if live > 0 {
                 if row.unreferenced_since.is_some() || row.refcount != live {
@@ -141,7 +141,7 @@ async fn gc_pass<B: BlobStore>(
                     // Before the bytes go, one final existence check: a
                     // row RE-CREATED since the delete (identical
                     // content re-uploaded in the window) aborts the
-                    // collection — the fresh row's bytes stay.
+                    // collection; the fresh row's bytes stay.
                     if blob_repo::collect_expired(store, &digest, config.gc_grace_secs).await? {
                         if blob_repo::row_exists(store, &digest).await? {
                             tracing::info!(digest = %digest, "collection aborted: blob resurrected");
@@ -168,7 +168,7 @@ async fn gc_pass<B: BlobStore>(
 /// The interval loop the server spawns. Replicas elect a leader per
 /// pass through the `sweeps` coordination lease: losers skip the pass
 /// entirely, so a fleet does not multiply GC and reap work (every
-/// sweep is CAS-guarded and safe to duplicate — this is about waste
+/// sweep is CAS-guarded and safe to duplicate; this is about waste
 /// and about not widening the GC resurrection window across
 /// instances). A crashed leader's lease expires and any replica takes
 /// over.

@@ -2,17 +2,17 @@
 //!
 //! Activities are plain async functions over JSON values: typed at
 //! their edges, idempotent by contract, and unaware of orchestration.
-//! A workflow is a registered pipeline of activity names — each step's
-//! output is the next step's input — and the engine runs it in two
+//! A workflow is a registered pipeline of activity names (each step's
+//! output is the next step's input), and the engine runs it in two
 //! modes over the SAME journal:
 //!
 //! - sync: claim, execute, and return the output in one call;
 //! - async: enqueue now, a worker claims and executes later.
 //!
-//! Durability is the journal, not the process. Every step attempt is a
-//! row; completed steps replay from their recorded output instead of
-//! re-executing, so a worker crash costs a lease TTL, never a repeated
-//! side effect. That property is the entire point of the design and is
+//! Durability lives in the journal, never in the process. Every step attempt is a
+//! row; completed steps replay from their recorded output without
+//! re-executing, so a worker crash costs a lease TTL and no side
+//! effect ever repeats. That property is the entire point of the design and is
 //! proven by test with a side-effect counter.
 
 use std::collections::BTreeMap;
@@ -152,9 +152,9 @@ impl FlowEngine {
     /// Enqueue, claim, and execute in-process. `Some(output)` means the
     /// run completed here (or an idempotent replay had already
     /// completed); `None` means a worker holds it and the caller polls
-    /// — DISTINCT from a run whose output is legitimately null. Same
-    /// journal as the async path — sync means "do not wait for a
-    /// worker", not "skip durability".
+    /// (distinct from a run whose output is legitimately null). Same
+    /// journal as the async path; sync changes who waits and nothing
+    /// about durability.
     pub async fn run_sync(
         &self,
         tenant: &TenantId,
@@ -174,7 +174,7 @@ impl FlowEngine {
             };
             return Ok((run_id, output));
         }
-        // Claim exactly the run just enqueued — never a neighbor this
+        // Claim exactly the run just enqueued, and never a neighbor this
         // path would then abandon to its lease.
         let claimed =
             flow_repo::claim_specific(&self.store, &run_id, "sync", self.lease_secs).await?;
@@ -243,7 +243,7 @@ impl FlowEngine {
 
     /// A terminally failed run fails its scanning subject: the file
     /// leaves the transient `scanning` state for retryable `failed`
-    /// instead of stranding until the age sweep. Best-effort — a
+    /// ahead of the age sweep. Best-effort: a
     /// conflict means the subject was not scanning (non-pipeline run,
     /// or something else already moved it), which is fine.
     async fn fail_scanning_subject(&self, run: &RunRow) {

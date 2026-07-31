@@ -2,7 +2,7 @@
 //!
 //! Redemption is two phases with distinct jobs:
 //! 1. `fetch` returns the row so the CALLER verifies the bearer secret
-//!    (constant-time, in `copal-sign`) — the hash never rides a WHERE
+//!    (constant-time, in `copal-sign`); the hash never rides a WHERE
 //!    clause.
 //! 2. `consume` is one atomic UPDATE whose guards carry every business
 //!    rule: not revoked, armed, unexpired (server clock), and under the
@@ -73,7 +73,7 @@ pub struct GrantSpec {
 ///
 /// The caller supplies the grant id (minted with the token) and the
 /// secret hash; the secret itself never reaches this crate. Arming
-/// sets the file link and the server-computed expiry in one UPDATE —
+/// sets the file link and the server-computed expiry in one UPDATE;
 /// if the process dies between create and arm, the inert row fails
 /// every redemption guard.
 pub async fn issue(
@@ -136,11 +136,11 @@ pub async fn fetch(store: &Store, grant_id: &str) -> copal_core::Result<Option<G
 }
 
 /// Atomically consume one use. `Ok(false)` means the grant refused:
-/// revoked, unarmed, expired, or exhausted — indistinguishable on
+/// revoked, unarmed, expired, or exhausted, indistinguishable on
 /// purpose.
 /// Whether the grant is currently redeemable, WITHOUT consuming a use
-/// — the same guards as [`consume`], engine-side clock included, as a
-/// read. The 304-revalidation path uses this so a revoked or expired
+/// (the same guards as [`consume`], engine-side clock included, as a
+/// read). The 304-revalidation path uses this so a revoked or expired
 /// grant cannot keep refreshing a cache it no longer authorizes.
 pub async fn redeemable(store: &Store, grant_id: &str) -> copal_core::Result<bool> {
     let query = Query::new()

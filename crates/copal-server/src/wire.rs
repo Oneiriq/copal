@@ -1,6 +1,6 @@
 //! The wire mapper: domain records rendered in the CONTRACT's shape.
 //!
-//! Every read surface — REST handlers and GraphQL resolvers alike —
+//! Every read surface (REST handlers and GraphQL resolvers alike)
 //! serializes files through this one function, so the wire cannot
 //! drift from `docs/openapi.json` per-handler. Internal columns
 //! (tenant scoping, audit, lease bookkeeping) stay off the wire; the

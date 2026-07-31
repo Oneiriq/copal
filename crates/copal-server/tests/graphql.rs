@@ -1,4 +1,4 @@
-//! The GraphQL face, end to end through the real router — and ACROSS
+//! The GraphQL face, end to end through the real router, and ACROSS
 //! faces: a URL minted by a GraphQL mutation redeems over REST, because
 //! both protocols dispatch into the same repositories under the same
 //! contract.
@@ -151,7 +151,7 @@ async fn graphql_minted_url_redeems_over_rest() {
     assert!(url.starts_with("/v1/grants/"), "{url}");
 
     // The signed URL a GraphQL mutation minted serves bytes over REST,
-    // with no tenant header — the grant IS the authorization.
+    // with no tenant header; the grant IS the authorization.
     let response = router
         .clone()
         .oneshot(rest("GET", url, None, Body::empty()))
@@ -161,7 +161,7 @@ async fn graphql_minted_url_redeems_over_rest() {
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     assert_eq!(&bytes[..], b"cross-face payload");
 
-    // max_uses: 1 — the second redemption refuses.
+    // max_uses: 1, so the second redemption refuses.
     let response = router
         .clone()
         .oneshot(rest("GET", url, None, Body::empty()))
@@ -235,7 +235,7 @@ async fn tenancy_is_enforced_by_janus_middleware() {
     );
     assert_eq!(error["extensions"]["code"], "unauthorized");
 
-    // Another tenant sees nothing — scoping is pinned server-side.
+    // Another tenant sees nothing; scoping is pinned server-side.
     let response = router
         .clone()
         .oneshot(graphql(
@@ -349,7 +349,7 @@ async fn alias_amplification_is_rejected_by_complexity_limits() {
 async fn caller_supplied_processing_metadata_is_stripped() {
     let (router, _dir) = test_router().await;
     // A creator claiming scan verdicts in metadata.processing must not
-    // be believed — that namespace belongs to the pipeline.
+    // be believed; that namespace belongs to the pipeline.
     let create = rest(
         "POST",
         "/v1/files",
@@ -414,7 +414,7 @@ async fn graphql_pages_with_cursors_shared_across_faces() {
     let second = body["data"]["files"]["items"][0]["path"].clone();
     assert_ne!(first, second);
 
-    // The SAME cursor works over REST — one codec, both faces.
+    // The SAME cursor works over REST: one codec, both faces.
     let response = router
         .clone()
         .oneshot(rest(

@@ -70,6 +70,8 @@ mod tests {
         let ddl = surql::schema::generate_table_sql(&access_grant_table(), false).join("\n");
         assert!(ddl.contains("DEFINE FIELD file ON TABLE access_grant TYPE option<record<file>>"));
         assert!(ddl.contains("DEFINE FIELD expires_at ON TABLE access_grant TYPE option<datetime>"));
-        assert!(ddl.contains("$value INSIDE ['get']"));
+        // Both halves of the capability vocabulary: reads and the
+        // single-use writes browser uploads redeem.
+        assert!(ddl.contains("$value INSIDE ['get', 'put']"));
     }
 }

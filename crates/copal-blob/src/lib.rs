@@ -100,9 +100,8 @@ impl FsBlobStore {
     /// Open (creating if needed) a store rooted at `root`.
     pub fn open(root: &str) -> copal_core::Result<Self> {
         let builder = Fs::default().root(root);
-        let op = Operator::new(builder)
-            .map_err(|e| CopalError::Blob(format!("open fs root: {e}")))?
-            .finish();
+        let op =
+            Operator::new(builder).map_err(|e| CopalError::Blob(format!("open fs root: {e}")))?;
         Ok(Self { op })
     }
 

@@ -1,0 +1,10 @@
+[advisories]
+ignore = [
+    # RUSTSEC-2023-0071 (rsa: Marvin timing sidechannel) has no fixed
+    # release. It reaches the lockfile through surrealdb-core's JWT
+    # stack (jsonwebtoken -> rsa); Copal performs no RSA private-key
+    # operations, so the attack's precondition (timing an in-process
+    # RSA decryption oracle) does not exist here. Re-evaluate whenever
+    # surrealdb or jsonwebtoken move off the unfixed crate.
+    "RUSTSEC-2023-0071",
+]

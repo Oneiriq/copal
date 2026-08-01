@@ -31,13 +31,20 @@ from one contract. What remains:
    is its own engine session over the same connection, a record
    access JWT binds a caller identity to it, and table and field
    `PERMISSIONS` then filter engine side while the root handle beside
-   it keeps full authority. The surql-rs seam shipped as
-   `DatabaseClient::caller_session`, which verifies the engine bound
-   a record identity and refuses tokens `PERMISSIONS` would never
-   filter. What remains here: short-lived record tokens minted per
-   request, and `ACCESS` plus `PERMISSIONS` declarations compiled
-   from the same contract that drives the application layer, so both
-   refusal layers share one source. Facts that bound the design:
+   it keeps full authority. The mechanism is in place end
+   to end: `DatabaseClient::caller_session` opens the per-caller
+   session and refuses tokens `PERMISSIONS` would never filter;
+   every Copal table carries engine permissions by a mechanical rule
+   (tenant tables admit only the token's tenant, tables without a
+   tenant column are closed to caller sessions); the record access
+   method applies with `COPAL_ENGINE_ACCESS_KEY`, rotating by
+   replacement; token minting mirrors the scope model; and a parity
+   test holds engine field guards equal to contract field guards.
+   What remains here: the request path itself, which still runs every
+   repository call on the service session. Adoption means handlers
+   threading a caller store after authentication, and it comes with a
+   flag so the layer can be watched before it is trusted. Facts that
+   bound the design:
    enforcement follows the actor, so record sessions are filtered
    even on a credential-less engine, whose exposure is the anonymous
    session acting as owner; only record sessions are filtered, and

@@ -109,6 +109,7 @@ impl Config {
                 database: env_or("COPAL_DB_NAME", "copal"),
                 username,
                 password,
+                engine_access_key: std::env::var("COPAL_ENGINE_ACCESS_KEY").ok(),
             },
             blob_root: env_or("COPAL_BLOB_ROOT", "./data/blobs"),
             blob_encryption_key: std::env::var("COPAL_BLOB_ENCRYPTION_KEY").ok(),

@@ -37,6 +37,7 @@ Every value comes from the environment. Defaults target local development.
 | `COPAL_EMBEDDING_DIMENSION` | `768` | Width the model emits. The vector index is defined at this dimension at startup, so it must match the model. |
 | `COPAL_SUBSCRIPTION_MAX_SECS` | 900 | Lifetime of one subscription; re-subscribing re-authenticates. |
 | `COPAL_RATE_LEDGER` | memory | `store` shares one consumption budget across a fleet. |
+| `COPAL_ENGINE_ACCESS_KEY` | unset | HS256 key for the engine's caller access method. Set, the store defines record access, every table's `PERMISSIONS` become enforceable per caller, and `Store::caller` sessions filter engine side. Rotation replaces the method on next boot. |
 | `COPAL_PERSISTED_OPERATIONS` | unset | JSON file of sha256 to document; set, GraphQL runs listed operations only. |
 | `COPAL_MAX_SEMANTIC_DISTANCE` | `0.65` | Cosine distance beyond which a passage is not a semantic match (0 identical, 1 unrelated). Without a floor, nearest-neighbour search answers every query with its nearest results however far away they are. |
 | `COPAL_WEBHOOK_ALLOW_PRIVATE_TARGETS` | `false` | Permit webhook endpoints resolving to private, loopback, or link-local addresses. Off by default: tenant-supplied URLs pointing inside the deployment are server-side request forgery. Turn on only when receivers are genuinely internal and tenants are trusted. |

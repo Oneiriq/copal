@@ -153,6 +153,10 @@ pub struct AppState<B: BlobStore> {
     /// credentials, webhook signing keys, edge keys) open under it,
     /// and the surfaces that mint them exist only when it does.
     pub cipher: Option<copal_blob::crypto::BlobCipher>,
+    /// Caller-token minting parameters, present when the deployment
+    /// set `COPAL_ENGINE_ACCESS_KEY` and the store defined the record
+    /// access method those tokens authenticate against.
+    pub engine_access: Option<crate::engine::EngineAccess>,
 }
 
 impl<B: BlobStore> AppState<B> {
@@ -172,7 +176,14 @@ impl<B: BlobStore> AppState<B> {
             cipher: None,
             rate_store: std::sync::Arc::new(janus::runtime::MemoryRateStore::new()),
             persisted_operations: None,
+            engine_access: None,
         }
+    }
+
+    /// Install caller-token minting.
+    pub fn with_engine_access(mut self, access: Option<crate::engine::EngineAccess>) -> Self {
+        self.engine_access = access;
+        self
     }
 
     /// Install the master cipher.

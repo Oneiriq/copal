@@ -2147,19 +2147,40 @@ async fn list_versions<B: BlobStore>(
     axum::extract::Query(params): axum::extract::Query<VersionListQuery>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let limit = params.limit.unwrap_or(50).clamp(1, 100);
-    let tenant =
-        crate::auth::authenticate_scoped(&state, &headers, crate::auth::Scope::Read, limit as u64)
-            .await?;
+    let (tenant, identity) = crate::auth::authenticate_scoped_with_identity(
+        &state,
+        &headers,
+        crate::auth::Scope::Read,
+        limit as u64,
+    )
+    .await?;
     let id = parse_id(&id)?;
     // Tenancy and tombstone filtering ride the file fetch.
     file_repo::get_file(&state.store, &tenant, &id)
         .await?
         .ok_or_else(|| CopalError::not_found(format!("file {id}")))?;
-    let versions =
+    let (mut items, next_cursor) =
         list_versions_page(&state, &tenant, &id, limit, params.cursor.as_deref()).await?;
+    // The same declarations the dispatcher projects on the GraphQL
+    // face, evaluated through the shared API, so the two faces redact
+    // identically instead of drifting apart.
+    let mut ctx = janus::runtime::JanusContext::new();
+    if let Some(key) = identity {
+        ctx.insert(janus::runtime::Principal::new(key.key_id, key.scopes));
+    }
+    let hidden = janus::runtime::hidden_fields(
+        &crate::contract::contract(),
+        "files",
+        Some("versions"),
+        &crate::contract::guards(),
+        &ctx,
+    );
+    for row in &mut items {
+        janus::runtime::strip_hidden(row, &hidden);
+    }
     Ok(Json(json!({
-        "items": versions.0,
-        "next_cursor": versions.1,
+        "items": items,
+        "next_cursor": next_cursor,
     })))
 }
 

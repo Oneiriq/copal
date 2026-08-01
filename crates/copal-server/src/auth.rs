@@ -199,6 +199,20 @@ pub async fn authenticate_scoped<B: BlobStore>(
     scope: Scope,
     units: u64,
 ) -> Result<TenantId, ApiError> {
+    authenticate_scoped_with_identity(state, headers, scope, units)
+        .await
+        .map(|(tenant, _)| tenant)
+}
+
+/// [`authenticate_scoped`], keeping the identity, for handlers that
+/// also project guarded fields and need the principal to evaluate
+/// the guards.
+pub async fn authenticate_scoped_with_identity<B: BlobStore>(
+    state: &AppState<B>,
+    headers: &HeaderMap,
+    scope: Scope,
+    units: u64,
+) -> Result<(TenantId, Option<KeyIdentity>), ApiError> {
     let (tenant, identity) = authenticate_with_identity(state, headers).await?;
     let subject = identity
         .as_ref()
@@ -235,7 +249,7 @@ pub async fn authenticate_scoped<B: BlobStore>(
             );
         }
     }
-    Ok(tenant)
+    Ok((tenant, identity))
 }
 
 /// Gate an admin route on the operator token, constant-time. During a

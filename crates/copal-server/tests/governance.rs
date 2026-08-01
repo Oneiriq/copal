@@ -276,3 +276,94 @@ async fn header_mode_stays_open_and_still_meters() {
     let response = router.clone().oneshot(listing).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
 }
+
+#[tokio::test]
+async fn guarded_fields_redact_identically_on_both_faces() {
+    let (router, _dir) = keyed_router().await;
+    let worker = mint(&router, &["read", "write"]).await;
+    let operator = mint(&router, &["read", "admin"]).await;
+
+    // A file with content mints version 1.
+    let response = router
+        .clone()
+        .oneshot(rest(
+            "POST",
+            "/v1/files",
+            &worker,
+            Some(json!({ "path": "audit.txt", "content_type": "text/plain" })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let id = json_body(response).await["id"].as_str().unwrap().to_owned();
+    let put = Request::builder()
+        .method("PUT")
+        .uri(format!("/v1/files/{id}/content"))
+        .header("authorization", format!("Bearer {worker}"))
+        .body(Body::from(b"attributed bytes".to_vec()))
+        .unwrap();
+    let response = router.clone().oneshot(put).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // Version attribution is audit data: the non-admin key lists
+    // history WITHOUT the created_by key on REST, and GraphQL renders
+    // it null. The rest of the row is intact.
+    let response = router
+        .clone()
+        .oneshot(rest(
+            "GET",
+            &format!("/v1/files/{id}/versions"),
+            &worker,
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_body(response).await;
+    let row = &body["items"][0];
+    assert_eq!(row["number"], 1);
+    assert!(row.get("created_by").is_none(), "{row:#?}");
+
+    let response = router
+        .clone()
+        .oneshot(graphql(
+            &format!(
+                r#"{{ file(id: "{id}") {{ versions {{ items {{ number created_by }} }} }} }}"#
+            ),
+            &worker,
+        ))
+        .await
+        .unwrap();
+    let body = json_body(response).await;
+    assert!(body.get("errors").is_none(), "{body:#?}");
+    let row = &body["data"]["file"]["versions"]["items"][0];
+    assert_eq!(row["number"], 1);
+    assert!(row["created_by"].is_null(), "{row:#?}");
+
+    // The admin-scoped key sees the attribution on both faces.
+    let response = router
+        .clone()
+        .oneshot(rest(
+            "GET",
+            &format!("/v1/files/{id}/versions"),
+            &operator,
+            None,
+        ))
+        .await
+        .unwrap();
+    let body = json_body(response).await;
+    assert!(body["items"][0]["created_by"].is_string(), "{body:#?}",);
+    let response = router
+        .clone()
+        .oneshot(graphql(
+            &format!(r#"{{ file(id: "{id}") {{ versions {{ items {{ created_by }} }} }} }}"#),
+            &operator,
+        ))
+        .await
+        .unwrap();
+    let body = json_body(response).await;
+    assert!(
+        body["data"]["file"]["versions"]["items"][0]["created_by"].is_string(),
+        "{body:#?}",
+    );
+}

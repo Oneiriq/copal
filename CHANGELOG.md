@@ -126,6 +126,19 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ### Governance
 
+- **Caller sessions reach the request path, behind a flag.**
+  `COPAL_ENGINE_SESSIONS=on` makes the files resource's handlers run
+  repository calls through engine sessions minted per request from
+  the authenticated key's identity and scopes, so table and field
+  `PERMISSIONS` filter live traffic under the application checks.
+  Boot refuses the flag without `COPAL_ENGINE_ACCESS_KEY`. The
+  guarded attribution column now tolerates engine redaction end to
+  end: a non-admin key lists version history with `created_by`
+  removed by the engine before projection, an admin key sees it, and
+  wire shapes match the service-session face exactly. Off by
+  default; the remaining handlers, the GraphQL resolvers, and the S3
+  gateway adopt next.
+
 - **The engine is now a second enforcement layer.** Every table
   carries `PERMISSIONS` by a mechanical rule: tables with a
   `tenant_id` column admit only rows matching the caller token's

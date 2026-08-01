@@ -204,6 +204,68 @@ pub async fn authenticate_scoped<B: BlobStore>(
         .map(|(tenant, _)| tenant)
 }
 
+/// What authorization hands a request: the tenant, and the store its
+/// repository calls run through. With engine sessions off that is
+/// the service store; on, a caller-bound session the engine filters
+/// by `PERMISSIONS`, so a request-path bug that drops or confuses a
+/// tenant filter returns nothing instead of another tenant's rows.
+pub struct Authorized {
+    pub tenant: TenantId,
+    pub store: copal_store::Store,
+    /// The authenticated key, absent in header mode; handlers that
+    /// project guarded fields build their principal from it.
+    pub identity: Option<KeyIdentity>,
+}
+
+/// [`authenticate_scoped`] plus the request store. Handlers that
+/// adopt engine sessions authorize through this and run repositories
+/// on `Authorized::store`.
+pub async fn authorize_scoped<B: BlobStore>(
+    state: &AppState<B>,
+    headers: &HeaderMap,
+    scope: Scope,
+    units: u64,
+) -> Result<Authorized, ApiError> {
+    let (tenant, identity) =
+        authenticate_scoped_with_identity(state, headers, scope, units).await?;
+    let store = request_store(state, &tenant, identity.as_ref()).await?;
+    Ok(Authorized {
+        tenant,
+        store,
+        identity,
+    })
+}
+
+/// The store a request runs on. Caller sessions cost two engine
+/// round trips to open, which is the price of the second enforcement
+/// layer; the flag keeps it opt-in until a deployment has watched it.
+async fn request_store<B: BlobStore>(
+    state: &AppState<B>,
+    tenant: &TenantId,
+    identity: Option<&KeyIdentity>,
+) -> Result<copal_store::Store, ApiError> {
+    if !state.engine_sessions {
+        return Ok(state.store.clone());
+    }
+    let access = state.engine_access.as_ref().ok_or_else(|| {
+        ApiError::from(CopalError::Store(
+            "engine sessions are on without an access key; boot validation should refuse this"
+                .to_owned(),
+        ))
+    })?;
+    let (key_id, scopes) = match identity {
+        Some(key) => (key.key_id.as_str(), key.scopes.clone()),
+        // Header mode is the full-trust development shape; the engine
+        // session mirrors that trust.
+        None => (
+            "trusted-header",
+            KEY_SCOPES.iter().map(|s| (*s).to_owned()).collect(),
+        ),
+    };
+    let token = crate::engine::mint_caller_token(access, tenant, key_id, &scopes);
+    state.store.caller(&token).await.map_err(ApiError::from)
+}
+
 /// [`authenticate_scoped`], keeping the identity, for handlers that
 /// also project guarded fields and need the principal to evaluate
 /// the guards.

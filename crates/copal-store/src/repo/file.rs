@@ -607,7 +607,7 @@ pub async fn complete_upload(
         residency: residency.to_owned(),
         digest: digest.clone(),
         metadata_snapshot: row.metadata.clone(),
-        created_by: created_by.to_owned(),
+        created_by: Some(created_by.to_owned()),
         prior_version_id: row.current_version.clone(),
     };
     let version_id = super::version::record_version(store, tenant, id, &snapshot).await?;

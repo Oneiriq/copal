@@ -32,7 +32,7 @@ pub struct VersionSnapshot {
     pub residency: String,
     pub digest: ContentDigest,
     pub metadata_snapshot: serde_json::Value,
-    pub created_by: String,
+    pub created_by: Option<String>,
     /// The previous current version's raw record id, if any: the
     /// `prior` link that forms the chain.
     pub prior_version_id: Option<String>,
@@ -48,7 +48,7 @@ struct VersionRow {
     blob: Option<String>,
     #[serde(default)]
     metadata_snapshot: serde_json::Value,
-    created_by: String,
+    created_by: Option<String>,
     created_at: String,
 }
 

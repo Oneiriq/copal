@@ -118,7 +118,12 @@ pub struct FileVersion {
     /// The file's metadata as it stood when this version completed.
     #[serde(default)]
     pub metadata_snapshot: serde_json::Value,
-    pub created_by: String,
+    /// Attribution is guarded: the engine redacts this column for
+    /// caller sessions without the admin claim, so a row can arrive
+    /// without it and must deserialize anyway. The wire contract
+    /// already declares the field nullable, because guarded implies
+    /// nullable on every face.
+    pub created_by: Option<String>,
     pub created_at: String,
 }
 

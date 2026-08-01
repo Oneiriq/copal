@@ -157,6 +157,11 @@ pub struct AppState<B: BlobStore> {
     /// set `COPAL_ENGINE_ACCESS_KEY` and the store defined the record
     /// access method those tokens authenticate against.
     pub engine_access: Option<crate::engine::EngineAccess>,
+    /// Whether request handlers run repository calls through
+    /// caller-bound engine sessions. Off by default so the layer can
+    /// be watched before it is trusted; boot refuses `on` without the
+    /// access key.
+    pub engine_sessions: bool,
 }
 
 impl<B: BlobStore> AppState<B> {
@@ -177,7 +182,14 @@ impl<B: BlobStore> AppState<B> {
             rate_store: std::sync::Arc::new(janus::runtime::MemoryRateStore::new()),
             persisted_operations: None,
             engine_access: None,
+            engine_sessions: false,
         }
+    }
+
+    /// Turn caller-bound engine sessions on for request handlers.
+    pub fn with_engine_sessions(mut self, on: bool) -> Self {
+        self.engine_sessions = on;
+        self
     }
 
     /// Install caller-token minting.
@@ -1046,9 +1058,9 @@ async fn create_file<B: BlobStore>(
     headers: HeaderMap,
     Json(spec): Json<FileSpec>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
-    let tenant =
-        crate::auth::authenticate_scoped(&state, &headers, crate::auth::Scope::Write, 1).await?;
-    let created = file_repo::create_file(&state.store, &tenant, &spec, "api").await?;
+    let auth =
+        crate::auth::authorize_scoped(&state, &headers, crate::auth::Scope::Write, 1).await?;
+    let created = file_repo::create_file(&auth.store, &auth.tenant, &spec, "api").await?;
     // 201 for a fresh record, 200 for an idempotency-key replay that
     // returned the original, so retries read as success.
     let status = if created.created {
@@ -1119,8 +1131,8 @@ async fn list_files<B: BlobStore>(
     axum::extract::Query(params): axum::extract::Query<ListQuery>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let limit = params.limit.unwrap_or(100).clamp(1, 100);
-    let tenant =
-        crate::auth::authenticate_scoped(&state, &headers, crate::auth::Scope::Read, limit as u64)
+    let auth =
+        crate::auth::authorize_scoped(&state, &headers, crate::auth::Scope::Read, limit as u64)
             .await?;
     let ascending = match params.sort.as_deref() {
         None | Some("-created_at") => false,
@@ -1136,8 +1148,8 @@ async fn list_files<B: BlobStore>(
         .transpose()?;
     let state_filter = params.state.as_deref().map(parse_state_param).transpose()?;
     let records = file_repo::list_files(
-        &state.store,
-        &tenant,
+        &auth.store,
+        &auth.tenant,
         limit,
         after.as_ref(),
         ascending,
@@ -1168,10 +1180,9 @@ async fn get_file<B: BlobStore>(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let tenant =
-        crate::auth::authenticate_scoped(&state, &headers, crate::auth::Scope::Read, 1).await?;
+    let auth = crate::auth::authorize_scoped(&state, &headers, crate::auth::Scope::Read, 1).await?;
     let id = parse_id(&id)?;
-    let record = file_repo::get_file(&state.store, &tenant, &id)
+    let record = file_repo::get_file(&auth.store, &auth.tenant, &id)
         .await?
         .ok_or_else(|| CopalError::not_found(format!("file {id}")))?;
     Ok(Json(crate::wire::wire_file(&record)))
@@ -1185,37 +1196,43 @@ async fn delete_file<B: BlobStore>(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    let tenant =
-        crate::auth::authenticate_scoped(&state, &headers, crate::auth::Scope::Write, 1).await?;
+    let auth =
+        crate::auth::authorize_scoped(&state, &headers, crate::auth::Scope::Write, 1).await?;
     let id = parse_id(&id)?;
-    remove_file_core(&state, &tenant, &id, forwarded_origin(&headers).as_deref()).await?;
+    remove_file_core(
+        &auth.store,
+        &auth.tenant,
+        &id,
+        forwarded_origin(&headers).as_deref(),
+    )
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 /// Soft-delete plus its audit event, shared by the REST handler and
 /// the GraphQL action resolver.
-pub(crate) async fn remove_file_core<B: BlobStore>(
-    state: &AppState<B>,
+pub(crate) async fn remove_file_core(
+    store: &Store,
     tenant: &TenantId,
     id: &FileId,
     origin: Option<&str>,
 ) -> Result<(), ApiError> {
     // Read the size before the tombstone hides it, so the counter can
     // give the bytes back; the sweep's recount corrects any drift.
-    let released = file_repo::get_file(&state.store, tenant, id)
+    let released = file_repo::get_file(store, tenant, id)
         .await?
         .and_then(|record| record.size_bytes);
-    file_repo::soft_delete(&state.store, tenant, id).await?;
+    file_repo::soft_delete(store, tenant, id).await?;
     // Search indexes what exists; a tombstoned file's text would keep
     // answering queries with content nobody can fetch.
-    let _ = copal_store::repo::text::delete_text(&state.store, id).await;
-    let _ = copal_store::repo::text::delete_chunks(&state.store, id).await;
+    let _ = copal_store::repo::text::delete_text(store, id).await;
+    let _ = copal_store::repo::text::delete_chunks(store, id).await;
     if let Some(bytes) = released {
-        let _ = copal_store::repo::tenant::release_usage(&state.store, tenant, bytes as i64).await;
+        let _ = copal_store::repo::tenant::release_usage(store, tenant, bytes as i64).await;
     }
 
     copal_store::repo::auth::record_audit(
-        &state.store,
+        store,
         tenant,
         tenant.as_str(),
         "file.removed",
@@ -2170,25 +2187,27 @@ async fn list_versions<B: BlobStore>(
     axum::extract::Query(params): axum::extract::Query<VersionListQuery>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let limit = params.limit.unwrap_or(50).clamp(1, 100);
-    let (tenant, identity) = crate::auth::authenticate_scoped_with_identity(
-        &state,
-        &headers,
-        crate::auth::Scope::Read,
-        limit as u64,
-    )
-    .await?;
+    let auth =
+        crate::auth::authorize_scoped(&state, &headers, crate::auth::Scope::Read, limit as u64)
+            .await?;
     let id = parse_id(&id)?;
     // Tenancy and tombstone filtering ride the file fetch.
-    file_repo::get_file(&state.store, &tenant, &id)
+    file_repo::get_file(&auth.store, &auth.tenant, &id)
         .await?
         .ok_or_else(|| CopalError::not_found(format!("file {id}")))?;
-    let (mut items, next_cursor) =
-        list_versions_page(&state, &tenant, &id, limit, params.cursor.as_deref()).await?;
+    let (mut items, next_cursor) = list_versions_page(
+        &auth.store,
+        &auth.tenant,
+        &id,
+        limit,
+        params.cursor.as_deref(),
+    )
+    .await?;
     // The same declarations the dispatcher projects on the GraphQL
     // face, evaluated through the shared API, so the two faces redact
     // identically instead of drifting apart.
     let mut ctx = janus::runtime::JanusContext::new();
-    if let Some(key) = identity {
+    if let Some(key) = auth.identity {
         ctx.insert(janus::runtime::Principal::new(key.key_id, key.scopes));
     }
     let hidden = janus::runtime::hidden_fields(
@@ -2210,8 +2229,8 @@ async fn list_versions<B: BlobStore>(
 /// One page of a file's history in wire shape, plus the cursor that
 /// resumes it. Shared by the REST handler and the GraphQL
 /// sub-collection so the two cannot render a version differently.
-pub(crate) async fn list_versions_page<B: BlobStore>(
-    state: &AppState<B>,
+pub(crate) async fn list_versions_page(
+    store: &Store,
     tenant: &TenantId,
     id: &FileId,
     limit: i64,
@@ -2226,7 +2245,7 @@ pub(crate) async fn list_versions_page<B: BlobStore>(
         ),
         None => None,
     };
-    let versions = version_repo::list_versions(&state.store, tenant, id, limit, before).await?;
+    let versions = version_repo::list_versions(store, tenant, id, limit, before).await?;
     let next_cursor = if versions.len() as i64 == limit {
         versions.last().map(|v| v.number.to_string())
     } else {

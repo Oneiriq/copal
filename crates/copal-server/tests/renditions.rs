@@ -23,6 +23,7 @@ async fn stack() -> (axum::Router, FlowEngine, tempfile::TempDir) {
         copal_server::app::Residencies::local_only(blobs.clone()),
         ExtensionPolicy::standard(),
         false,
+        None,
     );
     let state = AppState::new(store, blobs).with_flow(registry);
     let engine = state.flow.clone();

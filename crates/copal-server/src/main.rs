@@ -61,7 +61,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         residencies.clone(),
         policy,
         config.enforce_type_match,
+        config.clamav_addr.clone(),
     );
+    if let Some(addr) = &config.clamav_addr {
+        tracing::info!(clamd = %addr, "malware scanning enabled; content is withheld until scanned");
+    }
     if config.auth.mode == copal_server::auth::AuthMode::TrustedHeader {
         tracing::warn!(
             "auth mode is TRUSTED HEADER (x-copal-tenant): development only; \
@@ -71,7 +75,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut state = AppState::new(store.clone(), blobs)
         .with_flow(registry.clone())
         .with_auth(config.auth.clone())
-        .with_residencies(residencies.named.clone());
+        .with_residencies(residencies.named.clone())
+        .with_scan_gate(config.clamav_addr.is_some());
     state.limits = copal_server::app::Limits {
         max_upload_bytes: config.max_upload_bytes,
         upload_lease_secs: config.upload_lease_secs,

@@ -30,6 +30,7 @@ Every value comes from the environment. Defaults target local development.
 | `COPAL_TRANSFER_TIMEOUT_SECS` | `3600` | Deadline for the byte routes; ends slow-drip connections. |
 | `COPAL_TUS_SESSION_TTL_SECS` | `86400` | Resumable-upload and S3 multipart sessions older than this are swept with their staged bytes. |
 | `COPAL_CORS_ORIGINS` | unset | Comma-separated browser-origin allowlist. Unset attaches no CORS layer at all. |
+| `COPAL_CLAMAV_ADDR` | unset | `host:port` of a clamd instance. Set adds a malware scan to the upload pipeline AND withholds content until a scan clears it. |
 | `COPAL_WEBHOOK_ALLOW_PRIVATE_TARGETS` | `false` | Permit webhook endpoints resolving to private, loopback, or link-local addresses. Off by default: tenant-supplied URLs pointing inside the deployment are server-side request forgery. Turn on only when receivers are genuinely internal and tenants are trusted. |
 | `COPAL_RESIDENCIES` | unset | JSON map of named storage residencies beyond `local`, e.g. `{"eu": {"scheme": "s3", "bucket": "...", "endpoint": "...", "region": "...", "access_key_id": "...", "secret_access_key": "...", "encryption_key": "<64 hex>"}}`. Filesystem residencies use `{"scheme": "fs", "root": "...", "encryption_key": "<64 hex>"}`. `encryption_key` is optional and seals that residency's objects under its own key instead of the master. Names are lowercase alphanumeric. |
 
@@ -89,6 +90,29 @@ the old value to `COPAL_ADMIN_TOKEN_PREVIOUS`, deploying the new one,
 and unsetting the previous once callers have moved. Audit rows
 are immutable inside the engine; an UPDATE or DELETE against one aborts in
 SurrealDB itself.
+
+## Malware scanning
+
+With `COPAL_CLAMAV_ADDR` set, the upload pipeline scans content
+through clamd (the INSTREAM protocol, spoken directly) between the
+cheap checks and the transition that would make bytes servable. A
+detection quarantines the file with the matched signature recorded in
+`metadata.processing.verdict_reason`; quarantine is terminal until
+delete, and neither content nor grants serve from it.
+
+Enabling a scanner also changes what serving means. Copal otherwise
+serves on the digest alone, so bytes are readable while their
+pipeline runs; with scanning on, only `ready` serves. That covers the
+case the narrower rule misses: a run that failed leaves the record in
+`failed` with its digest intact, and "withhold only while scanning"
+would serve exactly the content nobody cleared. A re-upload therefore
+withholds until its own scan clears.
+
+A scanner that cannot be reached is an error, never a pass: the
+activity fails, the run retries, and the file never reaches `ready`.
+Without `COPAL_CLAMAV_ADDR` nothing changes, and records say
+`metadata.processing.scanned: false` rather than implying a clean
+verdict nobody rendered.
 
 ## Outbound request policy
 

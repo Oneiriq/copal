@@ -27,6 +27,7 @@ async fn pipelined_stack_with(
         copal_server::app::Residencies::local_only(blobs.clone()),
         ExtensionPolicy::standard(),
         enforce_type_match,
+        None,
     );
     let state = AppState::new(store, blobs).with_flow(registry);
     let engine = state.flow.clone();

@@ -385,6 +385,7 @@ async fn a_live_run_shields_its_scanning_file_from_the_stale_sweep() {
         copal_server::app::Residencies::local_only(blobs.clone()),
         ExtensionPolicy::standard(),
         false,
+        None,
     );
     let state = copal_server::AppState::new(store.clone(), blobs.clone()).with_flow(registry);
     let engine = state.flow.clone();

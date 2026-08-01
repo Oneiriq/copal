@@ -74,13 +74,54 @@ pub fn standard_registry<B: BlobStore>(
     residencies: crate::app::Residencies<B>,
     policy: ExtensionPolicy,
     enforce_type_match: bool,
+    clamav_addr: Option<String>,
 ) -> FlowRegistry {
+    let scan_residencies = residencies.clone();
+    let scan_addr = clamav_addr.clone();
     let sniff_residencies = residencies.clone();
     let derive_store = store.clone();
     let derive_residencies = residencies;
     let finalize_store = store;
 
     FlowRegistry::new()
+        .activity("scan_malware", move |input: Value| {
+            let residencies = scan_residencies.clone();
+            let addr = scan_addr.clone();
+            async move {
+                // Configured or not, the step is registered; without an
+                // address it records that no scanner ran rather than
+                // implying a clean verdict.
+                let mut out = input.clone();
+                let Some(addr) = addr else {
+                    out["scanned"] = json!(false);
+                    return Ok(out);
+                };
+                // A verdict already blocked upstream stands; the scan
+                // adds a reason, it never clears one.
+                if out["verdict"] == json!("blocked") {
+                    out["scanned"] = json!(false);
+                    return Ok(out);
+                }
+                let digest = ContentDigest::parse(input["digest"].as_str().unwrap_or_default())?;
+                let residency = input["residency"].as_str().unwrap_or("local");
+                let blobs = residencies.get(residency)?;
+                let content = blobs.read(&digest).await?;
+                // A scanner that cannot be reached is an ERROR, not a
+                // pass: the run retries, and the file never reaches
+                // ready on an unscanned body.
+                match crate::clamav::scan(&addr, &content).await? {
+                    crate::clamav::Verdict::Clean => {
+                        out["scanned"] = json!(true);
+                    }
+                    crate::clamav::Verdict::Infected(signature) => {
+                        out["scanned"] = json!(true);
+                        out["verdict"] = json!("blocked");
+                        out["verdict_reason"] = json!(format!("malware detected: {signature}"));
+                    }
+                }
+                Ok(out)
+            }
+        })
         .activity("render_rendition", move |input: Value| {
             let store = derive_store.clone();
             let residencies = derive_residencies.clone();
@@ -151,6 +192,7 @@ pub fn standard_registry<B: BlobStore>(
                 let annotations = json!({
                     "sniffed_type": input["sniffed_type"],
                     "type_matches": input["type_matches"],
+                    "scanned": input["scanned"],
                     "verdict": input["verdict"],
                     "verdict_reason": input["verdict_reason"],
                 });
@@ -184,9 +226,17 @@ pub fn standard_registry<B: BlobStore>(
                 }
             }
         })
+        // The scan sits between the cheap checks and the transition
+        // that would make content servable, so a blocked verdict
+        // reaches finalize as quarantine rather than ready.
         .workflow(
             UPLOAD_WORKFLOW,
-            &["sniff_type", "extension_policy", "finalize_upload"],
+            &[
+                "sniff_type",
+                "extension_policy",
+                "scan_malware",
+                "finalize_upload",
+            ],
             3,
         )
         .workflow(DERIVE_WORKFLOW, &["render_rendition"], 3)

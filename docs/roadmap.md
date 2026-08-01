@@ -95,6 +95,23 @@ From the July 2026 audit, in the order they matter:
    closed the concurrent-upload over-commit gap. Remaining: OTel
    traces.
 
+## Tier 6: the AI-native turn
+
+From the August 2026 audit. SurrealDB 3.1 ships DiskANN beside HNSW
+and hybrid lexical-plus-vector search with reciprocal rank fusion, in
+the database Copal already runs on, while the standard retrieval
+stack still glues object storage to a separate vector database.
+
+1. Malware scanning (shipped): the pipeline's first real verdict
+   activity, and the precondition for trusting browser-direct
+   uploads.
+2. Text extraction as a pipeline activity, which is also what
+   retrieval needs.
+3. Embeddings and a search endpoint over them, so stored files are
+   queryable semantically without a second datastore.
+4. On-the-fly rendition URLs, transcodes, and multi-source ingestion,
+   the axes the hosted services sell.
+
 ## Tier 4: platform depth
 
 1. OTel spans (the `/metrics` endpoint shipped).

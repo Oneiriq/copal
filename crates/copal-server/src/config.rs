@@ -51,6 +51,10 @@ pub struct Config {
     pub residencies: std::collections::HashMap<String, copal_blob::BackendConfig>,
     /// Permit webhook endpoints on private addresses.
     pub allow_private_webhook_targets: bool,
+    /// `host:port` of a clamd instance. Set enables malware scanning
+    /// in the upload pipeline AND stops content serving while a scan
+    /// is outstanding.
+    pub clamav_addr: Option<String>,
 }
 
 fn env_or(key: &str, default: &str) -> String {
@@ -109,6 +113,7 @@ impl Config {
                     .filter(|o| !o.is_empty())
                     .collect()
             }),
+            clamav_addr: std::env::var("COPAL_CLAMAV_ADDR").ok(),
             allow_private_webhook_targets: env_parse("COPAL_WEBHOOK_ALLOW_PRIVATE_TARGETS", false),
             residencies: std::env::var("COPAL_RESIDENCIES")
                 .ok()

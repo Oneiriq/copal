@@ -52,6 +52,11 @@ instead of 201. The `metadata.processing` namespace is server-owned; anything
 a caller supplies there is stripped, because the pipeline writes its verdicts
 under that key.
 
+When malware scanning is configured, content is withheld until a scan
+clears it: reads and signed URLs answer 409 until the record reaches
+`ready`, and a detection quarantines the file. See
+[operations.md](operations.md).
+
 Upload is a single PUT of raw bytes. The server streams to staging while the
 digest accumulates, then finalizes with a rename. The size ceiling
 (`COPAL_MAX_UPLOAD_BYTES`) is enforced inside the stream and returns 413.

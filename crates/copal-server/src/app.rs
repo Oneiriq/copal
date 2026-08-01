@@ -114,6 +114,10 @@ pub struct AppState<B: BlobStore> {
     pub instance_id: String,
     /// How requests prove their tenant, plus the admin gate.
     pub auth: crate::auth::AuthConfig,
+    /// Whether a pending scan withholds content. Set with malware
+    /// scanning: serving bytes that no scanner has cleared would make
+    /// the scanner decorative.
+    pub scan_gates_serving: bool,
 }
 
 impl<B: BlobStore> AppState<B> {
@@ -128,7 +132,32 @@ impl<B: BlobStore> AppState<B> {
             limits: Limits::default(),
             instance_id: ulid::Ulid::new().to_string().to_ascii_lowercase(),
             auth: crate::auth::AuthConfig::default(),
+            scan_gates_serving: false,
         }
+    }
+
+    /// Withhold content while a scan is outstanding.
+    pub fn with_scan_gate(mut self, gates: bool) -> Self {
+        self.scan_gates_serving = gates;
+        self
+    }
+
+    /// Whether this record's bytes are withheld for want of a scan.
+    ///
+    /// Copal otherwise serves on the digest alone, so content is
+    /// readable while its pipeline runs. That is the wrong default
+    /// once a malware scanner exists: bytes no scanner has cleared
+    /// would still reach readers, and the scanner would only ever
+    /// quarantine content that had already been served.
+    ///
+    /// The rule is `ready` or nothing, which covers the case a
+    /// narrower one misses: a run that FAILED leaves the record in
+    /// `failed` with its digest intact, and "still scanning" would
+    /// happily serve it. A re-upload therefore also withholds until
+    /// its own scan clears, which is the conservative reading a
+    /// deployment that asked for scanning wants.
+    pub(crate) fn withholds_pending_scan(&self, record: &copal_core::FileRecord) -> bool {
+        self.scan_gates_serving && record.state != FileState::Ready
     }
 
     /// Install a populated activity/workflow registry.
@@ -1387,6 +1416,9 @@ async fn download_content<B: BlobStore>(
         ))
         .into());
     }
+    if state.withholds_pending_scan(&record) {
+        return Err(CopalError::conflict("content is awaiting a malware scan").into());
+    }
     let digest = record
         .digest
         .as_ref()
@@ -1663,6 +1695,9 @@ pub(crate) async fn issue_grant_core<B: BlobStore>(
             record.state.as_str(),
         ))
         .into());
+    }
+    if state.withholds_pending_scan(&record) {
+        return Err(CopalError::conflict("content is awaiting a malware scan").into());
     }
 
     let token = GrantToken::mint();

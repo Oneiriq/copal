@@ -35,6 +35,10 @@ pub fn contract() -> Contract {
         limits: Some(ContractLimits {
             max_depth: Some(10),
             max_complexity: Some(500),
+            // Eight concurrent subscriptions covers a dashboard with
+            // headroom; one caller cannot hold every live query the
+            // deployment will serve.
+            max_watches_per_principal: Some(8),
         }),
         // Consumption budgets, charged per caller per minute on BOTH
         // faces against one ledger. A listing costs its row limit;

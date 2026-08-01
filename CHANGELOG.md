@@ -102,6 +102,12 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ### Governance
 
+- **Streams end, and that is the re-auth.** A subscription lives at most
+  `COPAL_SUBSCRIPTION_MAX_SECS` (default 900), then completes normally;
+  re-subscribing runs full authentication, which is how revocation and
+  expiry reach streams already running. One caller holds at most eight
+  subscriptions, declared in the contract and enforced by the dispatcher,
+  with the slot freed the moment a stream drops.
 - **The first field guard.** A version's `created_by` is audit data:
   `admin`-scoped keys and header mode see it, everyone else lists history
   without it. Both faces redact from the one declaration, REST by omitting

@@ -222,3 +222,40 @@ async fn an_anonymous_subscription_is_refused_before_any_row() {
     assert!(text.contains("tenant"), "{text}");
     assert!(text.contains("event: complete"), "{text}");
 }
+
+#[tokio::test]
+async fn a_subscription_ends_at_its_lifetime_and_reopens_fresh() {
+    let store = Store::connect(StoreConfig::memory()).await.unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let blobs = ObjectStore::open(dir.path().to_str().unwrap()).unwrap();
+    let mut state = AppState::new(store, blobs);
+    // A one-second lifetime, so the deadline is the thing under test.
+    state.limits.subscription_max_secs = 1;
+    let api = build_router(state);
+    let _dir = dir;
+
+    let request = Request::builder()
+        .method("POST")
+        .uri("/graphql")
+        .header("x-copal-tenant", "acme")
+        .header("content-type", "application/json")
+        .header("accept", "text/event-stream")
+        .body(Body::from(
+            json!({ "query": "subscription { eventChanged { id } }" }).to_string(),
+        ))
+        .unwrap();
+    let response = api.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // With no events arriving, the stream still ends: the deadline
+    // closes it with a normal completion, and the collect returns
+    // instead of hanging. Re-subscribing runs full authentication
+    // again, which is how revocation reaches running streams.
+    let collected = tokio::time::timeout(Duration::from_secs(5), response.into_body().collect())
+        .await
+        .expect("the deadline ends the stream")
+        .unwrap()
+        .to_bytes();
+    let text = String::from_utf8_lossy(&collected);
+    assert!(text.contains("event: complete"), "{text}");
+}

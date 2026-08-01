@@ -112,6 +112,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         transfer_timeout_secs: config.transfer_timeout_secs,
         tus_session_ttl_secs: u32::try_from(config.tus_session_ttl_secs).unwrap_or(86_400),
         max_semantic_distance: config.max_semantic_distance,
+        subscription_max_secs: config.subscription_max_secs,
         min_multipart_part_bytes: copal_server::app::Limits::default().min_multipart_part_bytes,
         allow_private_webhook_targets: config.allow_private_webhook_targets,
     };

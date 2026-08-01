@@ -476,9 +476,13 @@ authenticator for every operation. A WebSocket transport would need a
 second one, since a browser cannot set headers on a WebSocket
 handshake and graphql-ws carries credentials in its own init payload.
 
-A subscription is authorized when it opens. Revoking a key stops new
-operations and does not close streams already running; bound their
-lifetime at the proxy if a deployment needs that.
+A subscription is authorized when it opens and lives at most
+`COPAL_SUBSCRIPTION_MAX_SECS` (default 900). The server then ends it
+with a normal completion and the client re-subscribes, which runs the
+full authentication path again: that is how key revocation and expiry
+reach streams already running. One caller holds at most eight
+subscriptions at once; over the ceiling refuses with
+`too_many_requests` until one closes.
 
 Usage and quotas stay REST-only: they report a number rather than a
 collection of rows, which is not a shape this contract expresses.

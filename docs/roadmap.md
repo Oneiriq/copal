@@ -57,12 +57,11 @@ MinIO's community edition was archived in 2026, and its recommended
 replacements are plain object stores. Copal can take those users only
 if their existing tooling works, and today it does not.
 
-6. **CopyObject and batch DeleteObjects** on the S3 gateway.
-   `mc mirror`, `rclone sync`, and `aws s3 sync` need both. Copy is
-   cheap here: content-addressed storage makes a server-side copy a
-   new record over the same blob, with no byte movement.
-7. **A documented migration path from MinIO**, once the tools run
-   against the gateway end to end.
+The wedge shipped whole: CopyObject and batch DeleteObjects landed on
+the gateway, and [migration.md](migration.md) documents the one-run
+move with `mc mirror`, `rclone sync`, or `aws s3 sync`. What remains
+of this stream is evidence rather than code: running the mirror
+against a live MinIO deployment and recording the result.
 
 ## Stream 3: retrieval cost
 

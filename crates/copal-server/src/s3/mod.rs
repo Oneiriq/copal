@@ -9,12 +9,13 @@
 //! refuses to start without one.
 //!
 //! Coverage is the object plane: PutObject, GetObject, HeadObject,
-//! DeleteObject, ListObjectsV2 (prefix, delimiter, continuation),
-//! ListBuckets, HeadBucket. Uploads land in the same claim, finalize,
+//! DeleteObject, CopyObject, batch DeleteObjects, ListObjectsV2
+//! (prefix, delimiter, continuation), ListBuckets, HeadBucket. Uploads land in the same claim, finalize,
 //! and pipeline path as every other face, so scanning, dedupe, and
 //! versioning apply to S3 writes unchanged.
 
 pub mod multipart;
+pub mod objects;
 pub mod sigv4;
 
 use axum::body::{Body, Bytes};
@@ -45,7 +46,12 @@ pub fn s3_router<B: BlobStore + 'static>(app: AppState<B>) -> Router {
     let gateway = S3Gateway { app };
     Router::new()
         .route("/", get(list_buckets::<B>))
-        .route("/{bucket}", get(list_objects::<B>).head(head_bucket::<B>))
+        .route(
+            "/{bucket}",
+            get(list_objects::<B>)
+                .head(head_bucket::<B>)
+                .post(bucket_post::<B>),
+        )
         .route(
             "/{bucket}/{*key}",
             get(object_route::<B>)
@@ -87,7 +93,13 @@ async fn object_route<B: BlobStore>(
     }
     let method = request.method().clone();
     match method {
-        Method::PUT => put_object(State(gateway), Path((bucket, key)), request).await,
+        Method::PUT => {
+            if request.headers().contains_key("x-amz-copy-source") {
+                objects::copy_object(State(gateway), Path((bucket, key)), request).await
+            } else {
+                put_object(State(gateway), Path((bucket, key)), request).await
+            }
+        }
         Method::GET | Method::DELETE => {
             let (parts, _) = request.into_parts();
             if parts.method == Method::GET {
@@ -116,6 +128,27 @@ async fn object_route<B: BlobStore>(
             "unsupported method for this route",
         ),
     }
+}
+
+/// Bucket-level POST: batch delete is the only operation that lives
+/// here.
+async fn bucket_post<B: BlobStore>(
+    State(gateway): State<S3Gateway<B>>,
+    Path(bucket): Path<String>,
+    request: axum::extract::Request,
+) -> Response {
+    let has_delete = request.uri().query().is_some_and(|q| {
+        q.split('&')
+            .any(|pair| pair == "delete" || pair.starts_with("delete="))
+    });
+    if has_delete {
+        return objects::delete_objects(State(gateway), Path(bucket), request).await;
+    }
+    xml_error(
+        StatusCode::METHOD_NOT_ALLOWED,
+        "MethodNotAllowed",
+        "unsupported bucket operation",
+    )
 }
 
 /// One S3 XML error response.
@@ -505,21 +538,12 @@ async fn put_object<B: BlobStore>(
         Ok(bytes) => Ok(bytes),
         Err(err) => Err(format!("body: {err}")),
     });
-    let chunked = parts
-        .headers
-        .get("x-amz-content-sha256")
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|raw| raw.starts_with("STREAMING-"))
-        || parts
-            .headers
-            .get(header::CONTENT_ENCODING)
-            .and_then(|v| v.to_str().ok())
-            .is_some_and(|raw| raw.contains("aws-chunked"));
-    let decoded: futures::stream::BoxStream<'static, Result<Bytes, String>> = if chunked {
-        Box::pin(decode_aws_chunked(raw_stream))
-    } else {
-        Box::pin(raw_stream)
-    };
+    let decoded: futures::stream::BoxStream<'static, Result<Bytes, String>> =
+        if is_aws_chunked(&parts.headers) {
+            Box::pin(decode_aws_chunked(raw_stream))
+        } else {
+            Box::pin(raw_stream)
+        };
     let counted = decoded.map(move |chunk| match chunk {
         Ok(bytes) => {
             running_total += bytes.len() as u64;
@@ -676,7 +700,7 @@ async fn head_object<B: BlobStore>(
 
 /// Shared read-path lookup: live file at the key, servable, and not
 /// grant-gated.
-async fn lookup_servable<B: BlobStore>(
+pub(crate) async fn lookup_servable<B: BlobStore>(
     gateway: &S3Gateway<B>,
     tenant: &TenantId,
     key: &str,
@@ -734,12 +758,24 @@ async fn delete_object<B: BlobStore>(
     }
 }
 
+/// Whether a request body arrives in `aws-chunked` framing.
+pub(crate) fn is_aws_chunked(headers: &HeaderMap) -> bool {
+    headers
+        .get("x-amz-content-sha256")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|raw| raw.starts_with("STREAMING-"))
+        || headers
+            .get(header::CONTENT_ENCODING)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|raw| raw.contains("aws-chunked"))
+}
+
 /// Decode `aws-chunked` framing: `<hex-size>[;ext]\r\n<bytes>\r\n`
 /// repeated, terminated by a zero-size chunk (whose trailers are
 /// dropped). Per-chunk signatures are not re-verified; the seed
 /// signature authenticated the request and the content hash is
 /// recomputed downstream regardless.
-fn decode_aws_chunked<S>(
+pub(crate) fn decode_aws_chunked<S>(
     inner: S,
 ) -> impl futures::Stream<Item = Result<Bytes, String>> + Send + 'static
 where

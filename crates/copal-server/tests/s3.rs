@@ -546,3 +546,182 @@ async fn aws_chunked_bodies_land_decoded() {
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     assert_eq!(&bytes[..], b"streaming!");
 }
+
+#[tokio::test]
+async fn copy_object_moves_no_bytes_and_serves() {
+    let (gateway, admin, _dir) = stack().await;
+    let (access_key, secret) = mint(&admin, "acme").await;
+
+    let payload = b"copied once, stored once";
+    let put = signed_request(
+        "PUT",
+        "/acme/originals/a.txt",
+        "",
+        "UNSIGNED-PAYLOAD",
+        &access_key,
+        &secret,
+        Body::from(payload.to_vec()),
+        &[("content-type", "text/plain")],
+    );
+    let response = gateway.clone().oneshot(put).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let etag = response.headers()[axum::http::header::ETAG]
+        .to_str()
+        .unwrap()
+        .to_owned();
+
+    // The copy carries no body; the source rides the header.
+    let copy = signed_request(
+        "PUT",
+        "/acme/copies/b.txt",
+        "",
+        "UNSIGNED-PAYLOAD",
+        &access_key,
+        &secret,
+        Body::empty(),
+        &[("x-amz-copy-source", "/acme/originals/a.txt")],
+    );
+    let response = gateway.clone().oneshot(copy).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = text_body(response).await;
+    assert!(body.contains("<CopyObjectResult>"), "{body}");
+    let digest = etag.trim_matches('"');
+    assert!(
+        body.contains(digest),
+        "the copy shares the source digest: {body}"
+    );
+
+    // The destination serves the source bytes under the same ETag.
+    let get = signed_request(
+        "GET",
+        "/acme/copies/b.txt",
+        "",
+        "UNSIGNED-PAYLOAD",
+        &access_key,
+        &secret,
+        Body::empty(),
+        &[],
+    );
+    let response = gateway.clone().oneshot(get).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers()[axum::http::header::ETAG]
+            .to_str()
+            .unwrap(),
+        etag,
+    );
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(&bytes[..], payload);
+
+    // A self-copy refuses; a missing source is NoSuchKey; a foreign
+    // bucket refuses before any lookup.
+    for (source, code) in [
+        ("/acme/originals/a.txt", "InvalidRequest"),
+        ("/acme/never/was.txt", "NoSuchKey"),
+        ("/rivals/theirs.txt", "AccessDenied"),
+    ] {
+        let target = if source.ends_with("a.txt") && source.starts_with("/acme/originals") {
+            "/acme/originals/a.txt"
+        } else {
+            "/acme/copies/c.txt"
+        };
+        let copy = signed_request(
+            "PUT",
+            target,
+            "",
+            "UNSIGNED-PAYLOAD",
+            &access_key,
+            &secret,
+            Body::empty(),
+            &[("x-amz-copy-source", source)],
+        );
+        let response = gateway.clone().oneshot(copy).await.unwrap();
+        let body = text_body(response).await;
+        assert!(body.contains(code), "{source}: {body}");
+    }
+}
+
+#[tokio::test]
+async fn batch_delete_removes_and_reports() {
+    let (gateway, admin, _dir) = stack().await;
+    let (access_key, secret) = mint(&admin, "acme").await;
+
+    for key in ["batch/one.txt", "batch/two.txt"] {
+        let put = signed_request(
+            "PUT",
+            &format!("/acme/{key}"),
+            "",
+            "UNSIGNED-PAYLOAD",
+            &access_key,
+            &secret,
+            Body::from(b"doomed".to_vec()),
+            &[],
+        );
+        let response = gateway.clone().oneshot(put).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    // Two real keys and one that never existed: all three report
+    // Deleted, because a delete of an absent key is already true.
+    let document = "<Delete>        <Object><Key>batch/one.txt</Key></Object>        <Object><Key>batch/two.txt</Key></Object>        <Object><Key>batch/never.txt</Key></Object>        </Delete>";
+    let request = signed_request(
+        "POST",
+        "/acme",
+        "delete=",
+        "UNSIGNED-PAYLOAD",
+        &access_key,
+        &secret,
+        Body::from(document.as_bytes().to_vec()),
+        &[],
+    );
+    let response = gateway.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = text_body(response).await;
+    assert_eq!(body.matches("<Deleted>").count(), 3, "{body}");
+    assert!(!body.contains("<Error>"), "{body}");
+
+    // The keys are gone from the read path.
+    let get = signed_request(
+        "GET",
+        "/acme/batch/one.txt",
+        "",
+        "UNSIGNED-PAYLOAD",
+        &access_key,
+        &secret,
+        Body::empty(),
+        &[],
+    );
+    let response = gateway.clone().oneshot(get).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+    // Quiet mode reports errors only, and an empty document refuses.
+    let quiet =
+        "<Delete><Quiet>true</Quiet>        <Object><Key>batch/two.txt</Key></Object></Delete>";
+    let request = signed_request(
+        "POST",
+        "/acme",
+        "delete=",
+        "UNSIGNED-PAYLOAD",
+        &access_key,
+        &secret,
+        Body::from(quiet.as_bytes().to_vec()),
+        &[],
+    );
+    let response = gateway.clone().oneshot(request).await.unwrap();
+    let body = text_body(response).await;
+    assert!(!body.contains("<Deleted>"), "quiet omits successes: {body}");
+
+    let request = signed_request(
+        "POST",
+        "/acme",
+        "delete=",
+        "UNSIGNED-PAYLOAD",
+        &access_key,
+        &secret,
+        Body::from(b"<Delete></Delete>".to_vec()),
+        &[],
+    );
+    let response = gateway.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert!(text_body(response).await.contains("MalformedXML"));
+}

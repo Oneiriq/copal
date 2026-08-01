@@ -307,11 +307,10 @@ const HNSW_EF: i64 = 64;
 /// far away they are, so in a small corpus every passage is
 /// somebody's neighbour.
 ///
-/// The KNN predicate is written by hand rather than through
-/// `Query::vector_search`, which renders `<|k,METRIC|>`. On
-/// SurrealDB 3.x that form is a brute-force scan of the whole table
-/// (EXPLAIN: KnnTopK over TableScan); the HNSW index is used only by
-/// `<|k,EF|>` with an integer exploration factor (EXPLAIN: KnnScan).
+/// `vector_search_indexed` renders `<|k,EF|>`, the form that reaches
+/// the HNSW index (EXPLAIN: KnnScan). `Query::vector_search` renders
+/// `<|k,METRIC|>`, which on SurrealDB 3.x scans the whole table
+/// (EXPLAIN: KnnTopK over TableScan).
 pub async fn semantic_search(
     store: &Store,
     tenant: &TenantId,
@@ -326,14 +325,6 @@ pub async fn semantic_search(
     // nearest, so a tenant with few passages in a large corpus would
     // see fewer than `limit`; over-fetch and let the limit trim.
     let over_fetch = (limit * 10).clamp(limit, 500);
-    let rendered = format!(
-        "[{}]",
-        embedding
-            .iter()
-            .map(|v| v.to_string())
-            .collect::<Vec<_>>()
-            .join(", "),
-    );
     let query = Query::new()
         .select(Some(vec![
             "file".to_owned(),
@@ -343,7 +334,8 @@ pub async fn semantic_search(
         .from_table(CHUNK_TABLE)
         .map_err(|e| map_store_err("semantic_search", e))?
         .where_(eq("tenant_id", tenant.as_str()))
-        .where_str(format!("embedding <|{over_fetch},{HNSW_EF}|> {rendered}"))
+        .vector_search_indexed("embedding", embedding.to_vec(), over_fetch, HNSW_EF)
+        .map_err(|e| map_store_err("semantic_search", e))?
         .where_str(format!("vector::distance::knn() <= {max_distance}"))
         .limit(limit)
         .map_err(|e| map_store_err("semantic_search", e))?;

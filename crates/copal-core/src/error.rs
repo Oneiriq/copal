@@ -36,6 +36,11 @@ pub enum CopalError {
     #[error("payload too large: {0}")]
     PayloadTooLarge(String),
 
+    /// The caller exceeded its consumption budget. Retryable after
+    /// waiting, which no other refusal here is.
+    #[error("{0}")]
+    TooManyRequests(String),
+
     /// The metadata plane failed.
     #[error("store: {0}")]
     Store(String),

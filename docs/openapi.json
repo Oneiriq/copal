@@ -424,7 +424,10 @@
             },
             "description": "Page of resources."
           }
-        }
+        },
+        "x-requires-scopes": [
+          "read"
+        ]
       }
     },
     "/v1/events/{id}": {
@@ -454,7 +457,10 @@
           "404": {
             "description": "Not found."
           }
-        }
+        },
+        "x-requires-scopes": [
+          "read"
+        ]
       }
     },
     "/v1/files": {
@@ -511,7 +517,10 @@
             },
             "description": "Page of resources."
           }
-        }
+        },
+        "x-requires-scopes": [
+          "read"
+        ]
       }
     },
     "/v1/files/{id}": {
@@ -532,7 +541,10 @@
           "204": {
             "description": "No content."
           }
-        }
+        },
+        "x-requires-scopes": [
+          "write"
+        ]
       },
       "get": {
         "operationId": "get_files",
@@ -560,7 +572,10 @@
           "404": {
             "description": "Not found."
           }
-        }
+        },
+        "x-requires-scopes": [
+          "read"
+        ]
       }
     },
     "/v1/files/{id}/edge-url": {
@@ -604,7 +619,10 @@
             },
             "description": "Action result."
           }
-        }
+        },
+        "x-requires-scopes": [
+          "read"
+        ]
       }
     },
     "/v1/files/{id}/renditions": {
@@ -657,7 +675,10 @@
             },
             "description": "Action result."
           }
-        }
+        },
+        "x-requires-scopes": [
+          "write"
+        ]
       }
     },
     "/v1/files/{id}/upload-url": {
@@ -701,7 +722,10 @@
             },
             "description": "Action result."
           }
-        }
+        },
+        "x-requires-scopes": [
+          "write"
+        ]
       }
     },
     "/v1/files/{id}/url": {
@@ -748,7 +772,10 @@
             },
             "description": "Action result."
           }
-        }
+        },
+        "x-requires-scopes": [
+          "read"
+        ]
       }
     },
     "/v1/files/{id}/versions": {
@@ -795,7 +822,10 @@
             },
             "description": "Page of sub-resources."
           }
-        }
+        },
+        "x-requires-scopes": [
+          "read"
+        ]
       }
     },
     "/v1/runs": {
@@ -852,7 +882,10 @@
             },
             "description": "Page of resources."
           }
-        }
+        },
+        "x-requires-scopes": [
+          "read"
+        ]
       },
       "post": {
         "description": "Start a workflow run.",
@@ -898,7 +931,10 @@
             },
             "description": "Action result."
           }
-        }
+        },
+        "x-requires-scopes": [
+          "write"
+        ]
       }
     },
     "/v1/runs/{id}": {
@@ -928,7 +964,10 @@
           "404": {
             "description": "Not found."
           }
-        }
+        },
+        "x-requires-scopes": [
+          "read"
+        ]
       }
     },
     "/v1/runs/{id}/retry": {
@@ -956,7 +995,10 @@
             },
             "description": "Action result."
           }
-        }
+        },
+        "x-requires-scopes": [
+          "write"
+        ]
       }
     },
     "/v1/webhooks": {
@@ -1005,7 +1047,10 @@
             },
             "description": "Page of resources."
           }
-        }
+        },
+        "x-requires-scopes": [
+          "read"
+        ]
       },
       "post": {
         "description": "Register an endpoint. The signing secret appears once, here.",
@@ -1042,7 +1087,10 @@
             },
             "description": "Action result."
           }
-        }
+        },
+        "x-requires-scopes": [
+          "admin"
+        ]
       }
     },
     "/v1/webhooks/{id}": {
@@ -1063,7 +1111,10 @@
           "204": {
             "description": "No content."
           }
-        }
+        },
+        "x-requires-scopes": [
+          "admin"
+        ]
       },
       "get": {
         "operationId": "get_webhooks",
@@ -1091,7 +1142,10 @@
           "404": {
             "description": "Not found."
           }
-        }
+        },
+        "x-requires-scopes": [
+          "read"
+        ]
       }
     },
     "/v1/webhooks/{id}/deliveries": {
@@ -1146,7 +1200,10 @@
             },
             "description": "Page of sub-resources."
           }
-        }
+        },
+        "x-requires-scopes": [
+          "read"
+        ]
       }
     }
   },

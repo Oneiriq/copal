@@ -30,26 +30,20 @@ breaking change. In order:
    and `PayloadTooLarge` join the vocabulary, which fixes the live
    downgrade. Depth and complexity ceilings move into the contract,
    where the served schema applies them and the differ tracks them.
-2. **Principal and scopes.** A principal below the tenant, carried in
-   the context; resources and actions declare required scopes; the
-   completeness gate refuses a declared scope nothing enforces. On
-   the Copal side this is what turns a `ck1` key into (scopes,
-   expiry, rate class) instead of all-or-nothing. Absorbs the
-   key-scopes item and the `COPAL_AUTH_MODE` default flip.
-3. **Rate classes and the dispatch limiter**, charging complexity
-   units against a pluggable store, so a tenant's ceiling holds
-   whether requests arrive as REST calls or as one POST of aliased
-   GraphQL operations.
-4. **Field guards as dispatcher projection**, applied to search
-   results too. A guarded field renders nullable on every generated
-   surface and is omitted when redacted; a caller who cannot see a
-   column cannot filter on it. Search projection is the headline:
-   permission-aware retrieval at the storage layer, which the
-   two-layer object-store-plus-vector-database stack cannot offer
-   without rebuilding authorization in glue code.
-5. **The tail**: stream re-auth and per-principal watch caps,
+Slices 1 through 4 shipped in Janus, and the declarations release
+turned scopes and rate metering on across both Copal faces against
+one ledger. What remains of the stream:
+
+2. **Field-guard declarations in Copal.** The Janus projection
+   machinery shipped; Copal declares its first guards once Janus
+   exposes the hidden-field computation for hand-written REST faces,
+   so both faces redact identically. Search-result projection rides
+   the same work: permission-aware retrieval at the storage layer.
+3. **The tail**: stream re-auth and per-principal watch caps,
    persisted operations, and the same declared policies compiled into
    SurrealDB `PERMISSIONS` as a second, independent refusal layer.
+4. **A shared rate store** over SurrealDB for multi-node deployments;
+   the in-memory ledger covers one process.
 
 ## Stream 2: the migration wedge
 

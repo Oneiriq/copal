@@ -25,6 +25,20 @@ pub fn contract() -> Contract {
             max_depth: Some(10),
             max_complexity: Some(500),
         }),
+        // Consumption budgets, charged per caller per minute on BOTH
+        // faces against one ledger. A listing costs its row limit;
+        // everything else costs one. Reads run generous because
+        // retrieval is the product; mutations run an order tighter.
+        rate_classes: vec![
+            janus::RateClass {
+                name: "reads".into(),
+                units_per_minute: 6_000,
+            },
+            janus::RateClass {
+                name: "mutations".into(),
+                units_per_minute: 600,
+            },
+        ],
         resources: vec![
             Resource {
                 name: "files".into(),
@@ -50,7 +64,8 @@ pub fn contract() -> Contract {
                 max_page_size: 100,
                 graphql: None,
                 watchable: false,
-                reads_require: vec![],
+                reads_require: vec!["read".into()],
+                rate_class: Some("reads".into()),
                 sub_resources: vec![SubResource {
                     name: "versions".into(),
                     table: "file_version".into(),
@@ -104,7 +119,8 @@ pub fn contract() -> Contract {
                         output: ActionOutput::Json,
                         description: Some("Issue a signed URL for a servable file.".into()),
                         graphql_field: None,
-                        requires: vec![],
+                        requires: vec!["read".into()],
+                        rate_class: Some("mutations".into()),
                     },
                     Action {
                         name: "issue_upload_url".into(),
@@ -127,7 +143,8 @@ pub fn contract() -> Contract {
                                 .into(),
                         ),
                         graphql_field: None,
-                        requires: vec![],
+                        requires: vec!["write".into()],
+                        rate_class: Some("mutations".into()),
                     },
                     Action {
                         name: "issue_edge_url".into(),
@@ -150,7 +167,8 @@ pub fn contract() -> Contract {
                                 .into(),
                         ),
                         graphql_field: None,
-                        requires: vec![],
+                        requires: vec!["read".into()],
+                        rate_class: Some("mutations".into()),
                     },
                     Action {
                         name: "request_rendition".into(),
@@ -197,7 +215,8 @@ pub fn contract() -> Contract {
                                 .into(),
                         ),
                         graphql_field: None,
-                        requires: vec![],
+                        requires: vec!["write".into()],
+                        rate_class: Some("mutations".into()),
                     },
                     Action {
                         name: "remove".into(),
@@ -211,7 +230,8 @@ pub fn contract() -> Contract {
                                 .into(),
                         ),
                         graphql_field: None,
-                        requires: vec![],
+                        requires: vec!["write".into()],
+                        rate_class: Some("mutations".into()),
                     },
                 ],
             },
@@ -230,7 +250,8 @@ pub fn contract() -> Contract {
                 max_page_size: 100,
                 graphql: None,
                 watchable: false,
-                reads_require: vec![],
+                reads_require: vec!["read".into()],
+                rate_class: Some("reads".into()),
                 sub_resources: vec![SubResource {
                     name: "deliveries".into(),
                     table: "webhook_delivery".into(),
@@ -277,7 +298,8 @@ pub fn contract() -> Contract {
                             "Register an endpoint. The signing secret appears once, here.".into(),
                         ),
                         graphql_field: None,
-                        requires: vec![],
+                        requires: vec!["admin".into()],
+                        rate_class: Some("mutations".into()),
                     },
                     Action {
                         name: "remove".into(),
@@ -289,7 +311,8 @@ pub fn contract() -> Contract {
                             "Deactivate an endpoint; pending deliveries settle as failed.".into(),
                         ),
                         graphql_field: None,
-                        requires: vec![],
+                        requires: vec!["admin".into()],
+                        rate_class: Some("mutations".into()),
                     },
                 ],
             },
@@ -315,7 +338,8 @@ pub fn contract() -> Contract {
                 // a file, so a client that subscribes here stops
                 // polling for processing to finish.
                 watchable: true,
-                reads_require: vec![],
+                reads_require: vec!["read".into()],
+                rate_class: Some("reads".into()),
                 sub_resources: vec![],
                 actions: vec![],
             },
@@ -338,7 +362,8 @@ pub fn contract() -> Contract {
                 max_page_size: 100,
                 graphql: None,
                 watchable: false,
-                reads_require: vec![],
+                reads_require: vec!["read".into()],
+                rate_class: Some("reads".into()),
                 sub_resources: vec![],
                 actions: vec![
                     Action {
@@ -388,7 +413,8 @@ pub fn contract() -> Contract {
                         output: ActionOutput::Json,
                         description: Some("Start a workflow run.".into()),
                         graphql_field: None,
-                        requires: vec![],
+                        requires: vec!["write".into()],
+                        rate_class: Some("mutations".into()),
                     },
                     Action {
                         name: "retry".into(),
@@ -402,7 +428,8 @@ pub fn contract() -> Contract {
                                 .into(),
                         ),
                         graphql_field: None,
-                        requires: vec![],
+                        requires: vec!["write".into()],
+                        rate_class: Some("mutations".into()),
                     },
                 ],
             },

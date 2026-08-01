@@ -531,3 +531,24 @@ async fn a_semantic_query_about_nothing_stored_returns_nothing() {
     let body = search_mode(&router, "earnings", "semantic").await;
     assert_eq!(body["items"].as_array().unwrap().len(), 1, "{body}");
 }
+
+/// Stemming has to agree with the index's analyzer. The engine matches
+/// `inspecting` against a document containing `inspection`; a scorer
+/// that skipped stemming would score that document zero and bury a
+/// real hit.
+#[tokio::test]
+async fn a_stemmed_match_still_scores() {
+    let (router, engine, _dir) = stack(None).await;
+    upload(
+        &router,
+        "docs/stemmed.txt",
+        "text/plain",
+        b"routine inspection of the vessel",
+    )
+    .await;
+    while engine.tick("w").await.unwrap() {}
+
+    let hits = search(&router, "inspecting").await;
+    assert_eq!(hits.len(), 1, "the stemmed term matches: {hits:#?}");
+    assert!(hits[0]["excerpt"].as_str().unwrap().contains("inspection"));
+}

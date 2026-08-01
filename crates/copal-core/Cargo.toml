@@ -15,3 +15,7 @@ thiserror = { workspace = true }
 ulid = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
+# The same English Snowball stemmer the engine's analyzer uses, so
+# local scoring agrees with what the index matched. Already in the
+# tree by way of surrealdb.
+rust-stemmers = "1.2"

@@ -205,7 +205,11 @@ GET /v1/files/{id}/text                        one file's extracted text
 ```
 
 `mode` is `lexical` (words), `semantic` (meaning), or `hybrid` (both,
-fused; the default). Semantic modes need an embedding service; without
+fused; the default). Lexical relevance is BM25, scored by Copal: the
+database index decides which passages match and returns them in
+insertion order, so ranking them is Copal's job. It scores a bounded
+window of matches, which means a query matching more than a few
+hundred passages ranks that window rather than every match. Semantic modes need an embedding service; without
 one they answer lexically and the response's `mode` field says which
 retrieval actually ran, so a client can tell. An unrecognised mode is
 a request error rather than a silent default.

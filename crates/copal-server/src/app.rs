@@ -132,6 +132,11 @@ pub struct AppState<B: BlobStore> {
     pub instance_id: String,
     /// How requests prove their tenant, plus the admin gate.
     pub auth: crate::auth::AuthConfig,
+    /// Known GraphQL documents by sha256, when a deployment locks the
+    /// face down to them. Absent means any document runs, which is
+    /// the development default; configured, unknown operations refuse
+    /// before parsing costs anything.
+    pub persisted_operations: Option<std::sync::Arc<std::collections::HashMap<String, String>>>,
     /// The consumption ledger BOTH faces charge, so a caller cannot
     /// dodge a budget by switching protocols. In-memory by default;
     /// COPAL_RATE_LEDGER=store swaps in the shared implementation so
@@ -166,6 +171,7 @@ impl<B: BlobStore> AppState<B> {
             embedding: None,
             cipher: None,
             rate_store: std::sync::Arc::new(janus::runtime::MemoryRateStore::new()),
+            persisted_operations: None,
         }
     }
 

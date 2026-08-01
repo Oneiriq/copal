@@ -114,6 +114,12 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
   of overspending. The in-memory ledger stays the single-node default,
   since the shared one costs a store round trip per operation. Old windows
   are swept with everything else.
+- **Persisted operations.** `COPAL_PERSISTED_OPERATIONS` names a JSON file of
+  sha256 hash to GraphQL document; set, only listed operations run, named by
+  hash in the Apollo shape or sent whole, and anything else refuses before
+  parsing costs anything. The file is verified at startup, so an allowlist
+  that lies about a hash refuses to boot instead of serving the wrong
+  operation later.
 
 - **The first field guard.** A version's `created_by` is audit data:
   `admin`-scoped keys and header mode see it, everyone else lists history

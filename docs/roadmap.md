@@ -39,10 +39,14 @@ admin-scoped keys and redacts identically on both faces through the
 shared projection API. Stream lifetimes, watch ceilings, and the
 fleet-shared consumption ledger shipped as well. Remaining:
 
-2. **Persisted operations and PERMISSIONS pushdown**: an allowlist of
-   known GraphQL documents, and the declared policies compiled into
-   SurrealDB `PERMISSIONS` as a second, independent refusal layer.
-3. **More guards as the data model earns them.** Per-field policy is
+Persisted operations shipped. `PERMISSIONS` pushdown is dispositioned
+rather than queued: engine permissions distinguish engine sessions,
+and Copal holds one service session, so the engine cannot tell
+Copal's callers apart. A second refusal layer there would guard
+nothing the first does not. Revisit only if per-caller database
+sessions ever arrive. Remaining:
+
+2. **More guards as the data model earns them.** Per-field policy is
    in place; principals within tenants are what will make richer
    guards meaningful.
 

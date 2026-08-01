@@ -132,6 +132,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "webhook targets on private addresses are ALLOWED              (COPAL_WEBHOOK_ALLOW_PRIVATE_TARGETS): tenant-supplied URLs can reach              services inside this deployment",
         );
     }
+    match config.engine_sessions.as_str() {
+        "off" => {}
+        "on" => {
+            if config.store.engine_access_key.is_none() {
+                return Err(
+                    "COPAL_ENGINE_SESSIONS=on requires COPAL_ENGINE_ACCESS_KEY: caller \
+                     sessions authenticate against the access method it defines"
+                        .into(),
+                );
+            }
+            state.engine_sessions = true;
+            tracing::info!("request repository calls run on caller-bound engine sessions");
+        }
+        other => {
+            return Err(format!("COPAL_ENGINE_SESSIONS must be off or on, not {other:?}",).into());
+        }
+    }
     match config.rate_ledger.as_str() {
         "memory" => {}
         "store" => {

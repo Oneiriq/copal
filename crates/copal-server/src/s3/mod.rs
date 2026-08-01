@@ -796,7 +796,7 @@ async fn delete_object<B: BlobStore>(
     match file_repo::find_by_path(&gateway.app.store, &tenant, &key).await {
         Ok(Some(record)) => {
             match remove_file_core(
-                &gateway.app,
+                &gateway.app.store,
                 &tenant,
                 &record.id,
                 forwarded_origin(&headers).as_deref(),

@@ -73,6 +73,9 @@ pub struct Config {
     /// Which consumption ledger meters requests: `memory` (default,
     /// one process) or `store` (shared, so a fleet holds one budget).
     pub rate_ledger: String,
+    /// `off` (default) or `on`: whether request handlers run their
+    /// repository calls through caller-bound engine sessions.
+    pub engine_sessions: String,
     /// Path to a JSON object of sha256 hash to GraphQL document. Set,
     /// the GraphQL face runs listed operations only.
     pub persisted_operations: Option<String>,
@@ -143,6 +146,7 @@ impl Config {
             max_semantic_distance: env_parse("COPAL_MAX_SEMANTIC_DISTANCE", 0.65),
             subscription_max_secs: env_parse("COPAL_SUBSCRIPTION_MAX_SECS", 900),
             rate_ledger: env_or("COPAL_RATE_LEDGER", "memory"),
+            engine_sessions: env_or("COPAL_ENGINE_SESSIONS", "off"),
             persisted_operations: std::env::var("COPAL_PERSISTED_OPERATIONS").ok(),
             allow_private_webhook_targets: env_parse("COPAL_WEBHOOK_ALLOW_PRIVATE_TARGETS", false),
             residencies: std::env::var("COPAL_RESIDENCIES")

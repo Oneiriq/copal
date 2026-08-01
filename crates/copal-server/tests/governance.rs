@@ -503,3 +503,108 @@ async fn minted_tokens_open_filtered_sessions() {
         .unwrap()
         .is_some());
 }
+
+/// The files face under caller-bound engine sessions: every adopted
+/// handler runs its repository calls on a session the engine filters,
+/// and the guarded column arrives engine-redacted for the worker and
+/// intact for the operator, with the wire shapes unchanged from the
+/// service-session face.
+#[tokio::test]
+async fn engine_sessions_serve_the_files_face() {
+    let store = Store::connect(StoreConfig::memory_with_engine_access("gov-engine-key"))
+        .await
+        .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let blobs = ObjectStore::open(dir.path().to_str().unwrap()).unwrap();
+    let state = AppState::new(store, blobs)
+        .with_auth(AuthConfig {
+            mode: AuthMode::ApiKeys,
+            admin_token: Some(ADMIN.into()),
+            admin_token_previous: None,
+        })
+        .with_engine_access(Some(copal_server::engine::EngineAccess {
+            key: "gov-engine-key".to_owned(),
+            namespace: "copal_test".to_owned(),
+            database: "copal".to_owned(),
+        }))
+        .with_engine_sessions(true);
+    let router = build_router(state);
+    let worker = mint(&router, &["read", "write"]).await;
+    let operator = mint(&router, &["read", "admin"]).await;
+
+    let response = router
+        .clone()
+        .oneshot(rest(
+            "POST",
+            "/v1/files",
+            &worker,
+            Some(json!({ "path": "sessioned.txt", "content_type": "text/plain" })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let id = json_body(response).await["id"].as_str().unwrap().to_owned();
+
+    let put = Request::builder()
+        .method("PUT")
+        .uri(format!("/v1/files/{id}/content"))
+        .header("authorization", format!("Bearer {worker}"))
+        .body(Body::from(b"session bytes".to_vec()))
+        .unwrap();
+    let response = router.clone().oneshot(put).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let response = router
+        .clone()
+        .oneshot(rest("GET", "/v1/files", &worker, None))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let listing = json_body(response).await;
+    assert_eq!(listing["items"][0]["path"], "sessioned.txt");
+
+    let response = router
+        .clone()
+        .oneshot(rest("GET", &format!("/v1/files/{id}"), &worker, None))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // The engine redacts attribution for the worker session before
+    // the projection ever sees the row; the operator's admin claim
+    // carries it through both layers.
+    let response = router
+        .clone()
+        .oneshot(rest(
+            "GET",
+            &format!("/v1/files/{id}/versions"),
+            &worker,
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let row = json_body(response).await["items"][0].clone();
+    assert_eq!(row["number"], 1);
+    assert!(row.get("created_by").is_none(), "{row:#?}");
+
+    let response = router
+        .clone()
+        .oneshot(rest(
+            "GET",
+            &format!("/v1/files/{id}/versions"),
+            &operator,
+            None,
+        ))
+        .await
+        .unwrap();
+    let row = json_body(response).await["items"][0].clone();
+    assert!(row["created_by"].is_string(), "{row:#?}");
+
+    let response = router
+        .clone()
+        .oneshot(rest("DELETE", &format!("/v1/files/{id}"), &worker, None))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+}

@@ -291,7 +291,7 @@ fn dispatcher<B: BlobStore + 'static>(
                 let tenant = tenant_of(&ctx)?;
                 let id = parse_file_id(args.id.as_deref().unwrap_or_default())?;
                 let origin = ctx.get::<RequestOrigin>().map(|o| o.0.clone());
-                crate::app::remove_file_core(&state, &tenant, &id, origin.as_deref())
+                crate::app::remove_file_core(&state.store, &tenant, &id, origin.as_deref())
                     .await
                     .map_err(|e| to_janus_error(e.0))?;
                 Ok(None)
@@ -374,7 +374,7 @@ fn dispatcher<B: BlobStore + 'static>(
                     .map_err(to_janus_error)?
                     .ok_or_else(|| to_janus_error(CopalError::not_found(format!("file {id}"))))?;
                 let (items, next_cursor) = crate::app::list_versions_page(
-                    &state,
+                    &state.store,
                     &tenant,
                     &id,
                     i64::from(args.limit),

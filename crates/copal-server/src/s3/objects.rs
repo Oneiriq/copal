@@ -301,7 +301,7 @@ async fn delete_one<B: BlobStore>(
     origin: Option<&str>,
 ) -> Result<(), copal_core::CopalError> {
     match file_repo::find_by_path(&state.store, tenant, key).await? {
-        Some(record) => remove_file_core(state, tenant, &record.id, origin)
+        Some(record) => remove_file_core(&state.store, tenant, &record.id, origin)
             .await
             .map_err(|e| e.0),
         None => Ok(()),

@@ -40,10 +40,14 @@ from one contract. What remains:
    method applies with `COPAL_ENGINE_ACCESS_KEY`, rotating by
    replacement; token minting mirrors the scope model; and a parity
    test holds engine field guards equal to contract field guards.
-   What remains here: the request path itself, which still runs every
-   repository call on the service session. Adoption means handlers
-   threading a caller store after authentication, and it comes with a
-   flag so the layer can be watched before it is trusted. Facts that
+   The request path started
+   adopting: `COPAL_ENGINE_SESSIONS=on` routes the files resource's
+   repository calls through caller sessions minted after
+   authentication, proven on the REST face with the guarded column
+   arriving engine-redacted. What remains here: the sweep of the
+   other handlers (uploads, downloads, search, tus, webhooks, edge),
+   the GraphQL resolvers and the S3 gateway, and a session cache once
+   a deployment has watched the per-request cost. Facts that
    bound the design:
    enforcement follows the actor, so record sessions are filtered
    even on a credential-less engine, whose exposure is the anonymous

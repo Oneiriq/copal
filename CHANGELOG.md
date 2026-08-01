@@ -102,6 +102,16 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ### Governance
 
+- **The pushdown disposition was wrong, and three pinned tests say
+  why.** `engine_sessions.rs` proves the engine CAN tell Copal's
+  callers apart: a cloned handle is its own session over the same
+  connection, a record access JWT binds a caller identity to it, and
+  table and field `PERMISSIONS` then filter engine side while the
+  root handle keeps full authority. Also pinned: an engine without
+  credentials skips `PERMISSIONS` silently, and refused writes return
+  empty rows with no error. `PERMISSIONS` pushdown returns to the
+  roadmap as an implementable project.
+
 - **Streams end, and that is the re-auth.** A subscription lives at most
   `COPAL_SUBSCRIPTION_MAX_SECS` (default 900), then completes normally;
   re-subscribing runs full authentication, which is how revocation and

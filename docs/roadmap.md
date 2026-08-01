@@ -10,45 +10,37 @@ another's CI.
 
 ## Stream 1: the governance tier
 
-From the July 2026 Janus review. Janus enforces shape; it does not yet
-enforce identity or consumption. The error vocabulary has no 429 or
-413, so the GraphQL face downgrades a payload refusal to 400. Depth
-and complexity ceilings are hand-wired outside the contract, invisible
-to the artifacts and the differ. `FieldExposure` is binary, with no
-principal below the tenant. Nothing meters requests at the one layer
-that can meter GraphQL accurately, the dispatcher, because one POST
-can carry many aliased operations. Every seam the tier needs already
-exists: middleware over dispatch, the typed context, the completeness
-gate, the differ.
+From the July 2026 Janus review. The design: policies as named
+references in the IR, enforced as dispatcher projection so REST,
+GraphQL, and subscriptions inherit them identically, with the differ
+treating any tightening as a named breaking change. The tier shipped:
+error variants, contract-declared ceilings, principals and scopes,
+rate classes metering at the dispatcher, field guards behind the
+shared projection API, watch slots, stream lifetimes, the
+fleet-shared ledger, and persisted operations, all live on both faces
+from one contract. What remains:
 
-The design: policies as named references in the IR, enforced as
-dispatcher projection so REST, GraphQL, and subscriptions inherit
-them identically, with the differ treating any tightening as a named
-breaking change. In order:
-
-1. **Error variants and contract-declared limits.** `TooManyRequests`
-   and `PayloadTooLarge` join the vocabulary, which fixes the live
-   downgrade. Depth and complexity ceilings move into the contract,
-   where the served schema applies them and the differ tracks them.
-Slices 1 through 4 shipped in Janus, and the declarations release
-turned scopes and rate metering on across both Copal faces against
-one ledger. What remains of the stream:
-
-The first guard shipped end to end: version attribution is visible to
-admin-scoped keys and redacts identically on both faces through the
-shared projection API. Stream lifetimes, watch ceilings, and the
-fleet-shared consumption ledger shipped as well. Remaining:
-
-Persisted operations shipped. `PERMISSIONS` pushdown is dispositioned
-rather than queued: engine permissions distinguish engine sessions,
-and Copal holds one service session, so the engine cannot tell
-Copal's callers apart. A second refusal layer there would guard
-nothing the first does not. Revisit only if per-caller database
-sessions ever arrive. Remaining:
-
-2. **More guards as the data model earns them.** Per-field policy is
+1. **More guards as the data model earns them.** Per-field policy is
    in place; principals within tenants are what will make richer
    guards meaningful.
+
+2. **`PERMISSIONS` pushdown, revived by probe.** An earlier note here
+   dispositioned pushdown on the claim that the engine cannot tell
+   Copal's callers apart. The conclusion was wrong.
+   `engine_sessions.rs` pins the mechanism it missed: a cloned handle
+   is its own engine session over the same connection, a record
+   access JWT binds a caller identity to it, and table and field
+   `PERMISSIONS` then filter engine side while the root handle beside
+   it keeps full authority. The project shape: a caller-session seam
+   in surql-rs, short-lived record tokens minted per request, and
+   `ACCESS` plus `PERMISSIONS` declarations compiled from the same
+   contract that drives the application layer, so both refusal layers
+   share one source. Facts that bound the design: an engine without
+   credentials skips `PERMISSIONS` silently, so adoption must fail
+   loudly on an open engine; only record sessions are filtered, and
+   plain `TYPE JWT` access lands database-level sessions that bypass
+   table permissions; refused writes return empty rows with no error,
+   so the application layer stays the face that explains refusals.
 
 ## Stream 2: the migration wedge
 

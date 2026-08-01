@@ -960,11 +960,14 @@ dependencies = [
 name = "copal-store"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "copal-core",
  "futures",
+ "hmac 0.12.1",
  "oneiriq-surql",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "surrealdb",
  "thiserror",
  "tokio",

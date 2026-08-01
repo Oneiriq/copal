@@ -111,5 +111,8 @@ fn webhook_delivery_table() -> TableDefinition {
         .with_indexes([
             unique_index("uniq_delivery_pair", ["event_row", "endpoint"]),
             index("idx_delivery_due", ["state", "next_attempt_at"]),
+            // One endpoint's delivery history, newest first: the
+            // sub-collection hanging off a webhook.
+            index("idx_delivery_endpoint", ["endpoint", "created_at"]),
         ])
 }

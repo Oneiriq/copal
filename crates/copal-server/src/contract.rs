@@ -6,7 +6,9 @@
 //! GraphQL endpoint; the served schema and the published documents
 //! cannot disagree because they are the same object.
 
-use janus::{Action, ActionField, ActionOutput, Contract, FieldExposure, Resource, TypeRef};
+use janus::{
+    Action, ActionField, ActionOutput, Contract, FieldExposure, Resource, SubResource, TypeRef,
+};
 
 /// The wire contract for the files resource.
 pub fn contract() -> Contract {
@@ -39,6 +41,30 @@ pub fn contract() -> Contract {
                 max_page_size: 100,
                 graphql: None,
                 watchable: false,
+                sub_resources: vec![SubResource {
+                    name: "versions".into(),
+                    table: "file_version".into(),
+                    parent_key: "file".into(),
+                    fields: vec![
+                        FieldExposure::column("number"),
+                        FieldExposure::column("content_type"),
+                        FieldExposure::renamed("size_bytes", "size"),
+                        FieldExposure::column("digest"),
+                        FieldExposure::column("metadata_snapshot"),
+                        FieldExposure::column("created_by"),
+                        FieldExposure::column("created_at"),
+                    ],
+                    pinned: vec!["tenant_id".into()],
+                    filterable: vec![],
+                    // No sort is declared: the keyset walks the version
+                    // number downward and the listing serves no other
+                    // order, so claiming one would be a lie the index
+                    // rules cannot catch.
+                    sortable: vec![],
+                    max_page_size: 100,
+                    description: Some("Every stored version of this file, newest first.".into()),
+                    graphql: None,
+                }],
                 actions: vec![
                     Action {
                         name: "issue_url".into(),
@@ -189,6 +215,24 @@ pub fn contract() -> Contract {
                 max_page_size: 100,
                 graphql: None,
                 watchable: false,
+                sub_resources: vec![SubResource {
+                    name: "deliveries".into(),
+                    table: "webhook_delivery".into(),
+                    parent_key: "endpoint".into(),
+                    fields: vec![
+                        FieldExposure::column("state"),
+                        FieldExposure::column("attempts"),
+                        FieldExposure::column("last_status"),
+                        FieldExposure::column("next_attempt_at"),
+                        FieldExposure::column("created_at"),
+                    ],
+                    pinned: vec!["tenant_id".into()],
+                    filterable: vec!["state".into()],
+                    sortable: vec![],
+                    max_page_size: 100,
+                    description: Some("Delivery attempts to this endpoint, newest first.".into()),
+                    graphql: None,
+                }],
                 actions: vec![
                     Action {
                         name: "register".into(),
@@ -253,6 +297,7 @@ pub fn contract() -> Contract {
                 // a file, so a client that subscribes here stops
                 // polling for processing to finish.
                 watchable: true,
+                sub_resources: vec![],
                 actions: vec![],
             },
             Resource {
@@ -274,6 +319,7 @@ pub fn contract() -> Contract {
                 max_page_size: 100,
                 graphql: None,
                 watchable: false,
+                sub_resources: vec![],
                 actions: vec![
                     Action {
                         name: "start".into(),

@@ -28,6 +28,22 @@ class FilePage:
   next_cursor: str | None = None
 
 @dataclass
+class FileVersion:
+  id: str
+  number: int
+  content_type: str
+  size: int
+  digest: str
+  metadata_snapshot: Any
+  created_by: str
+  created_at: str
+
+@dataclass
+class FileVersionPage:
+  items: list[FileVersion] = field(default_factory=list)
+  next_cursor: str | None = None
+
+@dataclass
 class Webhook:
   id: str
   target_url: str
@@ -38,6 +54,20 @@ class Webhook:
 @dataclass
 class WebhookPage:
   items: list[Webhook] = field(default_factory=list)
+  next_cursor: str | None = None
+
+@dataclass
+class WebhookDelivery:
+  id: str
+  state: str
+  attempts: int
+  created_at: str
+  last_status: int | None = None
+  next_attempt_at: str | None = None
+
+@dataclass
+class WebhookDeliveryPage:
+  items: list[WebhookDelivery] = field(default_factory=list)
   next_cursor: str | None = None
 
 @dataclass
@@ -98,6 +128,15 @@ class Client:
     item = self._request('GET', f'/v1/files/{id}')
     return File(**{k: v for k, v in item.items() if k in File.__dataclass_fields__})
 
+  def list_versions_files(self, id: str, limit: int | None = None, cursor: str | None = None) -> FileVersionPage:
+    query = {k: v for k, v in {'limit': limit, 'cursor': cursor}.items() if v is not None}
+                     suffix = f'?{urllib.parse.urlencode(query)}' if query else ''
+                     payload = self._request('GET', f'/v1/files/{id}/versions{suffix}')
+                     return FileVersionPage(
+                       items=[FileVersion(**{k: v for k, v in item.items() if k in                  FileVersion.__dataclass_fields__}) for item in payload.get('items', [])],
+                       next_cursor=payload.get('next_cursor'),
+                     )
+
   def issue_url_file(self, id: str, body: dict[str, Any] | None = None) -> Any:
     return self._request('POST', f'/v1/files/{id}/url', body or {})
 
@@ -125,6 +164,15 @@ class Client:
   def get_webhook(self, id: str) -> Webhook:
     item = self._request('GET', f'/v1/webhooks/{id}')
     return Webhook(**{k: v for k, v in item.items() if k in Webhook.__dataclass_fields__})
+
+  def list_deliveries_webhooks(self, id: str, limit: int | None = None, cursor: str | None = None) -> WebhookDeliveryPage:
+    query = {k: v for k, v in {'limit': limit, 'cursor': cursor}.items() if v is not None}
+                     suffix = f'?{urllib.parse.urlencode(query)}' if query else ''
+                     payload = self._request('GET', f'/v1/webhooks/{id}/deliveries{suffix}')
+                     return WebhookDeliveryPage(
+                       items=[WebhookDelivery(**{k: v for k, v in item.items() if k in                  WebhookDelivery.__dataclass_fields__}) for item in payload.get('items', [])],
+                       next_cursor=payload.get('next_cursor'),
+                     )
 
   def register_webhook(self, body: dict[str, Any] | None = None) -> Any:
     return self._request('POST', f'/v1/webhooks', body or {})

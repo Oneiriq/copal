@@ -406,6 +406,13 @@ a newer upload of different content refuses with 409. See
 The schema is built at startup from the contract, so it matches
 `docs/schema.graphql` exactly.
 
+A file carries its history and a webhook its delivery attempts, as fields
+on the parent: `file(id) { versions(limit, cursor) { items { number } } }`
+and `webhook(id) { deliveries(limit, cursor, state) { items { state } } }`.
+Both are `GET /v1/files/{id}/versions` and
+`GET /v1/webhooks/{id}/deliveries` on REST, and a method on each generated
+client.
+
 Queries follow the contract vocabulary: `files(limit, cursor, state, sort)`,
 `file(id)`, `events(limit, cursor, action, sort)`, `event(id)`,
 `webhooks(limit, cursor, sort)`, `webhook(id)`,

@@ -13,6 +13,7 @@ type File {
   version_count: Int!
   created_at: DateTime!
   updated_at: DateTime!
+  versions(limit: Int = 100, cursor: String): FileVersionPage!
 }
 
 enum FileSort {
@@ -25,12 +26,29 @@ type FilePage {
   nextCursor: String
 }
 
+type FileVersion {
+  id: ID!
+  number: Int!
+  content_type: String!
+  size: Int!
+  digest: String!
+  metadata_snapshot: JSON!
+  created_by: String!
+  created_at: DateTime!
+}
+
+type FileVersionPage {
+  items: [FileVersion!]!
+  nextCursor: String
+}
+
 type Webhook {
   id: ID!
   target_url: String!
   events: String!
   active: Boolean!
   created_at: DateTime!
+  deliveries(limit: Int = 100, cursor: String, state: String): WebhookDeliveryPage!
 }
 
 enum WebhookSort {
@@ -40,6 +58,20 @@ enum WebhookSort {
 
 type WebhookPage {
   items: [Webhook!]!
+  nextCursor: String
+}
+
+type WebhookDelivery {
+  id: ID!
+  state: String!
+  attempts: Int!
+  last_status: Int
+  next_attempt_at: DateTime
+  created_at: DateTime!
+}
+
+type WebhookDeliveryPage {
+  items: [WebhookDelivery!]!
   nextCursor: String
 }
 

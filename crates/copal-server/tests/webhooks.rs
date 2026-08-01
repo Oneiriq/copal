@@ -218,10 +218,15 @@ async fn deliveries_sign_and_settle() {
     assert_eq!(payload["payload"]["path"], "delivered.txt");
 
     // Settled: the delivery reads delivered, the pass goes idle.
-    let deliveries =
-        eventing::list_deliveries(&store, &copal_core::TenantId::parse("acme").unwrap(), 10)
-            .await
-            .unwrap();
+    let deliveries = eventing::list_deliveries(
+        &store,
+        &copal_core::TenantId::parse("acme").unwrap(),
+        None,
+        None,
+        10,
+    )
+    .await
+    .unwrap();
     assert_eq!(deliveries.len(), 1);
     assert_eq!(deliveries[0].state, "delivered");
     assert_eq!(deliveries[0].last_status, Some(200));
@@ -263,7 +268,7 @@ async fn failures_back_off_and_filters_hold() {
     inbox.recv().await.expect("first attempt arrived");
 
     let tenant = copal_core::TenantId::parse("acme").unwrap();
-    let deliveries = eventing::list_deliveries(&store, &tenant, 10)
+    let deliveries = eventing::list_deliveries(&store, &tenant, None, None, 10)
         .await
         .unwrap();
     assert_eq!(deliveries.len(), 1, "filter held");
@@ -288,7 +293,7 @@ async fn failures_back_off_and_filters_hold() {
         headers["x-copal-signature"].to_str().unwrap(),
         sign_body(&secret, &body),
     );
-    let deliveries = eventing::list_deliveries(&store, &tenant, 10)
+    let deliveries = eventing::list_deliveries(&store, &tenant, None, None, 10)
         .await
         .unwrap();
     assert_eq!(deliveries[0].state, "delivered");

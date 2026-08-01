@@ -117,6 +117,8 @@ fn dispatcher<B: BlobStore + 'static>(
     let events_list_state = state.clone();
     let events_get_state = state.clone();
     let events_watch_state = state.clone();
+    let versions_state = state.clone();
+    let deliveries_state = state.clone();
     let runs_list_state = state.clone();
     let runs_get_state = state.clone();
     let runs_start_state = state.clone();
@@ -356,6 +358,53 @@ fn dispatcher<B: BlobStore + 'static>(
                     .await
                     .map_err(|e| to_janus_error(e.0))?;
                 Ok(None)
+            }
+        })
+        .sub_list("files", "versions", move |ctx, args| {
+            let state = versions_state.clone();
+            async move {
+                let tenant = tenant_of(&ctx)?;
+                let id = parse_file_id(&args.parent_id)?;
+                // Tenancy and tombstone filtering ride the file fetch,
+                // exactly as the REST handler does it.
+                file_repo::get_file(&state.store, &tenant, &id)
+                    .await
+                    .map_err(to_janus_error)?
+                    .ok_or_else(|| to_janus_error(CopalError::not_found(format!("file {id}"))))?;
+                let (items, next_cursor) = crate::app::list_versions_page(
+                    &state,
+                    &tenant,
+                    &id,
+                    i64::from(args.limit),
+                    args.cursor.as_deref(),
+                )
+                .await
+                .map_err(|e| to_janus_error(e.0))?;
+                Ok(ListOutput { items, next_cursor })
+            }
+        })
+        .sub_list("webhooks", "deliveries", move |ctx, args| {
+            let state = deliveries_state.clone();
+            async move {
+                let tenant = tenant_of(&ctx)?;
+                let delivery_state = args
+                    .filters
+                    .get("state")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_owned);
+                let items = crate::webhooks::endpoint_deliveries_page(
+                    &state,
+                    &tenant,
+                    &args.parent_id,
+                    delivery_state.as_deref(),
+                    i64::from(args.limit),
+                )
+                .await
+                .map_err(|e| to_janus_error(e.0))?;
+                Ok(ListOutput {
+                    items,
+                    next_cursor: None,
+                })
             }
         })
         .list("events", move |ctx, args| {

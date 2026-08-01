@@ -126,6 +126,68 @@
         ],
         "type": "object"
       },
+      "FileVersion": {
+        "properties": {
+          "content_type": {
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "created_by": {
+            "type": "string"
+          },
+          "digest": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "metadata_snapshot": {
+            "type": "object"
+          },
+          "number": {
+            "type": "integer"
+          },
+          "size": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "number",
+          "content_type",
+          "size",
+          "digest",
+          "metadata_snapshot",
+          "created_by",
+          "created_at"
+        ],
+        "type": "object"
+      },
+      "FileVersionPage": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/FileVersion"
+            },
+            "type": "array"
+          },
+          "next_cursor": {
+            "description": "Opaque keyset cursor for the next page; null when drained.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
+        ],
+        "type": "object"
+      },
       "Run": {
         "properties": {
           "created_at": {
@@ -216,6 +278,65 @@
           "events",
           "active",
           "created_at"
+        ],
+        "type": "object"
+      },
+      "WebhookDeliverie": {
+        "properties": {
+          "attempts": {
+            "type": "integer"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "last_status": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "next_attempt_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "state",
+          "attempts",
+          "created_at"
+        ],
+        "type": "object"
+      },
+      "WebhookDeliveriePage": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/WebhookDeliverie"
+            },
+            "type": "array"
+          },
+          "next_cursor": {
+            "description": "Opaque keyset cursor for the next page; null when drained.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor"
         ],
         "type": "object"
       },
@@ -630,6 +751,53 @@
         }
       }
     },
+    "/v1/files/{id}/versions": {
+      "get": {
+        "description": "Every stored version of this file, newest first.",
+        "operationId": "list_versions_files",
+        "parameters": [
+          {
+            "description": "Identifier of the parent files.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 100,
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Opaque cursor from a previous page's next_cursor.",
+            "in": "query",
+            "name": "cursor",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FileVersionPage"
+                }
+              }
+            },
+            "description": "Page of sub-resources."
+          }
+        }
+      }
+    },
     "/v1/runs": {
       "get": {
         "operationId": "list_runs",
@@ -922,6 +1090,61 @@
           },
           "404": {
             "description": "Not found."
+          }
+        }
+      }
+    },
+    "/v1/webhooks/{id}/deliveries": {
+      "get": {
+        "description": "Delivery attempts to this endpoint, newest first.",
+        "operationId": "list_deliveries_webhooks",
+        "parameters": [
+          {
+            "description": "Identifier of the parent webhooks.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "schema": {
+              "default": 100,
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Opaque cursor from a previous page's next_cursor.",
+            "in": "query",
+            "name": "cursor",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Filter by state (indexed).",
+            "in": "query",
+            "name": "state",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebhookDeliveriePage"
+                }
+              }
+            },
+            "description": "Page of sub-resources."
           }
         }
       }

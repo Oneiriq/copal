@@ -492,16 +492,28 @@ pub async fn record_attempt_failure(
 }
 
 /// A tenant's deliveries, newest first (API surface and tests).
+/// `endpoint` narrows to one webhook's history, `state` to one
+/// outcome.
 pub async fn list_deliveries(
     store: &Store,
     tenant: &TenantId,
+    endpoint: Option<&str>,
+    state: Option<&str>,
     limit: i64,
 ) -> copal_core::Result<Vec<DeliveryRow>> {
-    let query = Query::new()
+    let mut query = Query::new()
         .select(None)
         .from_table(DELIVERY_TABLE)
         .map_err(|e| map_store_err("list_deliveries", e))?
-        .where_(eq("tenant_id", tenant.as_str()))
+        .where_(eq("tenant_id", tenant.as_str()));
+    if let Some(endpoint) = endpoint {
+        let target = rid(ENDPOINT_TABLE, endpoint)?;
+        query = query.where_str(format!("endpoint = {target}"));
+    }
+    if let Some(state) = state {
+        query = query.where_(eq("state", state));
+    }
+    let query = query
         .order_by("created_at", "DESC")
         .map_err(|e| map_store_err("list_deliveries", e))?
         .limit(limit)

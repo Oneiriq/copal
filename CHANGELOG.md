@@ -28,6 +28,14 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
   external extractor seam for everything else, BM25-indexed in the same
   database that holds the records.
 
+### Sub-collections
+
+- **A file's versions and an endpoint's delivery attempts** are declared in the
+  contract and reach both faces and all four generated clients:
+  `GET /v1/files/{id}/versions`, `GET /v1/webhooks/{id}/deliveries`, and a
+  field on the parent's GraphQL type. Deliveries gained a `state` filter and
+  the index to serve it.
+
 ### Ingest and serving
 
 - **S3-compatible ingest gateway** with SigV4 verification, the object plane,
@@ -96,3 +104,9 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
   a composite key returns the boundary row on SurrealDB 3.x; a residual
   inequality lands the predicate in the filter stage.
 - Grant uses burn only on actual reads; weak validators match correctly.
+
+### Changed
+
+- **The versions listing uses the contract's page envelope.** It answered
+  `next_before` and took a `before` query parameter, which no other listing
+  did. It is now `next_cursor` and `cursor`, like everything else.

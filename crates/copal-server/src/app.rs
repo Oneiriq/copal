@@ -2078,9 +2078,10 @@ async fn revoke_grant<B: BlobStore>(
 struct VersionListQuery {
     #[serde(default)]
     limit: Option<i64>,
-    /// Resume strictly below this version number.
+    /// Opaque cursor from a previous page's next_cursor, matching the
+    /// page envelope every other listing uses.
     #[serde(default)]
-    before: Option<u64>,
+    cursor: Option<String>,
 }
 
 /// List a file's version history, newest first, paginated.
@@ -2098,14 +2099,41 @@ async fn list_versions<B: BlobStore>(
         .ok_or_else(|| CopalError::not_found(format!("file {id}")))?;
     let limit = params.limit.unwrap_or(50).clamp(1, 100);
     let versions =
-        version_repo::list_versions(&state.store, &tenant, &id, limit, params.before).await?;
-    let next_before = if versions.len() as i64 == limit {
-        versions.last().map(|v| v.number)
+        list_versions_page(&state, &tenant, &id, limit, params.cursor.as_deref()).await?;
+    Ok(Json(json!({
+        "items": versions.0,
+        "next_cursor": versions.1,
+    })))
+}
+
+/// One page of a file's history in wire shape, plus the cursor that
+/// resumes it. Shared by the REST handler and the GraphQL
+/// sub-collection so the two cannot render a version differently.
+pub(crate) async fn list_versions_page<B: BlobStore>(
+    state: &AppState<B>,
+    tenant: &TenantId,
+    id: &FileId,
+    limit: i64,
+    cursor: Option<&str>,
+) -> Result<(Vec<serde_json::Value>, Option<String>), ApiError> {
+    // The cursor is the last version number of the previous page; the
+    // keyset resumes strictly below it.
+    let before = match cursor {
+        Some(raw) => Some(
+            raw.parse::<u64>()
+                .map_err(|_| CopalError::validation("malformed cursor"))?,
+        ),
+        None => None,
+    };
+    let versions = version_repo::list_versions(&state.store, tenant, id, limit, before).await?;
+    let next_cursor = if versions.len() as i64 == limit {
+        versions.last().map(|v| v.number.to_string())
     } else {
         None
     };
-    Ok(Json(
-        json!({ "items": versions, "next_before": next_before }),
+    Ok((
+        versions.iter().map(crate::wire::wire_version).collect(),
+        next_cursor,
     ))
 }
 

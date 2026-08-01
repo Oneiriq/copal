@@ -19,6 +19,22 @@ export interface FilePage {
   next_cursor?: string | null
 }
 
+export interface FileVersion {
+  id: string
+  number: number
+  contentType: string
+  size: number
+  digest: string
+  metadataSnapshot: unknown
+  createdBy: string
+  createdAt: string
+}
+
+export interface FileVersionPage {
+  items: FileVersion[]
+  next_cursor?: string | null
+}
+
 export interface Webhook {
   id: string
   targetUrl: string
@@ -29,6 +45,20 @@ export interface Webhook {
 
 export interface WebhookPage {
   items: Webhook[]
+  next_cursor?: string | null
+}
+
+export interface WebhookDelivery {
+  id: string
+  state: string
+  attempts: number
+  lastStatus?: number
+  nextAttemptAt?: string
+  createdAt: string
+}
+
+export interface WebhookDeliveryPage {
+  items: WebhookDelivery[]
   next_cursor?: string | null
 }
 
@@ -88,6 +118,14 @@ export class Client {
     return this.request('GET', `/v1/files/${id}`)
   }
 
+  listVersionsFiles(id: string, limit?: number, cursor?: string): Promise<FileVersionPage> {
+    const query = new URLSearchParams()
+                     if (limit !== undefined) query.set('limit', String(limit))
+                     if (cursor !== undefined) query.set('cursor', cursor)
+                     const suffix = query.size > 0 ? `?${query}` : ''
+                     return this.request('GET', `/v1/files/${id}/versions${suffix}`)
+  }
+
   issueUrlFile(id: string, input: Record<string, unknown>): Promise<Record<string, unknown>> {
     return this.request('POST', `/v1/files/${id}/url`, input)
   }
@@ -118,6 +156,14 @@ export class Client {
 
   getWebhook(id: string): Promise<Webhook> {
     return this.request('GET', `/v1/webhooks/${id}`)
+  }
+
+  listDeliveriesWebhooks(id: string, limit?: number, cursor?: string): Promise<WebhookDeliveryPage> {
+    const query = new URLSearchParams()
+                     if (limit !== undefined) query.set('limit', String(limit))
+                     if (cursor !== undefined) query.set('cursor', cursor)
+                     const suffix = query.size > 0 ? `?${query}` : ''
+                     return this.request('GET', `/v1/webhooks/${id}/deliveries${suffix}`)
   }
 
   registerWebhook(input: Record<string, unknown>): Promise<Record<string, unknown>> {

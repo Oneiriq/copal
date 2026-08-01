@@ -31,13 +31,16 @@ from one contract. What remains:
    is its own engine session over the same connection, a record
    access JWT binds a caller identity to it, and table and field
    `PERMISSIONS` then filter engine side while the root handle beside
-   it keeps full authority. The project shape: a caller-session seam
-   in surql-rs, short-lived record tokens minted per request, and
-   `ACCESS` plus `PERMISSIONS` declarations compiled from the same
-   contract that drives the application layer, so both refusal layers
-   share one source. Facts that bound the design: an engine without
-   credentials skips `PERMISSIONS` silently, so adoption must fail
-   loudly on an open engine; only record sessions are filtered, and
+   it keeps full authority. The surql-rs seam shipped as
+   `DatabaseClient::caller_session`, which verifies the engine bound
+   a record identity and refuses tokens `PERMISSIONS` would never
+   filter. What remains here: short-lived record tokens minted per
+   request, and `ACCESS` plus `PERMISSIONS` declarations compiled
+   from the same contract that drives the application layer, so both
+   refusal layers share one source. Facts that bound the design:
+   enforcement follows the actor, so record sessions are filtered
+   even on a credential-less engine, whose exposure is the anonymous
+   session acting as owner; only record sessions are filtered, and
    plain `TYPE JWT` access lands database-level sessions that bypass
    table permissions; refused writes return empty rows with no error,
    so the application layer stays the face that explains refusals.

@@ -107,9 +107,10 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
   callers apart: a cloned handle is its own session over the same
   connection, a record access JWT binds a caller identity to it, and
   table and field `PERMISSIONS` then filter engine side while the
-  root handle keeps full authority. Also pinned: an engine without
-  credentials skips `PERMISSIONS` silently, and refused writes return
-  empty rows with no error. `PERMISSIONS` pushdown returns to the
+  root handle keeps full authority. Also pinned: enforcement follows
+  the actor, so a record session is filtered even on an engine
+  without credentials, where only the anonymous session acts as
+  owner; refused writes return empty rows with no error. `PERMISSIONS` pushdown returns to the
   roadmap as an implementable project.
 
 - **Streams end, and that is the re-auth.** A subscription lives at most

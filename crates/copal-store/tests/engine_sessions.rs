@@ -183,11 +183,11 @@ async fn record_access_needs_no_signin_clause() {
     assert_eq!(rows[0]["tenant"], "acme");
 }
 
-/// An engine built without credentials runs with enforcement off:
-/// every session acts as owner and `PERMISSIONS` clauses are skipped
-/// silently. A deployment that skips engine credentials would lose
-/// the pushdown layer without a single error, which is why adopting
-/// it must fail loudly when the engine is open.
+/// On an engine built without credentials the ANONYMOUS session acts
+/// as owner and `PERMISSIONS` clauses are skipped for it silently.
+/// The exposure is scoped to the anonymous session: enforcement
+/// follows the actor, and the next test shows a record session
+/// constrained on this same kind of engine.
 #[tokio::test]
 async fn engine_without_credentials_skips_permissions() {
     let root: Surreal<_> = Surreal::new::<Mem>(()).await.unwrap();
@@ -207,4 +207,37 @@ async fn engine_without_credentials_skips_permissions() {
         1,
         "PERMISSIONS NONE enforced on an open engine, revisit the pins"
     );
+}
+
+/// Enforcement follows the actor, and credentials only decide what
+/// the anonymous session may do: a record session is filtered even
+/// on an engine built without them. The caller-session layer works
+/// on any engine; what an open engine leaves unprotected is its
+/// anonymous front door.
+#[tokio::test]
+async fn record_sessions_enforce_on_credential_less_engines() {
+    let root: Surreal<_> = Surreal::new::<Mem>(()).await.unwrap();
+    root.use_ns("open_record")
+        .use_db("open_record")
+        .await
+        .unwrap();
+    run_all(
+        &root,
+        &[
+            "DEFINE ACCESS caller ON DATABASE TYPE RECORD              WITH JWT ALGORITHM HS256 KEY 'probe-secret' DURATION FOR SESSION 1h;",
+            "DEFINE TABLE doc SCHEMALESS PERMISSIONS FOR select WHERE tenant = $token.tn              FOR create, update, delete NONE;",
+            "CREATE doc SET tenant = 'acme', body = 'ours';",
+            "CREATE doc SET tenant = 'rival', body = 'theirs';",
+        ],
+    )
+    .await;
+    let caller = root.clone();
+    caller
+        .authenticate(jwt("probe-secret", caller_claims("open_record")))
+        .await
+        .expect("record JWT authenticates on a credential-less engine");
+    let mut response = caller.query("SELECT * FROM doc;").await.unwrap();
+    let rows: Vec<serde_json::Value> = response.take(0).unwrap();
+    assert_eq!(rows.len(), 1, "the record actor is constrained: {rows:?}");
+    assert_eq!(rows[0]["tenant"], "acme");
 }

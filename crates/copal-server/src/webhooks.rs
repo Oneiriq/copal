@@ -84,7 +84,9 @@ async fn register_endpoint<B: BlobStore>(
     headers: HeaderMap,
     Json(request): Json<RegisterRequest>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
-    let tenant = crate::auth::authenticate(&state.app, &headers).await?;
+    let tenant =
+        crate::auth::authenticate_scoped(&state.app, &headers, crate::auth::Scope::Admin, 1)
+            .await?;
     let body = register_core(
         &state.app,
         &tenant,
@@ -138,7 +140,8 @@ async fn list_endpoints<B: BlobStore>(
     State(state): State<WebhookState<B>>,
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let tenant = crate::auth::authenticate(&state.app, &headers).await?;
+    let tenant =
+        crate::auth::authenticate_scoped(&state.app, &headers, crate::auth::Scope::Read, 1).await?;
     let items = eventing::list_endpoints(&state.app.store, &tenant).await?;
     Ok(Json(json!({ "items": items })))
 }
@@ -149,7 +152,9 @@ async fn remove_endpoint<B: BlobStore>(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    let tenant = crate::auth::authenticate(&state.app, &headers).await?;
+    let tenant =
+        crate::auth::authenticate_scoped(&state.app, &headers, crate::auth::Scope::Admin, 1)
+            .await?;
     remove_core(
         &state.app,
         &tenant,
@@ -204,8 +209,14 @@ async fn list_events<B: BlobStore>(
     headers: HeaderMap,
     axum::extract::Query(params): axum::extract::Query<ListQuery>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let tenant = crate::auth::authenticate(&state.app, &headers).await?;
     let limit = params.limit.unwrap_or(100).clamp(1, 1_000);
+    let tenant = crate::auth::authenticate_scoped(
+        &state.app,
+        &headers,
+        crate::auth::Scope::Read,
+        limit as u64,
+    )
+    .await?;
     let rows =
         eventing::list_events(&state.app.store, &tenant, params.action.as_deref(), limit).await?;
     let items: Vec<_> = rows
@@ -247,8 +258,14 @@ async fn list_endpoint_deliveries<B: BlobStore>(
     axum::extract::Path(id): axum::extract::Path<String>,
     axum::extract::Query(params): axum::extract::Query<ListQuery>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let tenant = crate::auth::authenticate(&state.app, &headers).await?;
     let limit = params.limit.unwrap_or(100).clamp(1, 1_000);
+    let tenant = crate::auth::authenticate_scoped(
+        &state.app,
+        &headers,
+        crate::auth::Scope::Read,
+        limit as u64,
+    )
+    .await?;
     let items =
         endpoint_deliveries_page(&state.app, &tenant, &id, params.state.as_deref(), limit).await?;
     // Endpoint histories are bounded by the retry ceiling, so the page
@@ -263,8 +280,14 @@ async fn list_deliveries<B: BlobStore>(
     headers: HeaderMap,
     axum::extract::Query(params): axum::extract::Query<ListQuery>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let tenant = crate::auth::authenticate(&state.app, &headers).await?;
     let limit = params.limit.unwrap_or(100).clamp(1, 1_000);
+    let tenant = crate::auth::authenticate_scoped(
+        &state.app,
+        &headers,
+        crate::auth::Scope::Read,
+        limit as u64,
+    )
+    .await?;
     let rows = eventing::list_deliveries(
         &state.app.store,
         &tenant,

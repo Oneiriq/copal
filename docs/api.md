@@ -29,10 +29,22 @@ A key can be narrowed at minting: `scopes` from the vocabulary `read`,
 `write`, `admin`, and `ttl_secs` for an expiry the engine's clock
 enforces. An unscoped key holds every scope, which is what every key
 minted before scoping existed does, so upgrading tightens nothing by
-surprise. On the GraphQL face the key's scopes ride as the request's
-principal; the contract declarations that consume them land together
-with the REST-side enforcement helper, so the two faces tighten in the
-same release rather than drifting apart.
+surprise.
+
+The contract declares what each operation demands and BOTH faces
+enforce it: reads (listings, gets, sub-collections, search, text,
+watching) need `read`; mutations need `write`; registering or removing
+webhooks needs `admin`, because a webhook endpoint receives every
+future event. A missing scope refuses 403 `forbidden`, naming the
+scope, identically on REST and GraphQL. OpenAPI operations carry
+`x-requires-scopes`. Header mode holds every scope, since header mode
+is full trust.
+
+Consumption is metered against one ledger on both faces: reads at
+6000 units a minute per caller, mutations at 600, where a listing
+costs its row limit and everything else costs one. Exhaustion is 429
+`too_many_requests`, retryable next minute. Switching protocols never
+dodges a budget, because both faces charge the same store.
 
 `header` is the development mode and the default until 1.0. The
 `x-copal-tenant` header is trusted as the tenant identity. The server logs a

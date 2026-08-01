@@ -118,7 +118,8 @@ async fn create_session<B: BlobStore>(
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     require_version(&headers)?;
-    let tenant = crate::auth::authenticate(&state, &headers).await?;
+    let tenant =
+        crate::auth::authenticate_scoped(&state, &headers, crate::auth::Scope::Write, 1).await?;
 
     let upload_length: u64 = headers
         .get("upload-length")
@@ -192,7 +193,8 @@ async fn session_status<B: BlobStore>(
     Path(id): Path<String>,
 ) -> Result<Response, ApiError> {
     require_version(&headers)?;
-    let tenant = crate::auth::authenticate(&state, &headers).await?;
+    let tenant =
+        crate::auth::authenticate_scoped(&state, &headers, crate::auth::Scope::Write, 1).await?;
     let session = tus_repo::fetch(&state.store, &tenant, &id)
         .await?
         .ok_or_else(|| CopalError::not_found(format!("upload {id}")))?;
@@ -357,7 +359,8 @@ async fn terminate<B: BlobStore>(
     Path(id): Path<String>,
 ) -> Result<Response, ApiError> {
     require_version(&headers)?;
-    let tenant = crate::auth::authenticate(&state, &headers).await?;
+    let tenant =
+        crate::auth::authenticate_scoped(&state, &headers, crate::auth::Scope::Write, 1).await?;
     let session = tus_repo::fetch(&state.store, &tenant, &id)
         .await?
         .ok_or_else(|| CopalError::not_found(format!("upload {id}")))?;

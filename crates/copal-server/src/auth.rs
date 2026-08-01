@@ -106,7 +106,17 @@ pub async fn authenticate_with_identity<B: BlobStore>(
                 .get("x-copal-tenant")
                 .and_then(|v| v.to_str().ok())
                 .ok_or_else(|| CopalError::validation("missing x-copal-tenant header"))?;
-            Ok((TenantId::parse(raw)?, None))
+            // Header mode IS full trust, so it reads as an identity
+            // holding every scope. Declared requirements then apply
+            // uniformly to both modes instead of refusing the mode
+            // that has no key to carry them.
+            Ok((
+                TenantId::parse(raw)?,
+                Some(KeyIdentity {
+                    key_id: "trusted-header".to_owned(),
+                    scopes: KEY_SCOPES.iter().map(|s| s.to_string()).collect(),
+                }),
+            ))
         }
         AuthMode::ApiKeys => {
             let bearer = headers
@@ -146,6 +156,86 @@ pub async fn authenticate_with_identity<B: BlobStore>(
             ))
         }
     }
+}
+
+/// A scope requirement on a REST route, mirroring the contract's
+/// vocabulary so both faces refuse with the same words.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scope {
+    Read,
+    Write,
+    Admin,
+}
+
+impl Scope {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Read => "read",
+            Self::Write => "write",
+            Self::Admin => "admin",
+        }
+    }
+
+    /// Which contract rate class this requirement charges. Reads
+    /// meter as reads; anything that changes state meters as a
+    /// mutation.
+    fn rate_class(self) -> &'static str {
+        match self {
+            Self::Read => "reads",
+            Self::Write | Self::Admin => "mutations",
+        }
+    }
+}
+
+/// Authenticate, charge the consumption ledger, and check the scope,
+/// in that order: bad credentials are 401, an exhausted budget is 429
+/// before the caller learns anything else, and a missing scope is 403
+/// naming it. `units` is the operation's cost; listings pass their
+/// clamped row limit and everything else passes 1, matching what the
+/// dispatcher charges on the GraphQL face.
+pub async fn authenticate_scoped<B: BlobStore>(
+    state: &AppState<B>,
+    headers: &HeaderMap,
+    scope: Scope,
+    units: u64,
+) -> Result<TenantId, ApiError> {
+    let (tenant, identity) = authenticate_with_identity(state, headers).await?;
+    let subject = identity
+        .as_ref()
+        .map(|id| id.key_id.as_str())
+        .unwrap_or("anonymous");
+
+    // The same ledger the GraphQL dispatcher charges, keyed the same
+    // way, so switching protocols never dodges a budget.
+    let class = scope.rate_class();
+    let budget = crate::contract::contract()
+        .rate_classes
+        .iter()
+        .find(|c| c.name == class)
+        .map(|c| c.units_per_minute)
+        .unwrap_or(u64::MAX);
+    let bucket = format!("{class}:{subject}");
+    use janus::runtime::RateStore as _;
+    let admitted = state
+        .rate_store
+        .charge(&bucket, units, budget)
+        .await
+        .map_err(|e| CopalError::Store(e.to_string()))?;
+    if !admitted {
+        return Err(CopalError::TooManyRequests(format!(
+            "rate class {class} exhausted; retry next minute",
+        ))
+        .into());
+    }
+
+    if let Some(identity) = &identity {
+        if !identity.scopes.iter().any(|s| s == scope.as_str()) {
+            return Err(
+                CopalError::Forbidden(format!("scope {} required", scope.as_str(),)).into(),
+            );
+        }
+    }
+    Ok(tenant)
 }
 
 /// Gate an admin route on the operator token, constant-time. During a

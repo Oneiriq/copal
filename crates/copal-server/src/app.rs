@@ -126,6 +126,11 @@ pub struct AppState<B: BlobStore> {
     pub instance_id: String,
     /// How requests prove their tenant, plus the admin gate.
     pub auth: crate::auth::AuthConfig,
+    /// The consumption ledger BOTH faces charge, so a caller cannot
+    /// dodge a budget by switching protocols. In-memory: one process,
+    /// one ledger; a multi-node deployment brings a shared
+    /// implementation later.
+    pub rate_store: std::sync::Arc<janus::runtime::MemoryRateStore>,
     /// Whether a pending scan withholds content. Set with malware
     /// scanning: serving bytes that no scanner has cleared would make
     /// the scanner decorative.
@@ -154,6 +159,7 @@ impl<B: BlobStore> AppState<B> {
             scan_gates_serving: false,
             embedding: None,
             cipher: None,
+            rate_store: std::sync::Arc::new(janus::runtime::MemoryRateStore::new()),
         }
     }
 
@@ -599,8 +605,10 @@ async fn search_text<B: BlobStore>(
     headers: HeaderMap,
     axum::extract::Query(params): axum::extract::Query<SearchQuery>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let tenant = crate::auth::authenticate(&state, &headers).await?;
     let limit = params.limit.unwrap_or(20).clamp(1, 100);
+    let tenant =
+        crate::auth::authenticate_scoped(&state, &headers, crate::auth::Scope::Read, limit as u64)
+            .await?;
     let requested = params.mode.as_deref().unwrap_or("hybrid");
     // Semantic modes need an embedding service; without one, asking
     // for meaning gets words rather than an error, and the response
@@ -687,7 +695,8 @@ async fn file_text<B: BlobStore>(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let tenant = crate::auth::authenticate(&state, &headers).await?;
+    let tenant =
+        crate::auth::authenticate_scoped(&state, &headers, crate::auth::Scope::Read, 1).await?;
     let id = parse_id(&id)?;
     let row = copal_store::repo::text::get_text(&state.store, &tenant, &id)
         .await?
@@ -707,7 +716,8 @@ async fn tenant_usage<B: BlobStore>(
     State(state): State<AppState<B>>,
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let tenant = crate::auth::authenticate(&state, &headers).await?;
+    let tenant =
+        crate::auth::authenticate_scoped(&state, &headers, crate::auth::Scope::Read, 1).await?;
     let (bytes, files) =
         match copal_store::repo::tenant::cached_usage(&state.store, &tenant).await? {
             Some(cached) => cached,
@@ -1013,7 +1023,8 @@ async fn create_file<B: BlobStore>(
     headers: HeaderMap,
     Json(spec): Json<FileSpec>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
-    let tenant = crate::auth::authenticate(&state, &headers).await?;
+    let tenant =
+        crate::auth::authenticate_scoped(&state, &headers, crate::auth::Scope::Write, 1).await?;
     let created = file_repo::create_file(&state.store, &tenant, &spec, "api").await?;
     // 201 for a fresh record, 200 for an idempotency-key replay that
     // returned the original, so retries read as success.
@@ -1084,8 +1095,10 @@ async fn list_files<B: BlobStore>(
     headers: HeaderMap,
     axum::extract::Query(params): axum::extract::Query<ListQuery>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let tenant = crate::auth::authenticate(&state, &headers).await?;
     let limit = params.limit.unwrap_or(100).clamp(1, 100);
+    let tenant =
+        crate::auth::authenticate_scoped(&state, &headers, crate::auth::Scope::Read, limit as u64)
+            .await?;
     let ascending = match params.sort.as_deref() {
         None | Some("-created_at") => false,
         Some("created_at") => true,
@@ -1132,7 +1145,8 @@ async fn get_file<B: BlobStore>(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let tenant = crate::auth::authenticate(&state, &headers).await?;
+    let tenant =
+        crate::auth::authenticate_scoped(&state, &headers, crate::auth::Scope::Read, 1).await?;
     let id = parse_id(&id)?;
     let record = file_repo::get_file(&state.store, &tenant, &id)
         .await?
@@ -1148,7 +1162,8 @@ async fn delete_file<B: BlobStore>(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    let tenant = crate::auth::authenticate(&state, &headers).await?;
+    let tenant =
+        crate::auth::authenticate_scoped(&state, &headers, crate::auth::Scope::Write, 1).await?;
     let id = parse_id(&id)?;
     remove_file_core(&state, &tenant, &id, forwarded_origin(&headers).as_deref()).await?;
     Ok(StatusCode::NO_CONTENT)
@@ -1224,7 +1239,8 @@ async fn request_rendition<B: BlobStore>(
     Path(id): Path<String>,
     Json(request): Json<RenditionRequest>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
-    let tenant = crate::auth::authenticate(&state, &headers).await?;
+    let tenant =
+        crate::auth::authenticate_scoped(&state, &headers, crate::auth::Scope::Write, 1).await?;
     let id = parse_id(&id)?;
     let spec = RenditionSpec {
         kind: request.kind,
@@ -1371,7 +1387,8 @@ async fn list_renditions<B: BlobStore>(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let tenant = crate::auth::authenticate(&state, &headers).await?;
+    let tenant =
+        crate::auth::authenticate_scoped(&state, &headers, crate::auth::Scope::Read, 1).await?;
     let id = parse_id(&id)?;
     let rows = file_repo::list_renditions(&state.store, &tenant, &id).await?;
     let items: Vec<_> = rows.iter().map(crate::wire::wire_file).collect();
@@ -1390,7 +1407,9 @@ async fn upload_content<B: BlobStore>(
     Path(id): Path<String>,
     request: Request,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let tenant = crate::auth::authenticate(&state, request.headers()).await?;
+    let tenant =
+        crate::auth::authenticate_scoped(&state, request.headers(), crate::auth::Scope::Write, 1)
+            .await?;
     let id = parse_id(&id)?;
     // Optional integrity assertion: the client declares the digest it
     // intends to send, and a mismatch fails the upload after the
@@ -1646,7 +1665,9 @@ async fn download_content<B: BlobStore>(
     let cache = match record.access {
         copal_core::AccessLevel::Public => crate::serve::CacheClass::Public,
         access => {
-            let tenant = crate::auth::authenticate(&state, &headers).await?;
+            let tenant =
+                crate::auth::authenticate_scoped(&state, &headers, crate::auth::Scope::Read, 1)
+                    .await?;
             if record.tenant_id != tenant {
                 // Cross-tenant reads as absent, never as forbidden.
                 return Err(CopalError::not_found(format!("file {id}")).into());
@@ -1733,7 +1754,8 @@ async fn issue_upload_grant<B: BlobStore>(
     Path(id): Path<String>,
     Json(request): Json<IssueUploadRequest>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
-    let tenant = crate::auth::authenticate(&state, &headers).await?;
+    let tenant =
+        crate::auth::authenticate_scoped(&state, &headers, crate::auth::Scope::Write, 1).await?;
     let id = parse_id(&id)?;
     let body = issue_upload_grant_core(
         &state,
@@ -1999,7 +2021,8 @@ async fn issue_grant<B: BlobStore>(
     Path(id): Path<String>,
     Json(request): Json<IssueGrantRequest>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
-    let tenant = crate::auth::authenticate(&state, &headers).await?;
+    let tenant =
+        crate::auth::authenticate_scoped(&state, &headers, crate::auth::Scope::Read, 1).await?;
     let id = parse_id(&id)?;
     let issued = issue_grant_core(
         &state,
@@ -2088,7 +2111,8 @@ async fn revoke_grant<B: BlobStore>(
     headers: HeaderMap,
     Path(grant_ref): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    let tenant = crate::auth::authenticate(&state, &headers).await?;
+    let tenant =
+        crate::auth::authenticate_scoped(&state, &headers, crate::auth::Scope::Write, 1).await?;
     grant_repo::revoke(&state.store, &tenant, &grant_ref).await?;
     copal_store::repo::auth::record_audit(
         &state.store,
@@ -2122,13 +2146,15 @@ async fn list_versions<B: BlobStore>(
     Path(id): Path<String>,
     axum::extract::Query(params): axum::extract::Query<VersionListQuery>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let tenant = crate::auth::authenticate(&state, &headers).await?;
+    let limit = params.limit.unwrap_or(50).clamp(1, 100);
+    let tenant =
+        crate::auth::authenticate_scoped(&state, &headers, crate::auth::Scope::Read, limit as u64)
+            .await?;
     let id = parse_id(&id)?;
     // Tenancy and tombstone filtering ride the file fetch.
     file_repo::get_file(&state.store, &tenant, &id)
         .await?
         .ok_or_else(|| CopalError::not_found(format!("file {id}")))?;
-    let limit = params.limit.unwrap_or(50).clamp(1, 100);
     let versions =
         list_versions_page(&state, &tenant, &id, limit, params.cursor.as_deref()).await?;
     Ok(Json(json!({
@@ -2174,7 +2200,8 @@ async fn download_version<B: BlobStore>(
     headers: HeaderMap,
     Path((id, number)): Path<(String, u64)>,
 ) -> Result<Response, ApiError> {
-    let tenant = crate::auth::authenticate(&state, &headers).await?;
+    let tenant =
+        crate::auth::authenticate_scoped(&state, &headers, crate::auth::Scope::Read, 1).await?;
     let id = parse_id(&id)?;
     let record = file_repo::get_file(&state.store, &tenant, &id)
         .await?
@@ -2281,7 +2308,8 @@ async fn start_run<B: BlobStore>(
     headers: HeaderMap,
     Json(request): Json<StartRunRequest>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
-    let tenant = crate::auth::authenticate(&state, &headers).await?;
+    let tenant =
+        crate::auth::authenticate_scoped(&state, &headers, crate::auth::Scope::Write, 1).await?;
     let (status, body) = start_run_core(&state, &tenant, request).await?;
     Ok((status, Json(body)))
 }
@@ -2360,7 +2388,8 @@ async fn retry_run<B: BlobStore>(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
-    let tenant = crate::auth::authenticate(&state, &headers).await?;
+    let tenant =
+        crate::auth::authenticate_scoped(&state, &headers, crate::auth::Scope::Write, 1).await?;
     let body = retry_run_core(&state, &tenant, &id).await?;
     Ok((StatusCode::ACCEPTED, Json(body)))
 }
@@ -2416,8 +2445,10 @@ async fn list_runs<B: BlobStore>(
     headers: HeaderMap,
     axum::extract::Query(params): axum::extract::Query<RunListQuery>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let tenant = crate::auth::authenticate(&state, &headers).await?;
     let limit = params.limit.unwrap_or(100).clamp(1, 100);
+    let tenant =
+        crate::auth::authenticate_scoped(&state, &headers, crate::auth::Scope::Read, limit as u64)
+            .await?;
     if let Some(status) = params.status.as_deref() {
         if !RUN_STATUSES.contains(&status) {
             return Err(CopalError::validation(format!("unknown status {status:?}")).into());
@@ -2469,7 +2500,8 @@ async fn get_run<B: BlobStore>(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let tenant = crate::auth::authenticate(&state, &headers).await?;
+    let tenant =
+        crate::auth::authenticate_scoped(&state, &headers, crate::auth::Scope::Read, 1).await?;
     let (run, steps) = state
         .flow
         .run_state(&tenant, &id)

@@ -81,6 +81,7 @@ fn to_janus_error(err: CopalError) -> JanusError {
         CopalError::NotFound(_) => JanusError::NotFound,
         CopalError::Conflict(m) => JanusError::Conflict(m),
         CopalError::PayloadTooLarge(m) => JanusError::PayloadTooLarge(m),
+        CopalError::TooManyRequests(m) => JanusError::TooManyRequests(m),
         CopalError::Store(_) | CopalError::Blob(_) => {
             tracing::error!(error = %err, "internal failure");
             JanusError::Internal("internal error".into())
@@ -122,6 +123,7 @@ fn dispatcher<B: BlobStore + 'static>(
     let runs_list_state = state.clone();
     let runs_get_state = state.clone();
     let runs_start_state = state.clone();
+    let rate_store = state.rate_store.clone();
     let runs_retry_state = state;
 
     let resolvers = Resolvers::new()
@@ -564,10 +566,16 @@ fn dispatcher<B: BlobStore + 'static>(
             }
         });
 
-    Ok(Arc::new(Dispatcher::new(
+    // The same ledger the REST helper charges: one budget, whichever
+    // protocol spends it. The contract names rate classes, so the
+    // plain constructor would refuse; empty guards pass the gate
+    // because the contract declares none yet.
+    Ok(Arc::new(Dispatcher::with_policies(
         Arc::new(crate::contract::contract()),
         resolvers,
         vec![Arc::new(RequireTenant) as Arc<dyn Middleware>],
+        Some(rate_store),
+        janus::runtime::Guards::new(),
     )?))
 }
 

@@ -99,7 +99,8 @@ async fn issue_edge_url<B: BlobStore>(
     Path(id): Path<String>,
     Json(request): Json<IssueEdgeRequest>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
-    let tenant = crate::auth::authenticate(&state.app, &headers).await?;
+    let tenant =
+        crate::auth::authenticate_scoped(&state.app, &headers, crate::auth::Scope::Read, 1).await?;
     let id = FileId::parse(&id)?;
     let body = issue_edge_url_core(
         &state.app,

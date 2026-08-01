@@ -29,6 +29,7 @@ impl IntoResponse for ApiError {
             CopalError::NotFound(_) => (StatusCode::NOT_FOUND, "not_found"),
             CopalError::Conflict(_) => (StatusCode::CONFLICT, "conflict"),
             CopalError::PayloadTooLarge(_) => (StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large"),
+            CopalError::TooManyRequests(_) => (StatusCode::TOO_MANY_REQUESTS, "too_many_requests"),
             CopalError::Store(_) | CopalError::Blob(_) => {
                 // Infrastructure detail stays out of responses; the full
                 // error goes to the log.

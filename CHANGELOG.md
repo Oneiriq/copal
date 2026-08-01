@@ -102,6 +102,17 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ### Governance
 
+- **The declarations release.** The contract now declares what every
+  operation demands, and both faces enforce it from that one declaration:
+  reads require the `read` scope, mutations `write`, webhook registration
+  `admin`. Refusals are identical across faces, 403 naming the scope.
+  Consumption is metered against one shared ledger (reads 6000 units a
+  minute per caller, mutations 600; a listing costs its row limit), so
+  switching protocols never dodges a budget; exhaustion is 429
+  `too_many_requests` everywhere. OpenAPI operations carry
+  `x-requires-scopes`. Header mode holds every scope, since it is full
+  trust.
+
 - **Keys narrow.** A `ck1` key can be minted with scopes (`read`, `write`,
   `admin`) and an expiry the engine's clock enforces; an expired key refuses
   with the same uniform 401 as a wrong one. An unscoped key holds every scope,

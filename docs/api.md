@@ -139,10 +139,21 @@ HEAD    /{bucket}              HeadBucket
 GET     /{bucket}?list-type=2  ListObjectsV2 (prefix, delimiter,
                                max-keys, continuation-token)
 PUT     /{bucket}/{key}        PutObject (create or re-upload at the path)
+PUT     /{bucket}/{key}        CopyObject, with x-amz-copy-source
 GET     /{bucket}/{key}        GetObject (ETag, Range, conditional requests)
 HEAD    /{bucket}/{key}        HeadObject
 DELETE  /{bucket}/{key}        DeleteObject (idempotent soft delete)
+POST    /{bucket}?delete       DeleteObjects (up to 1000 keys, Quiet mode)
 ```
+
+Copy moves no bytes: storage is content-addressed, so the destination
+becomes a new file record over the same blob and runs the standard
+post-upload pipeline. The source must be servable and live in the
+credential's own bucket; copying a specific version is refused.
+Batch delete reports an absent key as deleted, matching S3. Together
+with multipart these are what `mc mirror`, `rclone sync`, and
+`aws s3 sync` need, so an existing bucket can migrate in with stock
+tooling.
 
 Multipart upload is supported, which matters because the aws CLI
 switches to it above 8 MiB without asking:

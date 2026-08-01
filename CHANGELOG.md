@@ -40,7 +40,10 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 - **S3-compatible ingest gateway** with SigV4 verification, the object plane,
   `ListObjectsV2` with delimiter collapse, multipart upload, and sealed
-  per-tenant credentials.
+  per-tenant credentials. `CopyObject` and batch `DeleteObjects` followed,
+  which is what `mc mirror`, `rclone sync`, and `aws s3 sync` need; copy moves
+  no bytes, since content-addressed storage makes it a new record over the
+  same blob.
 - **Resumable uploads** over the tus 1.0.0 protocol.
 - **Signed upload URLs**: single-use write capabilities in the `cg1` family,
   op-scoped so a read token cannot write.

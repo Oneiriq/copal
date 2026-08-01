@@ -85,6 +85,30 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ### Interfaces
 
+- **The gateway survives MinIO's own tooling, proven by a recorded
+  mirror.** A live `mc mirror` run against the gateway surfaced four
+  defects that in-process tests never could, each now fixed and
+  pinned: bucket-level requests with the trailing slash minio-go
+  always sends were routed as unknown paths, `GetBucketLocation` was
+  unimplemented (mc reads both refusals as a missing bucket and
+  transfers nothing), served objects carried no `Last-Modified`
+  header (mc refuses reads without one), multipart parts stored their
+  streaming-signature framing verbatim (assembling framing into the
+  object, caught by a round-trip digest), and listings named
+  unfinalized uploads as zero-byte entries that blocked mirror
+  resume. The recorded run in the migration guide shows the full
+  mirror, a no-op second pass, an empty `mc diff`, and the 80 MiB
+  multipart object round-tripping byte-identical.
+
+- **One engine session per process, on purpose.** Against a real
+  `ws://` engine, most REST requests failed with `Session not found`:
+  the SDK mints an engine session per handle clone and announces each
+  clone and drop over a side channel the remote router can lose under
+  concurrency, and an axum state extraction clones per request.
+  surql-rs now shares one session across client clones, so the
+  service holds one session and mints new ones only explicitly, which
+  is also the architecture the `PERMISSIONS` pushdown assumes.
+
 - **One contract, every face.** Files, events, webhooks, and runs are declared
   once and served over REST and GraphQL, with four generated clients and an
   OpenAPI document that cannot drift from either. Usage stays REST-only: it

@@ -52,6 +52,18 @@ pub fn s3_router<B: BlobStore + 'static>(app: AppState<B>) -> Router {
                 .head(head_bucket::<B>)
                 .post(bucket_post::<B>),
         )
+        // minio-go formats every bucket-level request with a trailing
+        // slash, which the router treats as a different path; without
+        // this row, mc reads the bare 404 as "bucket does not exist"
+        // and refuses to transfer anything. Same handlers, and the
+        // signature still verifies because SigV4 signs the path as
+        // sent.
+        .route(
+            "/{bucket}/",
+            get(list_objects::<B>)
+                .head(head_bucket::<B>)
+                .post(bucket_post::<B>),
+        )
         .route(
             "/{bucket}/{*key}",
             get(object_route::<B>)
@@ -337,6 +349,17 @@ async fn list_objects<B: BlobStore>(
         Err(response) => return response,
     };
     let params = parse_query(uri.query().unwrap_or_default());
+    // GetBucketLocation: minio-go asks before its first operation and
+    // treats a missing answer as a missing bucket. Signing accepts
+    // any region, so one region is as true as another.
+    if params.contains_key("location") {
+        return xml_response(
+            StatusCode::OK,
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+<LocationConstraint              xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">us-east-1</LocationConstraint>"
+                .to_owned(),
+        );
+    }
     // `?uploads` on the bucket asks for open multipart sessions, not
     // for objects.
     if params.contains_key("uploads") {
@@ -396,6 +419,14 @@ async fn list_objects<B: BlobStore>(
     let mut last_common: Option<String> = None;
     let mut key_count = 0usize;
     for record in &rows {
+        // An upload that died before finalize leaves a claim row with
+        // no content. GetObject answers NoSuchKey for it, so the
+        // listing must not name it either: a mirror that sees a
+        // zero-byte entry treats the key as present and wrong, and
+        // refuses to resume over it.
+        if !record.servable_content() {
+            continue;
+        }
         let Some(remainder) = record.path.strip_prefix(prefix.as_str()) else {
             continue;
         };
@@ -660,9 +691,26 @@ async fn get_object<B: BlobStore>(
     )
     .await
     {
-        Ok(response) => response,
+        Ok(mut response) => {
+            if let Some(value) = http_date(&record.updated_at) {
+                if let Ok(value) = value.parse() {
+                    response.headers_mut().insert(header::LAST_MODIFIED, value);
+                }
+            }
+            response
+        }
         Err(err) => copal_to_s3(err.0),
     }
+}
+
+/// The engine's RFC3339 timestamp as an HTTP date, for the
+/// Last-Modified header S3 clients parse strictly (minio-go refuses
+/// reads without it). A timestamp that fails to parse omits the
+/// header rather than serving a wrong date.
+fn http_date(rfc3339: &str) -> Option<String> {
+    humantime::parse_rfc3339(rfc3339)
+        .ok()
+        .map(httpdate::fmt_http_date)
 }
 
 /// HeadObject: the metadata headers without the body.
@@ -682,7 +730,7 @@ async fn head_object<B: BlobStore>(
         Err(response) => return response,
     };
     let digest = record.digest.as_ref().expect("servable implies digest");
-    (
+    let mut response = (
         StatusCode::OK,
         [
             (header::ETAG, format!("\"{digest}\"")),
@@ -695,7 +743,13 @@ async fn head_object<B: BlobStore>(
         ],
         Body::empty(),
     )
-        .into_response()
+        .into_response();
+    if let Some(value) = http_date(&record.updated_at) {
+        if let Ok(value) = value.parse() {
+            response.headers_mut().insert(header::LAST_MODIFIED, value);
+        }
+    }
+    response
 }
 
 /// Shared read-path lookup: live file at the key, servable, and not

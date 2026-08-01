@@ -16,6 +16,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::from_env();
     tracing::info!(bind = %config.bind, db = %config.store.url, "starting copal");
 
+    let engine_access =
+        config
+            .store
+            .engine_access_key
+            .as_ref()
+            .map(|key| copal_server::engine::EngineAccess {
+                key: key.clone(),
+                namespace: config.store.namespace.clone(),
+                database: config.store.database.clone(),
+            });
     let store = Store::connect(config.store.clone()).await?;
     let open_blobs = || match &config.blob_encryption_key {
         Some(key) => ObjectStore::open_encrypted(&config.blob_root, key),
@@ -91,6 +101,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
     let mut state = AppState::new(store.clone(), blobs)
+        .with_engine_access(engine_access)
         .with_flow(registry.clone())
         .with_auth(config.auth.clone())
         .with_residencies(residencies.named.clone())

@@ -419,3 +419,87 @@ async fn a_fleet_shares_one_budget_through_the_store_ledger() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
 }
+
+/// The two enforcement layers read from one declaration set: every
+/// contract field guarded admin_only maps to an engine-guarded
+/// column, and every engine-guarded column maps back. A field added
+/// to either side alone fails here instead of drifting.
+#[test]
+fn engine_guards_match_contract_guards() {
+    let contract = copal_server::contract::contract();
+    let mut declared: Vec<(String, String)> = Vec::new();
+    for resource in &contract.resources {
+        for field in &resource.fields {
+            if field.guard.is_some() {
+                declared.push((resource.table.clone(), field.column.clone()));
+            }
+        }
+        for sub in &resource.sub_resources {
+            for field in &sub.fields {
+                if field.guard.is_some() {
+                    declared.push((sub.table.clone(), field.column.clone()));
+                }
+            }
+        }
+    }
+    declared.sort();
+    let mut engine: Vec<(String, String)> = copal_store::schema::ADMIN_GUARDED_COLUMNS
+        .iter()
+        .map(|(t, c)| (t.to_string(), c.to_string()))
+        .collect();
+    engine.sort();
+    assert_eq!(
+        declared, engine,
+        "contract guards and engine guards diverged"
+    );
+}
+
+/// A minted caller token opens a session the engine filters, ULID
+/// key ids included: the id claim's angle brackets carry the
+/// digit-leading id through the record parser.
+#[tokio::test]
+async fn minted_tokens_open_filtered_sessions() {
+    use copal_core::TenantId;
+    use copal_store::repo::file as file_repo;
+
+    let store = Store::connect(StoreConfig::memory_with_engine_access("mint-key"))
+        .await
+        .unwrap();
+    let acme = TenantId::parse("acme").unwrap();
+    let rival = TenantId::parse("rival").unwrap();
+    let spec = |path: &str| copal_core::FileSpec {
+        path: path.to_owned(),
+        content_type: "text/plain".to_owned(),
+        access: copal_core::AccessLevel::Private,
+        metadata: json!({}),
+        idempotency_key: None,
+    };
+    file_repo::create_file(&store, &acme, &spec("ours.txt"), "tester")
+        .await
+        .unwrap();
+    let theirs = file_repo::create_file(&store, &rival, &spec("theirs.txt"), "tester")
+        .await
+        .unwrap()
+        .record;
+
+    let access = copal_server::engine::EngineAccess {
+        key: "mint-key".to_owned(),
+        namespace: "copal_test".to_owned(),
+        database: "copal".to_owned(),
+    };
+    let token = copal_server::engine::mint_caller_token(
+        &access,
+        &acme,
+        &ulid::Ulid::new().to_string().to_ascii_lowercase(),
+        &["read".to_owned()],
+    );
+    let caller = store.caller(&token).await.expect("minted token binds");
+    assert!(file_repo::get_file_any(&caller, &theirs.id)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(file_repo::get_file_any(&store, &theirs.id)
+        .await
+        .unwrap()
+        .is_some());
+}

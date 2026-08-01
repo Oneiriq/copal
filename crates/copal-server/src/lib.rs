@@ -10,6 +10,7 @@ pub mod config;
 pub mod contract;
 pub mod edge;
 pub mod embed;
+pub mod engine;
 pub mod error;
 pub mod extract;
 pub mod graphql;

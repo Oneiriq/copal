@@ -102,6 +102,21 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ### Governance
 
+- **The engine is now a second enforcement layer.** Every table
+  carries `PERMISSIONS` by a mechanical rule: tables with a
+  `tenant_id` column admit only rows matching the caller token's
+  tenant, tables without one are closed to caller sessions, and
+  `file_version.created_by` is redacted unless the token carries the
+  admin claim, held equal to the contract's field guards by a parity
+  test. With `COPAL_ENGINE_ACCESS_KEY` set the store defines a record
+  access method (rotating by key replacement), copal-server mints
+  short-lived caller tokens mirroring the scope model, and
+  `Store::caller` opens engine-filtered sessions over the same
+  connection. The service session bypasses all of it, so nothing
+  changes for the request path until handlers adopt caller stores;
+  the proof that matters already holds: a repository call with no
+  tenant filter at all cannot cross tenants through a caller session.
+
 - **The pushdown disposition was wrong, and three pinned tests say
   why.** `engine_sessions.rs` proves the engine CAN tell Copal's
   callers apart: a cloned handle is its own session over the same

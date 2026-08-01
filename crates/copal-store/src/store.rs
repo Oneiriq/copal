@@ -21,6 +21,11 @@ pub struct StoreConfig {
     /// Credentials; unset for embedded engines.
     pub username: Option<String>,
     pub password: Option<String>,
+    /// HS256 key for the caller access method. Set, the schema apply
+    /// defines record access and [`Store::caller`] becomes usable;
+    /// unset, no access method exists and the engine serves only the
+    /// service session.
+    pub engine_access_key: Option<String>,
 }
 
 impl StoreConfig {
@@ -32,6 +37,15 @@ impl StoreConfig {
             database: "copal".to_owned(),
             username: None,
             password: None,
+            engine_access_key: None,
+        }
+    }
+
+    /// [`StoreConfig::memory`] with the caller access method enabled.
+    pub fn memory_with_engine_access(key: impl Into<String>) -> Self {
+        Self {
+            engine_access_key: Some(key.into()),
+            ..Self::memory()
         }
     }
 }
@@ -45,6 +59,7 @@ pub struct Store {
 impl Store {
     /// Connect and apply the idempotent schema.
     pub async fn connect(cfg: StoreConfig) -> copal_core::Result<Self> {
+        let engine_access_key = cfg.engine_access_key.clone();
         let mut builder = ConnectionConfig::builder()
             .url(cfg.url)
             .namespace(cfg.namespace)
@@ -64,7 +79,36 @@ impl Store {
 
         let store = Self { client };
         store.ensure_schema().await?;
+        if let Some(key) = engine_access_key {
+            store.ensure_caller_access(&key).await?;
+        }
         Ok(store)
+    }
+
+    /// Apply the caller access method, replacing any prior key.
+    async fn ensure_caller_access(&self, key: &str) -> copal_core::Result<()> {
+        let script = schema::access_statements(key)?.join("\n");
+        self.client
+            .query(&script)
+            .await
+            .map_err(|e| CopalError::Store(format!("caller access: {e}")))?;
+        Ok(())
+    }
+
+    /// Open a caller-bound engine session over the same connection.
+    ///
+    /// The returned store runs every repository call through a session
+    /// the engine filters by `PERMISSIONS`: rows outside the token's
+    /// tenant do not exist for it, and guarded columns come back
+    /// absent. The service store beside it keeps full authority. The
+    /// session ends when the returned store drops.
+    pub async fn caller(&self, token: &str) -> copal_core::Result<Store> {
+        let client = self
+            .client
+            .caller_session(token)
+            .await
+            .map_err(|e| CopalError::Store(format!("caller session: {e}")))?;
+        Ok(Store { client })
     }
 
     /// Apply the generated DDL. Statements are `IF NOT EXISTS`, so this

@@ -3227,7 +3227,7 @@ dependencies = [
 [[package]]
 name = "oneiriq-surql"
 version = "0.31.0"
-source = "git+https://github.com/Oneiriq/surql-rs?branch=feat%2Fcopal-janus#ef7f868a5390440fd193b32831fed8ca9777257f"
+source = "git+https://github.com/Oneiriq/surql-rs?branch=feat%2Fcopal-janus#49a2930d8baafb89a5ae9642dfd1a98d9d4954a3"
 dependencies = [
  "chrono",
  "futures",

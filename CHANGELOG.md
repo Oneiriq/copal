@@ -42,6 +42,9 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ### Ingest and serving
 
+- **A MinIO migration guide** (`docs/migration.md`): the one-run move with
+  stock tools, what the content gains on arrival, and the boundaries stated
+  plainly.
 - **S3-compatible ingest gateway** with SigV4 verification, the object plane,
   `ListObjectsV2` with delimiter collapse, multipart upload, and sealed
   per-tenant credentials. `CopyObject` and batch `DeleteObjects` followed,

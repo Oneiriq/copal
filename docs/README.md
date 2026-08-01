@@ -12,6 +12,7 @@ clients, and the breaking-change gate.
 | [api.md](api.md) | Authentication, routes, access levels, serving behavior, grants, runs, GraphQL, errors. |
 | [processing.md](processing.md) | The journal model, the standard upload pipeline, failure and retry, writing workflows. |
 | [operations.md](operations.md) | Configuration reference, key custody, sweeps, runbooks, deployment security posture. |
+| [migration.md](migration.md) | Moving a MinIO bucket in with stock tools, and what the content gains. |
 | [roadmap.md](roadmap.md) | What is left, ordered by what it blocks. Shipped work lives in the changelog. |
 | [openapi.json](openapi.json) | Generated OpenAPI 3.1 document. Drift-gated by test. |
 | [schema.graphql](schema.graphql) | Generated SDL, byte-identical to the served schema. Drift-gated by test. |

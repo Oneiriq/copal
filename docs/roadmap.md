@@ -56,10 +56,12 @@ shipped first from this tier, then the S3-compatible ingest gateway
 (SigV4, the object plane, ListObjectsV2 with delimiter collapse,
 sealed gateway credentials).
 
-1. Eventing: the engine outbox and signed webhooks shipped (events
+1. Eventing shipped whole: the engine outbox, signed webhooks (events
    born in the same transaction as the state change, LIVE SELECT as
-   the dispatcher wake). Remaining: GraphQL subscriptions over the
-   same outbox, which needs the Janus runtime subscription seam.
+   the dispatcher wake), and GraphQL subscriptions over the same
+   outbox. Janus gained a watch seam for this; the stream is served
+   as graphql-sse on the existing route, so subscriptions authenticate
+   the way every other operation does.
 2. Derivatives: image renditions shipped on the flow engine
    (deterministic paths, idempotent repeats, refusals that fail the
    derived record with the run completed). Remaining: transcodes and
@@ -71,8 +73,8 @@ sealed gateway credentials).
 4. `cg2` HMAC edge tokens shipped: stateless capabilities under
    sealed tenant edge keys, verifiable at a CDN worker with no
    database hop, expiry-bounded with whole-key revocation. The tier
-   is complete; what remains of it lives in the deferred seams above
-   (GraphQL subscriptions, external transformers).
+   is complete; what remains of it lives in the deferred seam above
+   (external transformers for transcodes and documents).
 
 ## Tier 5: post-moat audit items
 
@@ -85,11 +87,11 @@ From the July 2026 audit, in the order they matter:
 4. Per-residency encryption keys shipped: a residency seals with its
    own key, so a tenant needing key separation takes its own
    residency (which already scopes dedupe and backends).
-5. GraphQL parity (shipped): upload URLs, renditions, the event
-   outbox, webhooks, and edge tokens all joined the contract, so both
-   faces and all four generated clients carry them. Usage stays
-   REST-only, reporting a number rather than rows. Remaining:
-   subscriptions over the outbox via the Janus runtime seam.
+5. GraphQL parity shipped: upload URLs, renditions, the event outbox,
+   webhooks, and edge tokens all joined the contract, so both faces
+   and all four generated clients carry them. Subscriptions over the
+   outbox followed. Usage stays REST-only, reporting a number rather
+   than rows.
 6. Metrics shipped: a guarded Prometheus endpoint over process
    counters. Cached usage counters shipped with them, which also
    closed the concurrent-upload over-commit gap. Remaining: OTel

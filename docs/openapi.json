@@ -272,6 +272,14 @@
             }
           },
           {
+            "description": "Filter by action (indexed).",
+            "in": "query",
+            "name": "action",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "description": "Sort order; every value is backed by an index.",
             "in": "query",
             "name": "sort",

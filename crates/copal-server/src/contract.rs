@@ -38,6 +38,7 @@ pub fn contract() -> Contract {
                 sortable: vec!["created_at".into()],
                 max_page_size: 100,
                 graphql: None,
+                watchable: false,
                 actions: vec![
                     Action {
                         name: "issue_url".into(),
@@ -187,6 +188,7 @@ pub fn contract() -> Contract {
                 sortable: vec!["created_at".into()],
                 max_page_size: 100,
                 graphql: None,
+                watchable: false,
                 actions: vec![
                     Action {
                         name: "register".into(),
@@ -242,10 +244,15 @@ pub fn contract() -> Contract {
                     FieldExposure::column("created_at"),
                 ],
                 pinned: vec!["tenant_id".into()],
-                filterable: vec![],
+                filterable: vec!["action".into()],
                 sortable: vec!["created_at".into()],
                 max_page_size: 100,
                 graphql: None,
+                // The outbox is the one resource worth watching: it is
+                // where the engine records everything that happened to
+                // a file, so a client that subscribes here stops
+                // polling for processing to finish.
+                watchable: true,
                 actions: vec![],
             },
             Resource {
@@ -266,6 +273,7 @@ pub fn contract() -> Contract {
                 sortable: vec!["created_at".into()],
                 max_page_size: 100,
                 graphql: None,
+                watchable: false,
                 actions: vec![
                     Action {
                         name: "start".into(),

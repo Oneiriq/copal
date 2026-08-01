@@ -23,7 +23,16 @@ Two modes, selected by `COPAL_AUTH_MODE`.
 `keys` is the deployment mode. Requests carry `Authorization: Bearer
 ck1.<key id>.<secret>`. The tenant comes out of the key row, so a caller
 cannot name one. Every failure (absent, malformed, unknown, wrong secret,
-revoked) returns the same 401 with the same timing.
+revoked, expired) returns the same 401 with the same timing.
+
+A key can be narrowed at minting: `scopes` from the vocabulary `read`,
+`write`, `admin`, and `ttl_secs` for an expiry the engine's clock
+enforces. An unscoped key holds every scope, which is what every key
+minted before scoping existed does, so upgrading tightens nothing by
+surprise. On the GraphQL face the key's scopes ride as the request's
+principal; the contract declarations that consume them land together
+with the REST-side enforcement helper, so the two faces tighten in the
+same release rather than drifting apart.
 
 `header` is the development mode and the default until 1.0. The
 `x-copal-tenant` header is trusted as the tenant identity. The server logs a

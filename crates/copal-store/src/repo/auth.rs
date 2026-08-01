@@ -31,6 +31,11 @@ pub struct ApiKeyRow {
     pub tenant_id: String,
     pub name: String,
     pub key_hash: String,
+    /// Comma-joined scope names; empty means unscoped.
+    #[serde(default)]
+    pub scopes: String,
+    #[serde(default)]
+    pub expires_at: Option<String>,
     #[serde(default)]
     pub revoked_at: Option<String>,
     pub created_at: String,
@@ -51,6 +56,7 @@ pub async fn create_key(
     name: &str,
     key_id: &str,
     key_hash: &str,
+    scopes: &[String],
 ) -> copal_core::Result<ApiKeyRow> {
     if name.trim().is_empty() {
         return Err(CopalError::validation("key name must not be empty"));
@@ -59,6 +65,7 @@ pub async fn create_key(
         "tenant_id": tenant.as_str(),
         "name": name,
         "key_hash": key_hash,
+        "scopes": scopes.join(","),
     });
     let created = create_record(store.client(), &key_rid(key_id)?.to_string(), payload)
         .await
@@ -67,6 +74,58 @@ pub async fn create_key(
         .record
         .ok_or_else(|| CopalError::Store("create returned no record".into()))?;
     serde_json::from_value(row).map_err(|e| CopalError::Store(format!("key row shape: {e}")))
+}
+
+/// Arm a key's expiry, server-side so client clock skew cannot
+/// lengthen a lifetime. Runs after create; a caller that fails here
+/// revokes the fresh key rather than leaving an unexpiring one.
+pub async fn arm_key_expiry(store: &Store, key_id: &str, ttl_secs: u32) -> copal_core::Result<()> {
+    let query = Query::new()
+        .update_set(key_rid(key_id)?.to_string())
+        .map_err(|e| map_store_err("arm_key_expiry", e))?
+        .set_expr("expires_at", raw(format!("time::now() + {ttl_secs}s")))
+        .map_err(|e| map_store_err("arm_key_expiry", e))?
+        .return_after();
+    let rows: Vec<Value> = query_records(store.client(), &query)
+        .await
+        .map_err(|e| map_store_err("arm_key_expiry", e))?;
+    if rows.is_empty() {
+        return Err(CopalError::Store("expiry armed no row".into()));
+    }
+    Ok(())
+}
+
+/// Test support: push a key's expiry into the past, so expiry
+/// refusals are testable without sleeping. Never called by production
+/// code.
+pub async fn force_expire_key_for_test(store: &Store, key_id: &str) -> copal_core::Result<()> {
+    let query = Query::new()
+        .update_set(key_rid(key_id)?.to_string())
+        .map_err(|e| map_store_err("force_expire_key", e))?
+        .set_expr("expires_at", raw("time::now() - 1h"))
+        .map_err(|e| map_store_err("force_expire_key", e))?
+        .return_after();
+    query_records::<Value>(store.client(), &query)
+        .await
+        .map_err(|e| map_store_err("force_expire_key", e))?;
+    Ok(())
+}
+
+/// Fetch one key by id ONLY if it has not expired; the engine's clock
+/// decides, matching the grant discipline. An expired key reads as
+/// absent, which the caller's timing burn already makes
+/// indistinguishable from an unknown one.
+pub async fn fetch_live_key(store: &Store, key_id: &str) -> copal_core::Result<Option<ApiKeyRow>> {
+    let query = Query::new()
+        .select(None)
+        .from_table(TABLE)
+        .map_err(|e| map_store_err("fetch_live_key", e))?
+        .where_str(format!("id = {}", key_rid(key_id)?))
+        .where_str("(expires_at IS NONE OR expires_at > time::now())");
+    let mut rows: Vec<ApiKeyRow> = query_records(store.client(), &query)
+        .await
+        .map_err(|e| map_store_err("fetch_live_key", e))?;
+    Ok(rows.pop())
 }
 
 /// Fetch one key by id, for verification. Unscoped on purpose: the
@@ -89,6 +148,8 @@ pub async fn list_keys(store: &Store, tenant: &TenantId) -> copal_core::Result<V
         .select(Some(vec![
             "id".to_owned(),
             "name".to_owned(),
+            "scopes".to_owned(),
+            "expires_at".to_owned(),
             "created_at".to_owned(),
             "revoked_at".to_owned(),
         ]))

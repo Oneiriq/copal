@@ -299,3 +299,117 @@ async fn admin_token_rotation_window_accepts_both() {
         assert_eq!(response.status(), expected, "{token}");
     }
 }
+
+#[tokio::test]
+async fn keys_narrow_to_scopes_and_expire() {
+    let store = Store::connect(StoreConfig::memory()).await.unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let blobs = ObjectStore::open(dir.path().to_str().unwrap()).unwrap();
+    let state = AppState::new(store.clone(), blobs).with_auth(AuthConfig {
+        mode: AuthMode::ApiKeys,
+        admin_token: Some(ADMIN.into()),
+        admin_token_previous: None,
+    });
+    let router = build_router(state);
+    let _dir = dir;
+
+    // A scoped, expiring key mints and works while it lives.
+    let response = router
+        .clone()
+        .oneshot(request(
+            "POST",
+            "/v1/admin/tenants/acme/keys",
+            None,
+            Some(ADMIN),
+            Some(json!({ "name": "ci", "scopes": ["read"], "ttl_secs": 3600 })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let body = json_body(response).await;
+    assert_eq!(body["scopes"][0], "read");
+    assert_eq!(body["expires_in_secs"], 3600);
+    let key_id = body["key_id"].as_str().unwrap().to_owned();
+    let token = body["token"].as_str().unwrap().to_owned();
+
+    let response = router
+        .clone()
+        .oneshot(request("GET", "/v1/files", Some(&token), None, None))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // The listing shows the narrowing and never the hash.
+    let listing = json_body(
+        router
+            .clone()
+            .oneshot(request(
+                "GET",
+                "/v1/admin/tenants/acme/keys",
+                None,
+                Some(ADMIN),
+                None,
+            ))
+            .await
+            .unwrap(),
+    )
+    .await;
+    let row = listing["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|k| k["name"] == "ci")
+        .expect("the minted key lists");
+    assert_eq!(row["scopes"], "read");
+    assert!(row["expires_at"].is_string(), "{row:?}");
+    assert!(row.get("key_hash").is_none());
+
+    // Past its expiry the key refuses exactly like a garbage token:
+    // one uniform refusal, no oracle.
+    copal_store::repo::auth::force_expire_key_for_test(&store, &key_id)
+        .await
+        .unwrap();
+    let expired = router
+        .clone()
+        .oneshot(request("GET", "/v1/files", Some(&token), None, None))
+        .await
+        .unwrap();
+    assert_eq!(expired.status(), StatusCode::UNAUTHORIZED);
+    let expired_body = json_body(expired).await;
+    let garbage = router
+        .clone()
+        .oneshot(request(
+            "GET",
+            "/v1/files",
+            Some("ck1.junk.junk"),
+            None,
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(json_body(garbage).await, expired_body);
+
+    // The mint surface refuses what it cannot honor.
+    for (payload, needle) in [
+        (json!({ "name": "x", "scopes": ["root"] }), "unknown scope"),
+        (json!({ "name": "x", "ttl_secs": 0 }), "at least 1"),
+    ] {
+        let response = router
+            .clone()
+            .oneshot(request(
+                "POST",
+                "/v1/admin/tenants/acme/keys",
+                None,
+                Some(ADMIN),
+                Some(payload),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = json_body(response).await;
+        assert!(
+            body["error"]["message"].as_str().unwrap().contains(needle),
+            "{body:?}",
+        );
+    }
+}

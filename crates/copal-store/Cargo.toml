@@ -25,3 +25,6 @@ tokio = { workspace = true }
 # surql-rs deliberately does not pull them. Declaring kv-mem here wires
 # the mem:// engine into test builds only, via Cargo feature unification.
 surrealdb = { version = "3", default-features = false, features = ["kv-mem"] }
+hmac = "0.12"
+base64 = "0.22"
+sha2.workspace = true

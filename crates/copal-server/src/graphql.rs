@@ -640,8 +640,17 @@ async fn execute<B: BlobStore>(
     // RequireTenant middleware rejects each operation with the coded
     // error; GraphQL convention keeps auth failures in the body.
     let mut ctx = JanusContext::new();
-    if let Ok(tenant) = crate::auth::authenticate(&gql.app, &headers).await {
+    if let Ok((tenant, identity)) =
+        crate::auth::authenticate_with_identity(&gql.app, &headers).await
+    {
         ctx.insert(Tenant(tenant));
+        // In key mode the key's scopes ride as the principal, so the
+        // dispatcher can enforce whatever the contract declares. The
+        // declarations land with the REST-side enforcement helper, so
+        // the two faces tighten together rather than drifting apart.
+        if let Some(key) = identity {
+            ctx.insert(janus::runtime::Principal::new(key.key_id, key.scopes));
+        }
     }
     if let Some(origin) = crate::app::forwarded_origin(&headers) {
         ctx.insert(RequestOrigin(origin));

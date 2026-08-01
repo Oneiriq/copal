@@ -69,18 +69,44 @@ fn refused() -> ApiError {
     CopalError::unauthorized("missing or invalid credentials").into()
 }
 
+/// The scope vocabulary keys narrow to. An unscoped key holds all of
+/// them, which is what every key minted before scoping existed does.
+pub const KEY_SCOPES: [&str; 3] = ["read", "write", "admin"];
+
+/// Who a verified key belongs to and what it may do.
+#[derive(Debug, Clone)]
+pub struct KeyIdentity {
+    /// The bare key id, carried as the principal's subject for audit.
+    pub key_id: String,
+    /// The scopes this key holds, already expanded: an unscoped key
+    /// reads as holding every scope in [`KEY_SCOPES`].
+    pub scopes: Vec<String>,
+}
+
 /// Resolve the request's tenant per the configured mode.
 pub async fn authenticate<B: BlobStore>(
     state: &AppState<B>,
     headers: &HeaderMap,
 ) -> Result<TenantId, ApiError> {
+    authenticate_with_identity(state, headers)
+        .await
+        .map(|(tenant, _)| tenant)
+}
+
+/// Resolve the tenant plus, in key mode, the key's identity and
+/// scopes. Header mode carries no identity below the tenant, which is
+/// exactly what that mode is: development trust.
+pub async fn authenticate_with_identity<B: BlobStore>(
+    state: &AppState<B>,
+    headers: &HeaderMap,
+) -> Result<(TenantId, Option<KeyIdentity>), ApiError> {
     match state.auth.mode {
         AuthMode::TrustedHeader => {
             let raw = headers
                 .get("x-copal-tenant")
                 .and_then(|v| v.to_str().ok())
                 .ok_or_else(|| CopalError::validation("missing x-copal-tenant header"))?;
-            Ok(TenantId::parse(raw)?)
+            Ok((TenantId::parse(raw)?, None))
         }
         AuthMode::ApiKeys => {
             let bearer = headers
@@ -89,7 +115,9 @@ pub async fn authenticate<B: BlobStore>(
                 .and_then(|v| v.strip_prefix("Bearer "))
                 .ok_or_else(refused)?;
             let token = ApiKeyToken::parse(bearer).map_err(|_| refused())?;
-            let row = auth_repo::fetch_key(&state.store, &token.key_id).await?;
+            // Expiry rides the fetch, with the engine as the clock: an
+            // expired key reads as absent.
+            let row = auth_repo::fetch_live_key(&state.store, &token.key_id).await?;
             let Some(row) = row else {
                 // Burn the same hash-compare an existing key would
                 // cost, so "unknown id" and "wrong secret" are
@@ -103,7 +131,19 @@ pub async fn authenticate<B: BlobStore>(
             if row.revoked_at.is_some() {
                 return Err(refused());
             }
-            TenantId::parse(&row.tenant_id).map_err(|_| refused())
+            let tenant = TenantId::parse(&row.tenant_id).map_err(|_| refused())?;
+            let scopes: Vec<String> = if row.scopes.is_empty() {
+                KEY_SCOPES.iter().map(|s| s.to_string()).collect()
+            } else {
+                row.scopes.split(',').map(str::to_owned).collect()
+            };
+            Ok((
+                tenant,
+                Some(KeyIdentity {
+                    key_id: row.key_id(),
+                    scopes,
+                }),
+            ))
         }
     }
 }

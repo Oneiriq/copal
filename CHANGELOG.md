@@ -95,6 +95,12 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ### Governance
 
+- **Keys narrow.** A `ck1` key can be minted with scopes (`read`, `write`,
+  `admin`) and an expiry the engine's clock enforces; an expired key refuses
+  with the same uniform 401 as a wrong one. An unscoped key holds every scope,
+  so nothing existing tightens by surprise. In key mode the scopes ride the
+  GraphQL request as its principal, ready for the contract's scope
+  declarations.
 - **The contract declares its own ceilings.** The GraphQL depth and
   complexity limits were hand-wired at the router, invisible to the
   artifacts and the differ. They now live in the contract, the served

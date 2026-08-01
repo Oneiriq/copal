@@ -862,6 +862,13 @@ async fn readyz<B: BlobStore>(
 #[derive(Debug, Deserialize)]
 struct MintKeyRequest {
     name: String,
+    /// Scope names from [`crate::auth::KEY_SCOPES`]; empty mints an
+    /// unscoped key, which holds all of them.
+    #[serde(default)]
+    scopes: Vec<String>,
+    /// Seconds until the key expires; absent means it never does.
+    #[serde(default)]
+    ttl_secs: Option<u32>,
 }
 
 /// Mint a tenant API key. The bearer token appears exactly once, in
@@ -874,6 +881,17 @@ async fn mint_key<B: BlobStore>(
 ) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
     crate::auth::require_admin(&state, &headers)?;
     let tenant = TenantId::parse(&tenant)?;
+    for scope in &request.scopes {
+        if !crate::auth::KEY_SCOPES.contains(&scope.as_str()) {
+            return Err(CopalError::validation(format!(
+                "unknown scope {scope:?}; scopes are read, write, admin",
+            ))
+            .into());
+        }
+    }
+    if request.ttl_secs == Some(0) {
+        return Err(CopalError::validation("ttl_secs must be at least 1").into());
+    }
     let token = copal_sign::ApiKeyToken::mint();
     let row = copal_store::repo::auth::create_key(
         &state.store,
@@ -881,8 +899,19 @@ async fn mint_key<B: BlobStore>(
         &request.name,
         &token.key_id,
         &token.secret_hash(),
+        &request.scopes,
     )
     .await?;
+    if let Some(ttl) = request.ttl_secs {
+        // A key that was asked to expire must never outlive a failure
+        // to arm that expiry: revoke it rather than leave it eternal.
+        if let Err(err) =
+            copal_store::repo::auth::arm_key_expiry(&state.store, &row.key_id(), ttl).await
+        {
+            let _ = copal_store::repo::auth::revoke_key(&state.store, &tenant, &row.key_id()).await;
+            return Err(err.into());
+        }
+    }
     copal_store::repo::auth::record_audit(
         &state.store,
         &tenant,
@@ -898,6 +927,8 @@ async fn mint_key<B: BlobStore>(
         Json(json!({
             "key_id": row.key_id(),
             "name": row.name,
+            "scopes": request.scopes,
+            "expires_in_secs": request.ttl_secs,
             "token": token.encode(),
             "created_at": row.created_at,
         })),

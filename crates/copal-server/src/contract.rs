@@ -50,6 +50,7 @@ pub fn contract() -> Contract {
                 max_page_size: 100,
                 graphql: None,
                 watchable: false,
+                reads_require: vec![],
                 sub_resources: vec![SubResource {
                     name: "versions".into(),
                     table: "file_version".into(),
@@ -103,6 +104,7 @@ pub fn contract() -> Contract {
                         output: ActionOutput::Json,
                         description: Some("Issue a signed URL for a servable file.".into()),
                         graphql_field: None,
+                        requires: vec![],
                     },
                     Action {
                         name: "issue_upload_url".into(),
@@ -125,6 +127,7 @@ pub fn contract() -> Contract {
                                 .into(),
                         ),
                         graphql_field: None,
+                        requires: vec![],
                     },
                     Action {
                         name: "issue_edge_url".into(),
@@ -147,6 +150,7 @@ pub fn contract() -> Contract {
                                 .into(),
                         ),
                         graphql_field: None,
+                        requires: vec![],
                     },
                     Action {
                         name: "request_rendition".into(),
@@ -193,6 +197,7 @@ pub fn contract() -> Contract {
                                 .into(),
                         ),
                         graphql_field: None,
+                        requires: vec![],
                     },
                     Action {
                         name: "remove".into(),
@@ -206,6 +211,7 @@ pub fn contract() -> Contract {
                                 .into(),
                         ),
                         graphql_field: None,
+                        requires: vec![],
                     },
                 ],
             },
@@ -224,6 +230,7 @@ pub fn contract() -> Contract {
                 max_page_size: 100,
                 graphql: None,
                 watchable: false,
+                reads_require: vec![],
                 sub_resources: vec![SubResource {
                     name: "deliveries".into(),
                     table: "webhook_delivery".into(),
@@ -270,6 +277,7 @@ pub fn contract() -> Contract {
                             "Register an endpoint. The signing secret appears once, here.".into(),
                         ),
                         graphql_field: None,
+                        requires: vec![],
                     },
                     Action {
                         name: "remove".into(),
@@ -281,6 +289,7 @@ pub fn contract() -> Contract {
                             "Deactivate an endpoint; pending deliveries settle as failed.".into(),
                         ),
                         graphql_field: None,
+                        requires: vec![],
                     },
                 ],
             },
@@ -306,6 +315,7 @@ pub fn contract() -> Contract {
                 // a file, so a client that subscribes here stops
                 // polling for processing to finish.
                 watchable: true,
+                reads_require: vec![],
                 sub_resources: vec![],
                 actions: vec![],
             },
@@ -328,6 +338,7 @@ pub fn contract() -> Contract {
                 max_page_size: 100,
                 graphql: None,
                 watchable: false,
+                reads_require: vec![],
                 sub_resources: vec![],
                 actions: vec![
                     Action {
@@ -377,6 +388,7 @@ pub fn contract() -> Contract {
                         output: ActionOutput::Json,
                         description: Some("Start a workflow run.".into()),
                         graphql_field: None,
+                        requires: vec![],
                     },
                     Action {
                         name: "retry".into(),
@@ -390,6 +402,7 @@ pub fn contract() -> Contract {
                                 .into(),
                         ),
                         graphql_field: None,
+                        requires: vec![],
                     },
                 ],
             },

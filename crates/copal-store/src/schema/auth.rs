@@ -112,6 +112,11 @@ fn api_key_table() -> TableDefinition {
             // reads as replace-by-name.
             built(string_field("name").assertion("$value != ''")),
             built(string_field("key_hash").assertion("$value != ''")),
+            // Comma-joined scope names; empty means unscoped, which is
+            // what every key minted before scoping existed reads as,
+            // so an upgrade tightens nothing by surprise.
+            built(string_field("scopes").default("''")),
+            built(datetime_field("expires_at").nullable(true)),
             built(datetime_field("revoked_at").nullable(true)),
             built(
                 datetime_field("created_at")

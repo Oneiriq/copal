@@ -315,3 +315,97 @@ async fn the_sweep_recomputes_a_drifted_counter() {
         "the recount restores the truth",
     );
 }
+
+#[tokio::test]
+async fn abandoned_resumable_sessions_give_their_reservation_back() {
+    use copal_blob::ObjectStore as Store2;
+    use copal_server::app::Residencies;
+    use copal_server::sweeps::{run_pass, SweepConfig};
+    use copal_store::repo::tenant as tenant_repo;
+
+    // A resumable session reserves its declared length up front, so a
+    // client that starts sessions and walks away could deny its own
+    // tenant headroom until the next reconciliation. Terminating and
+    // sweeping both release it.
+    let store = Store::connect(StoreConfig::memory()).await.unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let blobs = Store2::open(dir.path().to_str().unwrap()).unwrap();
+    let state = AppState::new(store.clone(), blobs.clone()).with_auth(AuthConfig {
+        admin_token: Some("root".to_owned()),
+        ..AuthConfig::default()
+    });
+    let router = build_router(state);
+    let tenant = copal_core::TenantId::parse("acme").unwrap();
+
+    let start = |path: &'static str, length: usize| {
+        let router = router.clone();
+        async move {
+            let request = Request::builder()
+                .method("POST")
+                .uri("/v1/tus")
+                .header("x-copal-tenant", "acme")
+                .header("tus-resumable", "1.0.0")
+                .header("upload-length", length.to_string())
+                .header(
+                    "upload-metadata",
+                    format!(
+                        "path {}",
+                        base64::engine::general_purpose::STANDARD.encode(path),
+                    ),
+                )
+                .body(Body::empty())
+                .unwrap();
+            let response = router.oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::CREATED);
+            response.headers()["location"].to_str().unwrap().to_owned()
+        }
+    };
+
+    let terminated = start("abandoned/one.bin", 5_000).await;
+    let swept = start("abandoned/two.bin", 7_000).await;
+    assert_eq!(
+        tenant_repo::cached_usage(&store, &tenant).await.unwrap(),
+        Some((12_000, 2)),
+        "both sessions hold their declared length",
+    );
+
+    // Terminating returns that session's bytes at once.
+    let request = Request::builder()
+        .method("DELETE")
+        .uri(&terminated)
+        .header("x-copal-tenant", "acme")
+        .header("tus-resumable", "1.0.0")
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(
+        router.clone().oneshot(request).await.unwrap().status(),
+        StatusCode::NO_CONTENT,
+    );
+    assert_eq!(
+        tenant_repo::cached_usage(&store, &tenant)
+            .await
+            .unwrap()
+            .unwrap()
+            .0,
+        7_000,
+        "termination releases immediately",
+    );
+
+    // Sweeping the abandoned one releases the rest.
+    let _ = swept;
+    let config = SweepConfig {
+        tus_session_ttl_secs: 0,
+        ..SweepConfig::default()
+    };
+    let report = run_pass(&store, &Residencies::local_only(blobs), &config).await;
+    assert_eq!(report.tus_sessions_swept, 1);
+    assert_eq!(
+        tenant_repo::cached_usage(&store, &tenant)
+            .await
+            .unwrap()
+            .unwrap()
+            .0,
+        0,
+        "the sweep releases what the client abandoned",
+    );
+}

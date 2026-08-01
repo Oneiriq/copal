@@ -114,7 +114,10 @@ stack still glues object storage to a separate vector database.
    passages so a hit names the part that answers the question.
    Remaining: a relevance floor, since nearest-neighbour search
    returns its k nearest however far away they are.
-4. On-the-fly rendition URLs, transcodes, and multi-source ingestion,
+4. Correctness cleanup (shipped): reservations released on every
+   path that ends an upload, S3's minimum part size enforced, and
+   ListMultipartUploads.
+5. On-the-fly rendition URLs, transcodes, and multi-source ingestion,
    the axes the hosted services sell.
 
 ## Tier 4: platform depth

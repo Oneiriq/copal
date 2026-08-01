@@ -214,6 +214,26 @@ pub async fn delete_upload(store: &Store, upload_id: &str) -> copal_core::Result
     Ok(())
 }
 
+/// A tenant's open sessions, newest first.
+pub async fn list_uploads(
+    store: &Store,
+    tenant: &TenantId,
+    limit: i64,
+) -> copal_core::Result<Vec<MultipartRow>> {
+    let query = Query::new()
+        .select(None)
+        .from_table(TABLE)
+        .map_err(|e| map_store_err("list_uploads", e))?
+        .where_(eq("tenant_id", tenant.as_str()))
+        .order_by("created_at", "DESC")
+        .map_err(|e| map_store_err("list_uploads", e))?
+        .limit(limit)
+        .map_err(|e| map_store_err("list_uploads", e))?;
+    query_records(store.client(), &query)
+        .await
+        .map_err(|e| map_store_err("list_uploads", e))
+}
+
 /// Sessions older than the TTL, for the sweep.
 pub async fn list_expired(
     store: &Store,

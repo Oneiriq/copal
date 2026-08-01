@@ -40,6 +40,11 @@ pub struct Limits {
     /// How long a resumable-upload session may live between appends
     /// before the sweep discards it.
     pub tus_session_ttl_secs: u32,
+    /// Smallest acceptable multipart part, last part exempt. S3's
+    /// own floor by default, because clients written against S3 rely
+    /// on the rejection; deployments with different needs can lower
+    /// it knowingly.
+    pub min_multipart_part_bytes: i64,
     /// Allow webhook endpoints that resolve to private addresses.
     /// Off by default: a tenant-supplied URL pointing inside the
     /// deployment is server-side request forgery. Deployments whose
@@ -55,6 +60,7 @@ impl Default for Limits {
             request_timeout_secs: 30,
             transfer_timeout_secs: 3_600,
             tus_session_ttl_secs: 86_400,
+            min_multipart_part_bytes: 5 * 1024 * 1024,
             allow_private_webhook_targets: false,
         }
     }
@@ -1806,6 +1812,7 @@ async fn redeem_upload_grant<B: BlobStore>(
     let stored = match backend.put_streamed(body).await {
         Ok(stored) => stored,
         Err(err) => {
+            state.abandon_reservation(&tenant, declared_len).await;
             let _ = file_repo::transition(
                 &state.store,
                 &tenant,
@@ -1831,6 +1838,9 @@ async fn redeem_upload_grant<B: BlobStore>(
         size_bytes,
         storage_path,
     } = stored;
+    state
+        .settle_reservation(&tenant, declared_len, size_bytes)
+        .await;
     let record = finalize_new_content(
         &state,
         &tenant,

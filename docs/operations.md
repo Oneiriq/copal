@@ -232,6 +232,13 @@ Physical storage can be lower (dedupe) or higher (version history
 until GC); the accounting follows what tenants can see and delete.
 The audit trail records `tenant.quota_set` and `tenant.quota_cleared`.
 
+Reservations are released on every path that can end an upload:
+completion settles against the real size, failures and digest
+mismatches give the whole reservation back, terminating a resumable
+session or aborting a multipart upload releases immediately, and the
+sweep releases what a client abandoned without saying so. The usage
+recount remains the backstop, not the mechanism.
+
 Usage is a maintained counter rather than an aggregate per upload,
 because summing a tenant's files stops being cheap once there are
 many. Uploads whose length is declared reserve their bytes in the

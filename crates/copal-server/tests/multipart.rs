@@ -28,13 +28,21 @@ struct Stack {
 }
 
 async fn stack() -> Stack {
+    stack_with_floor(1).await
+}
+
+async fn stack_with_floor(floor: i64) -> Stack {
     let store = Store::connect(StoreConfig::memory()).await.unwrap();
     let dir = tempfile::tempdir().unwrap();
     let blobs = ObjectStore::open(dir.path().to_str().unwrap()).unwrap();
-    let state = AppState::new(store.clone(), blobs.clone()).with_auth(AuthConfig {
+    let mut state = AppState::new(store.clone(), blobs.clone()).with_auth(AuthConfig {
         admin_token: Some("root".to_owned()),
         ..AuthConfig::default()
     });
+    // These tests exercise assembly and lifecycle, not part sizing;
+    // pushing 5 MiB per part to satisfy the default floor would buy
+    // nothing. The floor has its own test below.
+    state.limits.min_multipart_part_bytes = floor;
     let cipher = BlobCipher::from_hex(MASTER_KEY).unwrap();
     Stack {
         gateway: s3_router(state.clone(), cipher.clone()),
@@ -368,5 +376,126 @@ async fn aborted_and_abandoned_sessions_release_their_parts() {
         staged_part_files(&stack.dir),
         0,
         "both sessions released their parts",
+    );
+}
+
+#[tokio::test]
+async fn undersized_parts_and_open_sessions_behave_like_s3() {
+    let stack = stack_with_floor(5 * 1024 * 1024).await;
+    let (key_id, secret) = mint(&stack.admin).await;
+    let gateway = &stack.gateway;
+
+    let response = gateway
+        .clone()
+        .oneshot(signed(
+            "POST",
+            "/acme/small/parts.bin",
+            "uploads=",
+            &key_id,
+            &secret,
+            Vec::new(),
+        ))
+        .await
+        .unwrap();
+    let body = text_body(response).await;
+    let upload_id = between(&body, "<UploadId>", "</UploadId>");
+
+    // An open session is listable, which is how clients find work to
+    // resume or abort.
+    let response = gateway
+        .clone()
+        .oneshot(signed(
+            "GET",
+            "/acme",
+            "uploads=",
+            &key_id,
+            &secret,
+            Vec::new(),
+        ))
+        .await
+        .unwrap();
+    let listing = text_body(response).await;
+    assert!(listing.contains("<Key>small/parts.bin</Key>"), "{listing}");
+    assert!(listing.contains(&upload_id), "{listing}");
+
+    // Two small parts: the first is under the 5 MiB floor every S3
+    // implementation enforces, so completion must refuse rather than
+    // assemble a file no other implementation would have accepted.
+    for number in [1, 2] {
+        let response = gateway
+            .clone()
+            .oneshot(signed(
+                "PUT",
+                "/acme/small/parts.bin",
+                &format!("partNumber={number}&uploadId={upload_id}"),
+                &key_id,
+                &secret,
+                vec![b'x'; 1_000],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+    let response = gateway
+        .clone()
+        .oneshot(signed(
+            "POST",
+            "/acme/small/parts.bin",
+            &format!("uploadId={upload_id}"),
+            &key_id,
+            &secret,
+            Vec::new(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let refusal = text_body(response).await;
+    assert!(refusal.contains("EntityTooSmall"), "{refusal}");
+
+    // A single small part is fine: the last part carries no minimum,
+    // and a one-part upload is all last part.
+    let response = gateway
+        .clone()
+        .oneshot(signed(
+            "POST",
+            "/acme/small/single.bin",
+            "uploads=",
+            &key_id,
+            &secret,
+            Vec::new(),
+        ))
+        .await
+        .unwrap();
+    let body = text_body(response).await;
+    let single = between(&body, "<UploadId>", "</UploadId>");
+    let response = gateway
+        .clone()
+        .oneshot(signed(
+            "PUT",
+            "/acme/small/single.bin",
+            &format!("partNumber=1&uploadId={single}"),
+            &key_id,
+            &secret,
+            vec![b'y'; 10],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let response = gateway
+        .clone()
+        .oneshot(signed(
+            "POST",
+            "/acme/small/single.bin",
+            &format!("uploadId={single}"),
+            &key_id,
+            &secret,
+            Vec::new(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "one part is the last part"
     );
 }

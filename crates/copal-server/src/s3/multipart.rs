@@ -196,6 +196,23 @@ pub async fn complete_multipart<B: BlobStore>(
         }
     }
 
+    // Every part but the last must meet the floor. The parts are
+    // ordered, so the last one is exempt by position, and a
+    // single-part upload is all last part.
+    let floor = gateway.app.limits.min_multipart_part_bytes;
+    if let Some((_, leading)) = parts.split_last() {
+        if let Some(undersized) = leading.iter().find(|p| p.size_bytes < floor) {
+            return super::xml_error(
+                StatusCode::BAD_REQUEST,
+                "EntityTooSmall",
+                &format!(
+                    "part {} is {} bytes; every part but the last must be at least {floor}",
+                    undersized.part_number, undersized.size_bytes,
+                ),
+            );
+        }
+    }
+
     let state = &gateway.app;
     let total: u64 = parts.iter().map(|p| p.size_bytes.max(0) as u64).sum();
     if let Err(err) = state.quota_headroom(tenant, Some(total)).await {
@@ -256,6 +273,7 @@ pub async fn complete_multipart<B: BlobStore>(
     let stored = match backend.put_streamed(Box::pin(assembled)).await {
         Ok(stored) => stored,
         Err(err) => {
+            state.abandon_reservation(tenant, Some(total)).await;
             let _ = file_repo::transition(
                 &state.store,
                 tenant,
@@ -274,6 +292,9 @@ pub async fn complete_multipart<B: BlobStore>(
         storage_path,
     } = stored;
 
+    state
+        .settle_reservation(tenant, Some(total), size_bytes)
+        .await;
     if let Err(err) = finalize_new_content(
         state,
         tenant,
@@ -355,6 +376,36 @@ pub async fn list_parts<B: BlobStore>(
         xml_escape(bucket),
         xml_escape(&session.object_key),
         xml_escape(upload_id),
+        entries,
+    );
+    xml_response(StatusCode::OK, body)
+}
+
+/// GET /{bucket}?uploads
+pub async fn list_uploads<B: BlobStore>(
+    gateway: &S3Gateway<B>,
+    tenant: &TenantId,
+    bucket: &str,
+) -> Response {
+    let sessions = match mpu_repo::list_uploads(&gateway.app.store, tenant, 1_000).await {
+        Ok(sessions) => sessions,
+        Err(err) => return copal_to_s3(err),
+    };
+    let entries: String = sessions
+        .iter()
+        .map(|session| {
+            format!(
+                "<Upload><Key>{}</Key><UploadId>{}</UploadId><Initiated>{}</Initiated></Upload>",
+                xml_escape(&session.object_key),
+                xml_escape(&session.upload_id()),
+                xml_escape(&session.created_at),
+            )
+        })
+        .collect();
+    let body = format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+<ListMultipartUploadsResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"><Bucket>{}</Bucket><IsTruncated>false</IsTruncated>{}</ListMultipartUploadsResult>",
+        xml_escape(bucket),
         entries,
     );
     xml_response(StatusCode::OK, body)

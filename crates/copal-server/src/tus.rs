@@ -333,6 +333,11 @@ async fn append<B: BlobStore>(
             &stored.storage_path,
         )
         .await?;
+        // The session reserved its declared length at creation;
+        // settle against what actually landed.
+        state
+            .settle_reservation(&tenant, Some(session.upload_length), stored.size_bytes)
+            .await;
         tus_repo::delete_session(&state.store, &id).await?;
     }
 
@@ -369,6 +374,9 @@ async fn terminate<B: BlobStore>(
         )
         .await;
     }
+    state
+        .abandon_reservation(&tenant, Some(session.upload_length))
+        .await;
     tus_repo::delete_session(&state.store, &id).await?;
 
     let mut response = StatusCode::NO_CONTENT.into_response();
@@ -398,6 +406,15 @@ pub async fn sweep_expired<B: BlobStore>(
                 FileState::Uploading,
                 FileState::Failed,
                 Default::default(),
+            )
+            .await;
+            // An abandoned session held its declared length against
+            // the tenant's ceiling; release it now rather than
+            // waiting for the usage recount.
+            let _ = copal_store::repo::tenant::release_usage(
+                store,
+                &tenant,
+                session.upload_length as i64,
             )
             .await;
         }

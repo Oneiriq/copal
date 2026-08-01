@@ -153,7 +153,13 @@ PUT    /{bucket}/{key}?partNumber=N&uploadId=X        UploadPart
 GET    /{bucket}/{key}?uploadId=X                     ListParts
 POST   /{bucket}/{key}?uploadId=X                     CompleteMultipartUpload
 DELETE /{bucket}/{key}?uploadId=X                     AbortMultipartUpload
+GET    /{bucket}?uploads                              ListMultipartUploads
 ```
+
+Every part but the last must be at least 5 MiB, as S3 requires;
+completion refuses with `EntityTooSmall` otherwise, because a client
+written against S3 expects that rejection. A single-part upload is
+all last part and carries no minimum.
 
 Parts stage individually, so they may arrive in any order, in
 parallel, and a re-sent part number replaces its predecessor. Each

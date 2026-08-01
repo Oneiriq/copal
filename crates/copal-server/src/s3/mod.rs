@@ -302,6 +302,11 @@ async fn list_objects<B: BlobStore>(
         Err(response) => return response,
     };
     let params = parse_query(uri.query().unwrap_or_default());
+    // `?uploads` on the bucket asks for open multipart sessions, not
+    // for objects.
+    if params.contains_key("uploads") {
+        return multipart::list_uploads(&gateway, &tenant, &bucket).await;
+    }
     let prefix = params.get("prefix").cloned().unwrap_or_default();
     let delimiter = params.get("delimiter").cloned().unwrap_or_default();
     let max_keys = params
@@ -528,6 +533,7 @@ async fn put_object<B: BlobStore>(
     let stored = match backend.put_streamed(counted).await {
         Ok(stored) => stored,
         Err(err) => {
+            state.abandon_reservation(&tenant, declared_len).await;
             let _ = file_repo::transition(
                 &state.store,
                 &tenant,
@@ -556,6 +562,7 @@ async fn put_object<B: BlobStore>(
 
     if let Some(declared) = declared_sha256 {
         if declared != digest.as_str() {
+            state.abandon_reservation(&tenant, declared_len).await;
             let _ = file_repo::transition(
                 &state.store,
                 &tenant,
@@ -573,6 +580,9 @@ async fn put_object<B: BlobStore>(
         }
     }
 
+    state
+        .settle_reservation(&tenant, declared_len, size_bytes)
+        .await;
     match finalize_new_content(
         state,
         &tenant,

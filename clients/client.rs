@@ -31,6 +31,25 @@ pub struct FilePage {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+pub struct FileVersion {
+    pub id: String,
+    pub number: i64,
+    pub content_type: String,
+    pub size: i64,
+    pub digest: String,
+    pub metadata_snapshot: Value,
+    pub created_by: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct FileVersionPage {
+    pub items: Vec<FileVersion>,
+    #[serde(default)]
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct Webhook {
     pub id: String,
     pub target_url: String,
@@ -42,6 +61,25 @@ pub struct Webhook {
 #[derive(Debug, Clone, Deserialize)]
 pub struct WebhookPage {
     pub items: Vec<Webhook>,
+    #[serde(default)]
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct WebhookDelivery {
+    pub id: String,
+    pub state: String,
+    pub attempts: i64,
+    #[serde(default)]
+    pub last_status: Option<i64>,
+    #[serde(default)]
+    pub next_attempt_at: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct WebhookDeliveryPage {
+    pub items: Vec<WebhookDelivery>,
     #[serde(default)]
     pub next_cursor: Option<String>,
 }
@@ -117,6 +155,18 @@ impl Client {
         Ok(self.http.get(url).header("x-copal-tenant", &self.tenant).send().await?.error_for_status()?.json().await?)
     }
 
+    pub async fn list_versions_files(&self, id: &str, limit: Option<u32>, cursor: Option<&str>)                  -> Result<FileVersionPage, Error> {
+        let mut url = format!("{}/v1/files/{id}/versions", self.base_url);
+        let mut query: Vec<(String, String)> = Vec::new();
+                         if let Some(limit) = limit { query.push(("limit".into(), limit.to_string())); }
+                         if let Some(cursor) = cursor { query.push(("cursor".into(), cursor.to_string())); }
+                         if !query.is_empty() {
+                             let joined: Vec<String> = query.iter().map(|(k, v)| format!("{k}={v}")).collect();
+                             url = format!("{url}?{}", joined.join("&"));
+                         }
+                         Ok(self.http.get(url).header("x-copal-tenant", &self.tenant)                 .send().await?.error_for_status()?.json().await?)
+    }
+
     pub async fn issue_url_file(&self, id: &str, input: Value) -> Result<Value, Error> {
         let url = format!("{}/v1/files/{id}/url", self.base_url);
         Ok(self.http.post(url).header("x-copal-tenant", &self.tenant).json(&input).send().await?.error_for_status()?.json().await?)
@@ -158,6 +208,18 @@ impl Client {
     pub async fn get_webhook(&self, id: &str) -> Result<Webhook, Error> {
         let url = format!("{}/v1/webhooks/{id}", self.base_url);
         Ok(self.http.get(url).header("x-copal-tenant", &self.tenant).send().await?.error_for_status()?.json().await?)
+    }
+
+    pub async fn list_deliveries_webhooks(&self, id: &str, limit: Option<u32>, cursor: Option<&str>)                  -> Result<WebhookDeliveryPage, Error> {
+        let mut url = format!("{}/v1/webhooks/{id}/deliveries", self.base_url);
+        let mut query: Vec<(String, String)> = Vec::new();
+                         if let Some(limit) = limit { query.push(("limit".into(), limit.to_string())); }
+                         if let Some(cursor) = cursor { query.push(("cursor".into(), cursor.to_string())); }
+                         if !query.is_empty() {
+                             let joined: Vec<String> = query.iter().map(|(k, v)| format!("{k}={v}")).collect();
+                             url = format!("{url}?{}", joined.join("&"));
+                         }
+                         Ok(self.http.get(url).header("x-copal-tenant", &self.tenant)                 .send().await?.error_for_status()?.json().await?)
     }
 
     pub async fn register_webhook(&self, input: Value) -> Result<Value, Error> {

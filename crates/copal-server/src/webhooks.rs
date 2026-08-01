@@ -58,6 +58,10 @@ pub fn webhook_router<B: BlobStore + 'static>(app: AppState<B>) -> Router {
         )
         .route("/v1/webhooks/deliveries", get(list_deliveries::<B>))
         .route(
+            "/v1/webhooks/{id}/deliveries",
+            get(list_endpoint_deliveries::<B>),
+        )
+        .route(
             "/v1/webhooks/{id}",
             axum::routing::delete(remove_endpoint::<B>),
         )
@@ -184,6 +188,10 @@ pub(crate) async fn remove_core<B: BlobStore>(
 struct ListQuery {
     #[serde(default)]
     limit: Option<i64>,
+    /// Narrow deliveries to one outcome, the same filter the
+    /// sub-collection takes.
+    #[serde(default)]
+    state: Option<String>,
     /// Narrow the feed to one dotted verb, the same filter the
     /// subscription takes.
     #[serde(default)]
@@ -216,6 +224,40 @@ async fn list_events<B: BlobStore>(
 }
 
 /// A tenant's recent delivery attempts, newest first.
+/// One page of an endpoint's delivery history in wire shape. Shared by
+/// the REST handler and the GraphQL sub-collection so a delivery
+/// cannot render differently on the two faces.
+pub(crate) async fn endpoint_deliveries_page<B: BlobStore>(
+    state: &AppState<B>,
+    tenant: &copal_core::TenantId,
+    endpoint: &str,
+    delivery_state: Option<&str>,
+    limit: i64,
+) -> Result<Vec<serde_json::Value>, ApiError> {
+    let rows =
+        eventing::list_deliveries(&state.store, tenant, Some(endpoint), delivery_state, limit)
+            .await?;
+    Ok(rows.iter().map(crate::wire::wire_delivery).collect())
+}
+
+/// A single endpoint's delivery attempts, newest first.
+async fn list_endpoint_deliveries<B: BlobStore>(
+    State(state): State<WebhookState<B>>,
+    headers: HeaderMap,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    axum::extract::Query(params): axum::extract::Query<ListQuery>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let tenant = crate::auth::authenticate(&state.app, &headers).await?;
+    let limit = params.limit.unwrap_or(100).clamp(1, 1_000);
+    let items =
+        endpoint_deliveries_page(&state.app, &tenant, &id, params.state.as_deref(), limit).await?;
+    // Endpoint histories are bounded by the retry ceiling, so the page
+    // is the set and there is nothing to resume.
+    Ok(Json(
+        serde_json::json!({ "items": items, "next_cursor": null }),
+    ))
+}
+
 async fn list_deliveries<B: BlobStore>(
     State(state): State<WebhookState<B>>,
     headers: HeaderMap,
@@ -223,7 +265,14 @@ async fn list_deliveries<B: BlobStore>(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let tenant = crate::auth::authenticate(&state.app, &headers).await?;
     let limit = params.limit.unwrap_or(100).clamp(1, 1_000);
-    let rows = eventing::list_deliveries(&state.app.store, &tenant, limit).await?;
+    let rows = eventing::list_deliveries(
+        &state.app.store,
+        &tenant,
+        None,
+        params.state.as_deref(),
+        limit,
+    )
+    .await?;
     let items: Vec<_> = rows
         .iter()
         .map(|row| {

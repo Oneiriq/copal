@@ -29,6 +29,22 @@ type FilePage struct {
 	NextCursor *string `json:"next_cursor"`
 }
 
+type FileVersion struct {
+	ID string `json:"id"`
+	Number int64 `json:"number"`
+	ContentType string `json:"content_type"`
+	Size int64 `json:"size"`
+	Digest string `json:"digest"`
+	MetadataSnapshot any `json:"metadata_snapshot"`
+	CreatedBy string `json:"created_by"`
+	CreatedAt string `json:"created_at"`
+}
+
+type FileVersionPage struct {
+	Items []FileVersion `json:"items"`
+	NextCursor *string `json:"next_cursor"`
+}
+
 type Webhook struct {
 	ID string `json:"id"`
 	TargetUrl string `json:"target_url"`
@@ -39,6 +55,20 @@ type Webhook struct {
 
 type WebhookPage struct {
 	Items []Webhook `json:"items"`
+	NextCursor *string `json:"next_cursor"`
+}
+
+type WebhookDelivery struct {
+	ID string `json:"id"`
+	State string `json:"state"`
+	Attempts int64 `json:"attempts"`
+	LastStatus *int64 `json:"last_status"`
+	NextAttemptAt *string `json:"next_attempt_at"`
+	CreatedAt string `json:"created_at"`
+}
+
+type WebhookDeliveryPage struct {
+	Items []WebhookDelivery `json:"items"`
 	NextCursor *string `json:"next_cursor"`
 }
 
@@ -139,6 +169,25 @@ func (c *Client) GetFile(id string) (*File, error) {
 	return &out, nil
 }
 
+func (c *Client) ListVersionsFiles(id string, limit int, cursor string) (*FileVersionPage, error) {
+	query := url.Values{}
+                 	if limit > 0 {
+                 		query.Set("limit", fmt.Sprint(limit))
+                 	}
+                 	if cursor != "" {
+                 		query.Set("cursor", cursor)
+                 	}
+                 	path := "/v1/files/" + id + "/versions"
+                 	if encoded := query.Encode(); encoded != "" {
+                 		path += "?" + encoded
+                 	}
+                 	var page FileVersionPage
+                 	if err := c.request("GET", path, nil, &page); err != nil {
+                 		return nil, err
+                 	}
+                 	return &page, nil
+}
+
 func (c *Client) IssueUrlFile(id string, input map[string]any) (map[string]any, error) {
 	out := map[string]any{}
 	if err := c.request("POST", "/v1/files" + "/" + id + "/url", input, &out); err != nil {
@@ -200,6 +249,25 @@ func (c *Client) GetWebhook(id string) (*Webhook, error) {
 		return nil, err
 	}
 	return &out, nil
+}
+
+func (c *Client) ListDeliveriesWebhooks(id string, limit int, cursor string) (*WebhookDeliveryPage, error) {
+	query := url.Values{}
+                 	if limit > 0 {
+                 		query.Set("limit", fmt.Sprint(limit))
+                 	}
+                 	if cursor != "" {
+                 		query.Set("cursor", cursor)
+                 	}
+                 	path := "/v1/webhooks/" + id + "/deliveries"
+                 	if encoded := query.Encode(); encoded != "" {
+                 		path += "?" + encoded
+                 	}
+                 	var page WebhookDeliveryPage
+                 	if err := c.request("GET", path, nil, &page); err != nil {
+                 		return nil, err
+                 	}
+                 	return &page, nil
 }
 
 func (c *Client) RegisterWebhook(input map[string]any) (map[string]any, error) {

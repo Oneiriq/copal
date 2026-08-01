@@ -102,7 +102,7 @@ async fn re_upload_mints_versions_and_history_stays_readable() {
         listed[0]["metadata_snapshot"].is_object(),
         "each version serves the metadata as it stood: {listed:?}",
     );
-    assert!(body["next_before"].is_null(), "short page has no cursor");
+    assert!(body["next_cursor"].is_null(), "short page has no cursor");
 
     // Bounded pages walk the history without overlap.
     let page = req(
@@ -113,10 +113,10 @@ async fn re_upload_mints_versions_and_history_stays_readable() {
     );
     let body = json_body(router.clone().oneshot(page).await.unwrap()).await;
     assert_eq!(body["items"][0]["number"], 2);
-    assert_eq!(body["next_before"], 2);
+    assert_eq!(body["next_cursor"], "2");
     let page = req(
         "GET",
-        &format!("/v1/files/{id}/versions?limit=1&before=2"),
+        &format!("/v1/files/{id}/versions?limit=1&cursor=2"),
         Some("acme"),
         Body::empty(),
     );

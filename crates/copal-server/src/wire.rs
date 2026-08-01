@@ -48,6 +48,32 @@ pub fn wire_event(row: &copal_store::repo::eventing::EventRow) -> serde_json::Va
     })
 }
 
+/// One stored version, projected to the columns the contract exposes.
+pub fn wire_version(version: &copal_core::FileVersion) -> serde_json::Value {
+    serde_json::json!({
+        "id": version.number.to_string(),
+        "number": version.number,
+        "content_type": version.content_type,
+        "size": version.size_bytes,
+        "digest": version.digest.as_str(),
+        "metadata_snapshot": version.metadata_snapshot,
+        "created_by": version.created_by,
+        "created_at": version.created_at,
+    })
+}
+
+/// One delivery attempt, projected to the columns the contract exposes.
+pub fn wire_delivery(row: &copal_store::repo::eventing::DeliveryRow) -> serde_json::Value {
+    serde_json::json!({
+        "id": row.delivery_id(),
+        "state": row.state,
+        "attempts": row.attempts,
+        "last_status": row.last_status,
+        "next_attempt_at": row.next_attempt_at,
+        "created_at": row.created_at,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

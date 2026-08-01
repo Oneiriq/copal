@@ -1,135 +1,77 @@
 # Roadmap
 
-Ordered by what matters: deployment hardening first, then the security
-items that need design work, then the moat expansion the market
-research points at, then platform depth. Items move to the top of
-their tier when a deployment or a user needs them sooner.
+What is left, ordered by what it blocks. Shipped work lives in
+[CHANGELOG.md](../CHANGELOG.md); this file carries only open items, so
+a tier disappearing from it means that tier is done.
 
-## Tier 1: deployment hardening (gaps)
+Four tiers are complete and no longer listed: deployment hardening,
+the security items that needed design, per-tenant residencies and
+edge tokens, and the post-moat audit set. The AI-native turn is
+complete through hybrid retrieval over passages.
 
-The items that gate running Copal anywhere real.
+## Now: the contract cannot express everything the service does
 
-1. Request timeouts. A deadline on ordinary routes and a longer
-   transfer deadline on the streaming routes, so slow-drip requests
-   cannot hold claims and sockets open.
-2. CORS. A strict allowlist layer driven by configuration, absent
-   entirely when unconfigured, so browser applications can integrate
-   without the server defaulting open.
-3. A container image. Multi-stage build, locked dependencies,
-   non-root runtime user, health check.
-4. Graceful shutdown. Drain in-flight requests on SIGTERM; leases
-   already make interrupted background work safe.
-5. Readiness. `/readyz` probes the store and the blob plane;
-   `/healthz` stays a liveness stub.
-6. Client digest assertion. An `x-copal-digest` request header on
-   upload verifies the stored content against what the client
-   intended to send.
-7. Version history completeness. Serve the recorded
-   `metadata_snapshot` with each version.
-8. Backup and restore documentation. Blob plane first, then the
-   metadata export; the GC grace period covers the drift window.
-9. Small closures: bounded admin listings, a fresh-attempt budget on
-   run retry, sub-resource modeling in Janus (versions and grant
-   revocation into the contract).
+The project's claim is that one declaration serves every face. Two
+surfaces break it, and both break it the same way.
 
-## Tier 2: security items needing design
+1. **Sub-resources.** A file's versions and a webhook's deliveries are
+   lists of rows belonging to one parent instance. Janus resources are
+   top-level, so these stay REST-only and GraphQL and all four
+   generated clients cannot reach them. Needs a sub-resource shape in
+   the contract, validated against the parent key like any other
+   filter, then `files.versions` and `webhooks.deliveries` declared
+   through it.
+2. **Extracted text and search.** `GET /v1/files/{id}/text` and
+   `GET /v1/search` are REST-only. Text is a sub-resource once the
+   above exists. Search is a query rather than a listing and needs its
+   own shape, or an honest note that it stays REST-only the way usage
+   does.
 
-1. Supply-chain gate: a dependency audit job in both CI pipelines.
-2. Admin token rotation without restart: accept the previous token
-   during a rotation window.
-3. Audit forensics: record the forwarded origin on audit rows when
-   the proxy provides one.
-4. Per-residency encryption keys shipped on top of encryption at
-   rest (chunked AEAD, plaintext digests, non-destructive
-   enablement); a residency's own key seals its objects.
-5. Per-tenant byte quotas and usage accounting shipped (logical
-   usage, pre-flight refusals, in-stream headroom clamps on every
-   upload face). Request-rate limits remain at the proxy.
+## Next: the capability model's weakest link
 
-## Tier 3: moat expansion
+3. **Key scopes and expiry.** `ck1` API keys are all-or-nothing and
+   never expire. Every other capability in the system is narrower:
+   `cg1` grants are op-scoped and use-counted, `cg2` tokens are
+   expiry-bounded, S3 credentials are per-tenant and revocable, upload
+   grants are single-use. Keys should carry a scope (read, write,
+   admin) and an optional expiry.
+4. **Flip `COPAL_AUTH_MODE` to `keys` at 1.0.** The trusted header is
+   a dev mode and should stop being the default. Worth doing after
+   scopes, since flipping the default makes key granularity the thing
+   every deployment lives with.
 
-Ordered by expected pull, from the July 2026 market research: MinIO's
-community edition is archived, the S3-only alternatives have no
-metadata brain, Supabase Storage is platform-bound, and SurrealDB 3.0
-ships file primitives without a service layer. tus resumable uploads
-shipped first from this tier, then the S3-compatible ingest gateway
-(SigV4, the object plane, ListObjectsV2 with delimiter collapse,
-sealed gateway credentials).
+## Then: compliance and reach
 
-1. Eventing shipped whole: the engine outbox, signed webhooks (events
-   born in the same transaction as the state change, LIVE SELECT as
-   the dispatcher wake), and GraphQL subscriptions over the same
-   outbox. Janus gained a watch seam for this; the stream is served
-   as graphql-sse on the existing route, so subscriptions authenticate
-   the way every other operation does.
-2. Derivatives: image renditions shipped on the flow engine
-   (deterministic paths, idempotent repeats, refusals that fail the
-   derived record with the run completed). Remaining: transcodes and
-   documents, which need an external transformer seam.
-3. Per-tenant storage residencies shipped: named OpenDAL backends
-   (filesystem or S3-compatible bucket with its own keys), tenant
-   pinning on the admin surface, per-row backend resolution so
-   reassignment never strands content, residency-routed collection.
-4. `cg2` HMAC edge tokens shipped: stateless capabilities under
-   sealed tenant edge keys, verifiable at a CDN worker with no
-   database hop, expiry-bounded with whole-key revocation. The tier
-   is complete; what remains of it lives in the deferred seam above
-   (external transformers for transcodes and documents).
+5. **Retention policies, legal hold, and WORM.** The compliance tier
+   the enterprise buyers ask for. Retention interacts with the GC
+   grace period and soft delete, so it needs design before code.
+6. **External transformer seam** for transcodes and document
+   renditions, following the pattern the extractor and embedding
+   seams already set: pick a contract several self-hostable
+   implementations speak, treat unconfigured as the feature being
+   absent, and parse nothing in-process.
+7. **On-the-fly rendition URLs and multi-source ingestion**, the axes
+   the hosted services sell.
+8. **More blob backends.** GCS and Azure beside the filesystem and
+   S3-compatible stores, and the SurrealDB bucket backend as a
+   first-class single-binary mode.
 
-## Tier 5: post-moat audit items
+## Deferred, with reasons
 
-From the July 2026 audit, in the order they matter:
-
-1. Webhook destination policy and bounded image decoding (shipped).
-2. S3 multipart upload (shipped): the aws CLI needs it above 8 MiB.
-3. Signed upload URLs shipped: write capabilities in the `cg1`
-   family, single-use, op-scoped so a read token cannot write.
-4. Per-residency encryption keys shipped: a residency seals with its
-   own key, so a tenant needing key separation takes its own
-   residency (which already scopes dedupe and backends).
-5. GraphQL parity shipped: upload URLs, renditions, the event outbox,
-   webhooks, and edge tokens all joined the contract, so both faces
-   and all four generated clients carry them. Subscriptions over the
-   outbox followed. Usage stays REST-only, reporting a number rather
-   than rows.
-6. Metrics shipped: a guarded Prometheus endpoint over process
-   counters. Cached usage counters shipped with them, which also
-   closed the concurrent-upload over-commit gap. Remaining: OTel
-   traces.
-
-## Tier 6: the AI-native turn
-
-From the August 2026 audit. SurrealDB 3.1 ships DiskANN beside HNSW
-and hybrid lexical-plus-vector search with reciprocal rank fusion, in
-the database Copal already runs on, while the standard retrieval
-stack still glues object storage to a separate vector database.
-
-1. Malware scanning (shipped): the pipeline's first real verdict
-   activity, and the precondition for trusting browser-direct
-   uploads.
-2. Text extraction (shipped): native for text and JSON, an external
-   extractor seam for everything else, indexed for BM25 search in
-   the same database that holds the records.
-3. Embeddings (shipped): per-document vectors from any service
-   speaking the OpenAI embeddings shape, HNSW-indexed, with hybrid
-   retrieval fusing lexical and semantic rankings, over overlapping
-   passages so a hit names the part that answers the question, with
-   a relevance floor so a query about nothing stored returns
-   nothing.
-4. Correctness cleanup (shipped): reservations released on every
-   path that ends an upload, S3's minimum part size enforced, and
-   ListMultipartUploads.
-5. On-the-fly rendition URLs, transcodes, and multi-source ingestion,
-   the axes the hosted services sell.
-
-## Tier 4: platform depth
-
-1. OTel spans (the `/metrics` endpoint shipped).
-2. Key scopes (read-only, upload-only) and key expiry.
-3. Retention policies, legal hold, WORM for the compliance tier.
-4. SDK publishing pipelines for the four generated clients.
-5. Janus REST runtime router; contract-driven sub-resources.
-6. Flip `COPAL_AUTH_MODE` default to `keys` at 1.0.
-7. The batched `surql-rs` release once Copal and Janus stabilize.
-8. S3, GCS, and Azure blob backends beyond the filesystem store;
-   the SurrealDB bucket backend as a first-class single-binary mode.
+9. **OTel spans.** Deferred twice. OTLP export means new dependencies
+   and a cargo feature CI would not compile, which is untested code by
+   construction. The `/metrics` endpoint set a dependency-free
+   observability precedent this would break. Revisit when someone
+   decides the dependency is worth it.
+10. **SDK publishing pipelines** for the four generated clients. The
+    clients are generated and gated against drift already; publishing
+    is packaging work that wants a release cadence to hang from.
+11. **Janus REST runtime router.** Copal's REST handlers are
+    hand-written over the same repositories the GraphQL resolvers
+    call. A contract-driven REST router would remove that duplication,
+    but the handlers carry real behavior (streaming, ranges,
+    conditionals) that a generic router has to earn the right to
+    replace.
+12. **The batched `surql-rs` release.** Shon cuts it. The branch
+    carries the live-query `WHERE` clause, the session-scoped live
+    query fix, and index-backed KNN.

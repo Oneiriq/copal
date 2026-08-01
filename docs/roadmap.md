@@ -56,13 +56,16 @@ from one contract. What remains:
 
 MinIO's community edition was archived in 2026, and its recommended
 replacements are plain object stores. Copal can take those users only
-if their existing tooling works, and today it does not.
+if their existing tooling works, and the evidence now exists: the
+migration guide carries a recorded `mc mirror` run end to end, with a
+no-op second pass, an empty `mc diff`, and an 80 MiB multipart object
+round-tripping byte-identical. Getting there surfaced and fixed four
+gateway defects no in-process test had reached, which is the argument
+for evidence runs as a practice. Remaining here:
 
-The wedge shipped whole: CopyObject and batch DeleteObjects landed on
-the gateway, and [migration.md](migration.md) documents the one-run
-move with `mc mirror`, `rclone sync`, or `aws s3 sync`. What remains
-of this stream is evidence rather than code: running the mirror
-against a live MinIO deployment and recording the result.
+1. **A compose file for the demo stack.** The recorded run hand-built
+   its stack; a `docker compose up` that yields MinIO, Copal, and a
+   seeded mirror would let a prospect replay it in minutes.
 
 ## Stream 3: retrieval cost
 

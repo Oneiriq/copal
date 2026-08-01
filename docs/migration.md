@@ -76,6 +76,48 @@ curl -H "x-copal-tenant: acme" "http://copal:8080/v1/search?q=<term>"
 The second line is the point of moving: the mirrored bucket answers
 questions now.
 
+## The recorded run
+
+Every transcript below is from a live run: MinIO and SurrealDB in
+containers, Copal on the host with `COPAL_S3_BIND` and an encryption
+key, a credential minted on the admin surface, and MinIO's own `mc`
+driving the migration. The source bucket held nested prefixes and an
+80 MiB binary large enough to cross `mc`'s multipart threshold.
+
+```
+$ mc mirror minio/archive copal/legacy-corp
+`minio/archive/checksum.txt` -> `copal/legacy-corp/checksum.txt`
+`minio/archive/contracts/2024/acme-msa.txt` -> `copal/legacy-corp/contracts/2024/acme-msa.txt`
+`minio/archive/reports/q2-summary.md` -> `copal/legacy-corp/reports/q2-summary.md`
+`minio/archive/contracts/2025/acme-renewal.txt` -> `copal/legacy-corp/contracts/2025/acme-renewal.txt`
+`minio/archive/reports/telemetry-export.bin` -> `copal/legacy-corp/reports/telemetry-export.bin`
+Total: 80.00 MiB, Transferred: 80.00 MiB, Duration: 00m13s
+
+$ mc ls -r copal/legacy-corp
+[2026-08-01 21:32 UTC]    65B STANDARD checksum.txt
+[2026-08-01 21:32 UTC]    29B STANDARD contracts/2024/acme-msa.txt
+[2026-08-01 21:32 UTC]    28B STANDARD contracts/2025/acme-renewal.txt
+[2026-08-01 21:32 UTC]    21B STANDARD reports/q2-summary.md
+[2026-08-01 21:32 UTC]  80MiB STANDARD reports/telemetry-export.bin
+
+$ mc mirror minio/archive copal/legacy-corp    # second run
+Total: 0 B, Transferred: 0 B, Duration: 00m00s
+
+$ mc diff minio/archive copal/legacy-corp
+(no differences)
+
+$ mc cp copal/legacy-corp/reports/telemetry-export.bin /tmp/back.bin
+$ sha256sum /tmp/back.bin
+899f019574284822b7015e1437f8ef8d9f4aaa3c9c256cee0e6efef394e7cecf
+$ mc cat minio/archive/checksum.txt            # digest recorded at seed time
+899f019574284822b7015e1437f8ef8d9f4aaa3c9c256cee0e6efef394e7cecf
+```
+
+The 80 MiB object crossed as five multipart parts under `mc`'s
+streaming signatures and round-tripped byte-identical. The second
+mirror moved nothing, and `mc diff` closes the loop from the source
+side.
+
 ## Boundaries
 
 - One credential reaches one tenant's bucket. Cross-tenant copies

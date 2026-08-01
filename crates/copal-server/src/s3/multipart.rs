@@ -58,6 +58,7 @@ pub async fn upload_part<B: BlobStore>(
     tenant: &TenantId,
     upload_id: &str,
     part_number: i64,
+    headers: &axum::http::HeaderMap,
     body: axum::body::Body,
 ) -> Response {
     if !(1..=10_000).contains(&part_number) {
@@ -86,7 +87,21 @@ pub async fn upload_part<B: BlobStore>(
     let max = gateway.app.limits.max_upload_bytes as u64;
     let mut running = 0u64;
     let mut hasher = copal_core::DigestBuilder::new();
-    let stream = body.into_data_stream().map(move |chunk| match chunk {
+    let raw = body.into_data_stream().map(|chunk| match chunk {
+        Ok(bytes) => Ok(bytes),
+        Err(err) => Err(format!("body: {err}")),
+    });
+    // Parts arrive with the same streaming-signature framing as
+    // whole objects; storing it verbatim assembles framing into the
+    // object, which is corruption. Decode BEFORE counting and
+    // hashing, so the limit and the ETag speak about content bytes.
+    let decoded: futures::stream::BoxStream<'static, Result<Bytes, String>> =
+        if super::is_aws_chunked(headers) {
+            Box::pin(super::decode_aws_chunked(raw))
+        } else {
+            Box::pin(raw)
+        };
+    let stream = decoded.map(move |chunk| match chunk {
         Ok(bytes) => {
             running += bytes.len() as u64;
             if running > max {
@@ -95,7 +110,7 @@ pub async fn upload_part<B: BlobStore>(
                 Ok(bytes)
             }
         }
-        Err(err) => Err(format!("body: {err}")),
+        Err(err) => Err(err),
     });
     // Hash while staging so the part ETag is its content digest.
     let hashing = stream.map(move |chunk: Result<Bytes, String>| {
@@ -469,7 +484,15 @@ pub async fn dispatch<B: BlobStore>(
                 .get("partNumber")
                 .and_then(|raw| raw.parse::<i64>().ok())
                 .unwrap_or(0);
-            upload_part(&gateway, &tenant, &upload_id, part_number, body).await
+            upload_part(
+                &gateway,
+                &tenant,
+                &upload_id,
+                part_number,
+                &parts.headers,
+                body,
+            )
+            .await
         }
         axum::http::Method::POST => {
             let manifest = match axum::body::to_bytes(body, 1 << 20).await {

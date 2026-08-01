@@ -725,3 +725,259 @@ async fn batch_delete_removes_and_reports() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     assert!(text_body(response).await.contains("MalformedXML"));
 }
+
+/// minio-go formats every bucket-level request with a trailing slash
+/// and asks GetBucketLocation before its first operation. Without
+/// both, mc reads the refusals as a missing bucket and never
+/// transfers a byte.
+#[tokio::test]
+async fn mc_shaped_bucket_requests_answer() {
+    let (gateway, admin, _dir) = stack().await;
+    let (access_key, secret) = mint(&admin, "acme").await;
+
+    // HeadBucket with the trailing slash.
+    let request = signed_request(
+        "HEAD",
+        "/acme/",
+        "",
+        "UNSIGNED-PAYLOAD",
+        &access_key,
+        &secret,
+        Body::empty(),
+        &[],
+    );
+    let response = gateway.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // GetBucketLocation, exactly as minio-go sends it.
+    let request = signed_request(
+        "GET",
+        "/acme/",
+        "location=",
+        "UNSIGNED-PAYLOAD",
+        &access_key,
+        &secret,
+        Body::empty(),
+        &[],
+    );
+    let response = gateway.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = text_body(response).await;
+    assert!(body.contains("<LocationConstraint"), "{body}");
+    assert!(body.contains("us-east-1"), "{body}");
+
+    // Listing through the trailing-slash form works too.
+    let request = signed_request(
+        "GET",
+        "/acme/",
+        "list-type=2",
+        "UNSIGNED-PAYLOAD",
+        &access_key,
+        &secret,
+        Body::empty(),
+        &[],
+    );
+    let response = gateway.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+/// S3 clients parse Last-Modified strictly; minio-go refuses reads
+/// without it. Both object heads carry it as an HTTP date.
+#[tokio::test]
+async fn served_objects_carry_last_modified() {
+    let (gateway, admin, _dir) = stack().await;
+    let (access_key, secret) = mint(&admin, "acme").await;
+
+    let payload = b"dated content";
+    let put = signed_request(
+        "PUT",
+        "/acme/dated.txt",
+        "",
+        "UNSIGNED-PAYLOAD",
+        &access_key,
+        &secret,
+        Body::from(payload.to_vec()),
+        &[],
+    );
+    assert_eq!(
+        gateway.clone().oneshot(put).await.unwrap().status(),
+        StatusCode::OK
+    );
+
+    for method in ["GET", "HEAD"] {
+        let request = signed_request(
+            method,
+            "/acme/dated.txt",
+            "",
+            "UNSIGNED-PAYLOAD",
+            &access_key,
+            &secret,
+            Body::empty(),
+            &[],
+        );
+        let response = gateway.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{method}");
+        let value = response
+            .headers()
+            .get("last-modified")
+            .unwrap_or_else(|| panic!("{method} response has no last-modified"))
+            .to_str()
+            .unwrap();
+        httpdate::parse_http_date(value)
+            .unwrap_or_else(|_| panic!("{method} last-modified not an HTTP date: {value}"));
+    }
+}
+
+/// An upload that died before finalize leaves a record with no
+/// content. The listing must not name it: a mirror that sees a
+/// zero-byte entry treats the key as present and wrong, and refuses
+/// to resume over it.
+#[tokio::test]
+async fn listings_hide_unfinalized_uploads() {
+    let store = Store::connect(StoreConfig::memory()).await.unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let blobs = ObjectStore::open(dir.path().to_str().unwrap()).unwrap();
+    let cipher = BlobCipher::from_hex(MASTER_KEY).unwrap();
+    let state = AppState::new(store.clone(), blobs)
+        .with_auth(AuthConfig {
+            admin_token: Some("root".to_owned()),
+            ..AuthConfig::default()
+        })
+        .with_cipher(Some(cipher));
+    let gateway = s3_router(state.clone());
+    let admin = s3_admin_router(state);
+    let (access_key, secret) = mint(&admin, "acme").await;
+
+    let put = signed_request(
+        "PUT",
+        "/acme/real.txt",
+        "",
+        "UNSIGNED-PAYLOAD",
+        &access_key,
+        &secret,
+        Body::from(b"present".to_vec()),
+        &[],
+    );
+    assert_eq!(
+        gateway.clone().oneshot(put).await.unwrap().status(),
+        StatusCode::OK
+    );
+
+    // The abandoned shape: a draft record, no content ever finalized.
+    let tenant = copal_core::TenantId::parse("acme").unwrap();
+    copal_store::repo::file::create_file(
+        &store,
+        &tenant,
+        &copal_core::FileSpec {
+            path: "ghost.txt".to_owned(),
+            content_type: "text/plain".to_owned(),
+            access: copal_core::AccessLevel::Private,
+            metadata: serde_json::json!({}),
+            idempotency_key: None,
+        },
+        "tester",
+    )
+    .await
+    .unwrap();
+
+    let request = signed_request(
+        "GET",
+        "/acme",
+        "list-type=2",
+        "UNSIGNED-PAYLOAD",
+        &access_key,
+        &secret,
+        Body::empty(),
+        &[],
+    );
+    let response = gateway.clone().oneshot(request).await.unwrap();
+    let body = text_body(response).await;
+    assert!(body.contains("real.txt"), "{body}");
+    assert!(!body.contains("ghost.txt"), "{body}");
+    assert!(body.contains("<KeyCount>1</KeyCount>"), "{body}");
+}
+
+/// Parts arrive with the same streaming-signature framing as whole
+/// objects. Stored verbatim, the framing assembles into the object,
+/// which is corruption; the decode must run before staging.
+#[tokio::test]
+async fn chunked_parts_assemble_content_bytes() {
+    let (gateway, admin, _dir) = stack().await;
+    let (access_key, secret) = mint(&admin, "acme").await;
+
+    let create = signed_request(
+        "POST",
+        "/acme/big/framed.bin",
+        "uploads=",
+        "UNSIGNED-PAYLOAD",
+        &access_key,
+        &secret,
+        Body::empty(),
+        &[],
+    );
+    let response = gateway.clone().oneshot(create).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = text_body(response).await;
+    let upload_id = body
+        .split("<UploadId>")
+        .nth(1)
+        .and_then(|rest| rest.split("</UploadId>").next())
+        .unwrap()
+        .to_owned();
+
+    let framed = b"6;chunk-signature=aaaa\r\nstream\r\n4;chunk-signature=bbbb\r\ning!\r\n0;chunk-signature=cccc\r\n\r\n";
+    let part = signed_request(
+        "PUT",
+        "/acme/big/framed.bin",
+        &format!("partNumber=1&uploadId={upload_id}"),
+        "STREAMING-AWS4-HMAC-SHA256-PAYLOAD",
+        &access_key,
+        &secret,
+        Body::from(framed.to_vec()),
+        &[("content-encoding", "aws-chunked")],
+    );
+    let response = gateway.clone().oneshot(part).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let etag = response.headers()["etag"].to_str().unwrap().to_owned();
+    let content_digest = hex::encode(Sha256::digest(b"streaming!"));
+    assert_eq!(
+        etag.trim_matches('"'),
+        content_digest,
+        "part ETag speaks content bytes"
+    );
+
+    let manifest = format!(
+        "<CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>\"{content_digest}\"</ETag></Part></CompleteMultipartUpload>",
+    );
+    let complete = signed_request(
+        "POST",
+        "/acme/big/framed.bin",
+        &format!("uploadId={upload_id}"),
+        "UNSIGNED-PAYLOAD",
+        &access_key,
+        &secret,
+        Body::from(manifest.into_bytes()),
+        &[],
+    );
+    let response = gateway.clone().oneshot(complete).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let get = signed_request(
+        "GET",
+        "/acme/big/framed.bin",
+        "",
+        "UNSIGNED-PAYLOAD",
+        &access_key,
+        &secret,
+        Body::empty(),
+        &[],
+    );
+    let response = gateway.clone().oneshot(get).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(
+        &bytes[..],
+        b"streaming!",
+        "assembled object is content bytes"
+    );
+}

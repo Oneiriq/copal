@@ -886,6 +886,7 @@ name = "copal-core"
 version = "0.1.0"
 dependencies = [
  "hex",
+ "rust-stemmers",
  "serde",
  "serde_json",
  "sha2 0.10.9",

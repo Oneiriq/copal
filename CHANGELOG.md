@@ -92,6 +92,15 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ### Fixed
 
+- **Lexical search ranks by relevance.** The full-text index decides which
+  passages match but returns them in insertion order, and `search::score`
+  reports 0 for every row. Search trusted that order, so it answered with the
+  OLDEST matching passages rather than the best ones, a bounded search kept the
+  wrong ones, and hybrid retrieval fused a meaningless lexical rank against a
+  real semantic one. BM25 is now scored in Copal over a bounded window of
+  matches, using the same English Snowball stemmer the index's analyzer uses so
+  a stemmed match is scored rather than buried. The engine behaviour that forced
+  this is pinned by tests, so an engine that learns to rank fails them loudly.
 - **Semantic search reaches its index.** The KNN operator's second operand
   decides the plan: an integer is the HNSW search effort, a metric name makes
   the engine compare every row. The query rendered the metric form, so vector

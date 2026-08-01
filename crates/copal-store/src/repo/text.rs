@@ -370,17 +370,31 @@ impl SearchHit {
     }
 }
 
+/// How many matches to pull back before scoring them. The engine
+/// finds matches through the index but returns them unranked, so the
+/// best hit can sit anywhere in the match set; taking `limit` rows
+/// straight from the scan would be taking the oldest ones. This bounds
+/// how much of a large match set gets rescored.
+const RESCORE_WINDOW: i64 = 500;
+
 /// Lexical search over a tenant's extracted text, in relevance order.
 ///
 /// The tenant predicate and the search predicate are one statement,
 /// so a hit that is not this tenant's cannot be returned and then
-/// filtered: it is never a hit. EXPLAIN shows the full-text scan
-/// driving with the tenant equality as a residual filter, which keeps
-/// the scan's ordering intact.
+/// filtered: it is never a hit.
 ///
-/// No ORDER BY: the scan already yields rows by relevance, and
-/// sorting on `search::score` (which this engine returns as 0) would
-/// replace that ordering with an arbitrary one.
+/// Ranking happens in this function. SurrealDB 3.x uses the
+/// BM25 index to decide which rows match and then yields them in
+/// insertion order, reporting `search::score` as 0 for every one
+/// (both pinned by tests in `tests/engine_assumptions.rs`). So the
+/// engine does the selective part through the index and this function
+/// rescores the candidate window, which is the two-stage shape
+/// production search uses anyway.
+///
+/// A corpus with more than `RESCORE_WINDOW` matches for one query
+/// ranks the window rather than the whole match set. That is a real
+/// bound, and it is the honest one to take: the alternative is
+/// reading every match into memory to rank it.
 pub async fn search(
     store: &Store,
     tenant: &TenantId,
@@ -390,6 +404,13 @@ pub async fn search(
     if terms.trim().is_empty() {
         return Err(CopalError::validation("search terms must not be empty"));
     }
+    // Over-fetch to rescore, capped, and never fewer rows than the
+    // caller asked for.
+    let window = limit
+        .saturating_mul(10)
+        .min(RESCORE_WINDOW)
+        .max(limit)
+        .max(1);
     let query = Query::new()
         .select(Some(vec![
             "file".to_owned(),
@@ -401,9 +422,16 @@ pub async fn search(
         .where_(eq("tenant_id", tenant.as_str()))
         .fulltext_search("body", 1, terms)
         .map_err(|e| map_store_err("search", e))?
-        .limit(limit)
+        .limit(window)
         .map_err(|e| map_store_err("search", e))?;
-    query_records(store.client(), &query)
+    let candidates: Vec<SearchHit> = query_records(store.client(), &query)
         .await
-        .map_err(|e| map_store_err("search", e))
+        .map_err(|e| map_store_err("search", e))?;
+
+    let bodies: Vec<String> = candidates.iter().map(|hit| hit.body.clone()).collect();
+    Ok(copal_core::rank_lexical(terms, &bodies)
+        .into_iter()
+        .take(limit.max(0) as usize)
+        .map(|scored| candidates[scored.index].clone())
+        .collect())
 }

@@ -35,8 +35,8 @@ class FileVersion:
   size: int
   digest: str
   metadata_snapshot: Any
-  created_by: str
   created_at: str
+  created_by: str | None = None
 
 @dataclass
 class FileVersionPage:

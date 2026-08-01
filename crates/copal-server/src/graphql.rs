@@ -575,7 +575,7 @@ fn dispatcher<B: BlobStore + 'static>(
         resolvers,
         vec![Arc::new(RequireTenant) as Arc<dyn Middleware>],
         Some(rate_store),
-        janus::runtime::Guards::new(),
+        crate::contract::guards(),
     )?))
 }
 

@@ -33,7 +33,7 @@ type FileVersion {
   size: Int!
   digest: String!
   metadata_snapshot: JSON!
-  created_by: String!
+  created_by: String
   created_at: DateTime!
 }
 

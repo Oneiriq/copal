@@ -11,6 +11,17 @@ use janus::{
     SubResource, TypeRef,
 };
 
+/// The guard registry the contract's declarations name. Both faces
+/// evaluate these same closures: the dispatcher projects GraphQL rows
+/// through them, and the REST handlers strip through the shared
+/// projection API.
+pub fn guards() -> janus::runtime::Guards {
+    janus::runtime::Guards::new().guard("admin_only", |ctx| {
+        ctx.get::<janus::runtime::Principal>()
+            .is_some_and(|principal| principal.has("admin"))
+    })
+}
+
 /// The wire contract for the files resource.
 pub fn contract() -> Contract {
     Contract {
@@ -76,7 +87,10 @@ pub fn contract() -> Contract {
                         FieldExposure::renamed("size_bytes", "size"),
                         FieldExposure::column("digest"),
                         FieldExposure::column("metadata_snapshot"),
-                        FieldExposure::column("created_by"),
+                        // Version attribution is audit data: who
+                        // uploaded each revision is for operators, so
+                        // distribution keys list history without it.
+                        FieldExposure::column("created_by").with_guard("admin_only"),
                         FieldExposure::column("created_at"),
                     ],
                     pinned: vec!["tenant_id".into()],

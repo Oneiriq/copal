@@ -26,7 +26,7 @@ export interface FileVersion {
   size: number
   digest: string
   metadataSnapshot: unknown
-  createdBy: string
+  createdBy?: string
   createdAt: string
 }
 

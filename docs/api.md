@@ -46,6 +46,12 @@ costs its row limit and everything else costs one. Exhaustion is 429
 `too_many_requests`, retryable next minute. Switching protocols never
 dodges a budget, because both faces charge the same store.
 
+One field is guarded: a version's `created_by` is audit data, visible
+to `admin`-scoped keys and to header mode, and absent for everyone
+else. REST omits the key and GraphQL renders it null, from the same
+declaration, which is why the field reads as nullable in the schema
+and carries `x-guard` in the OpenAPI document.
+
 `header` is the development mode and the default until 1.0. The
 `x-copal-tenant` header is trusted as the tenant identity. The server logs a
 warning at startup. See [operations.md](operations.md) for key custody.

@@ -38,7 +38,8 @@ pub struct FileVersion {
     pub size: i64,
     pub digest: String,
     pub metadata_snapshot: Value,
-    pub created_by: String,
+    #[serde(default)]
+    pub created_by: Option<String>,
     pub created_at: String,
 }
 

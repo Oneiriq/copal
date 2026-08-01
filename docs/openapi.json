@@ -136,7 +136,8 @@
             "type": "string"
           },
           "created_by": {
-            "type": "string"
+            "type": "string",
+            "x-guard": "admin_only"
           },
           "digest": {
             "type": "string"
@@ -161,7 +162,6 @@
           "size",
           "digest",
           "metadata_snapshot",
-          "created_by",
           "created_at"
         ],
         "type": "object"

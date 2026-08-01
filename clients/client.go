@@ -36,7 +36,7 @@ type FileVersion struct {
 	Size int64 `json:"size"`
 	Digest string `json:"digest"`
 	MetadataSnapshot any `json:"metadata_snapshot"`
-	CreatedBy string `json:"created_by"`
+	CreatedBy *string `json:"created_by"`
 	CreatedAt string `json:"created_at"`
 }
 

@@ -102,6 +102,12 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ### Governance
 
+- **The first field guard.** A version's `created_by` is audit data:
+  `admin`-scoped keys and header mode see it, everyone else lists history
+  without it. Both faces redact from the one declaration, REST by omitting
+  the key through the shared projection API and GraphQL by the dispatcher's
+  projection, proven identical by test. The field reads as nullable on every
+  generated surface and carries `x-guard` in OpenAPI.
 - **The declarations release.** The contract now declares what every
   operation demands, and both faces enforce it from that one declaration:
   reads require the `read` scope, mutations `write`, webhook registration

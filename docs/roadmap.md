@@ -34,16 +34,18 @@ Slices 1 through 4 shipped in Janus, and the declarations release
 turned scopes and rate metering on across both Copal faces against
 one ledger. What remains of the stream:
 
-2. **Field-guard declarations in Copal.** The Janus projection
-   machinery shipped; Copal declares its first guards once Janus
-   exposes the hidden-field computation for hand-written REST faces,
-   so both faces redact identically. Search-result projection rides
-   the same work: permission-aware retrieval at the storage layer.
-3. **The tail**: stream re-auth and per-principal watch caps,
+The first guard shipped end to end: version attribution is visible to
+admin-scoped keys and redacts identically on both faces through the
+shared projection API. Remaining:
+
+2. **The tail**: stream re-auth and per-principal watch caps,
    persisted operations, and the same declared policies compiled into
    SurrealDB `PERMISSIONS` as a second, independent refusal layer.
-4. **A shared rate store** over SurrealDB for multi-node deployments;
+3. **A shared rate store** over SurrealDB for multi-node deployments;
    the in-memory ledger covers one process.
+4. **More guards as the data model earns them.** Per-field policy is
+   in place; principals within tenants are what will make richer
+   guards meaningful.
 
 ## Stream 2: the migration wedge
 

@@ -45,6 +45,11 @@ pub struct Limits {
     /// Without a floor, nearest-neighbour search returns its nearest
     /// results however far away they are, so no query ever misses.
     pub max_semantic_distance: f64,
+    /// How long one subscription may stay open before the server ends
+    /// it with a normal completion. Re-subscribing runs the full
+    /// authentication path again, which is how key revocation and
+    /// expiry reach streams that are already running.
+    pub subscription_max_secs: u64,
     /// Smallest acceptable multipart part, last part exempt. S3's
     /// own floor by default, because clients written against S3 rely
     /// on the rejection; deployments with different needs can lower
@@ -66,6 +71,7 @@ impl Default for Limits {
             transfer_timeout_secs: 3_600,
             tus_session_ttl_secs: 86_400,
             max_semantic_distance: 0.65,
+            subscription_max_secs: 900,
             min_multipart_part_bytes: 5 * 1024 * 1024,
             allow_private_webhook_targets: false,
         }

@@ -67,6 +67,9 @@ pub struct Config {
     pub embedding_dimension: u32,
     /// Cosine-distance ceiling for a semantic match.
     pub max_semantic_distance: f64,
+    /// Seconds one subscription may stay open before the server ends
+    /// it; clients re-subscribe through full authentication.
+    pub subscription_max_secs: u64,
 }
 
 fn env_or(key: &str, default: &str) -> String {
@@ -131,6 +134,7 @@ impl Config {
             embedding_model: env_or("COPAL_EMBEDDING_MODEL", "nomic-embed-text"),
             embedding_dimension: env_parse("COPAL_EMBEDDING_DIMENSION", 768),
             max_semantic_distance: env_parse("COPAL_MAX_SEMANTIC_DISTANCE", 0.65),
+            subscription_max_secs: env_parse("COPAL_SUBSCRIPTION_MAX_SECS", 900),
             allow_private_webhook_targets: env_parse("COPAL_WEBHOOK_ALLOW_PRIVATE_TARGETS", false),
             residencies: std::env::var("COPAL_RESIDENCIES")
                 .ok()

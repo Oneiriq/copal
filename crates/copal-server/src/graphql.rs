@@ -666,7 +666,10 @@ async fn execute<B: BlobStore>(
     let request = request.data(ctx);
 
     if wants_event_stream(&headers) {
-        return stream_response(gql.schema.execute_stream(request));
+        return stream_response(
+            gql.schema.execute_stream(request),
+            gql.app.limits.subscription_max_secs,
+        );
     }
     Json(serde_json::to_value(gql.schema.execute(request).await).expect("graphql serializes"))
         .into_response()
@@ -690,7 +693,13 @@ fn wants_event_stream(headers: &HeaderMap) -> bool {
 /// payload; that would be a second authentication path to keep correct.
 fn stream_response(
     stream: impl futures::Stream<Item = async_graphql::Response> + Send + 'static,
+    max_secs: u64,
 ) -> axum::response::Response {
+    // The deadline ends the stream with a normal completion, and the
+    // client re-subscribes through the full authentication path. That
+    // is the re-auth mechanism: a revoked or expired key keeps its
+    // stream only until the current lifetime runs out.
+    let deadline = Box::pin(tokio::time::sleep(std::time::Duration::from_secs(max_secs)));
     let events = stream
         .map(|response| {
             let payload = serde_json::to_string(&response).expect("graphql response serializes");
@@ -700,6 +709,7 @@ fn stream_response(
                     .data(payload),
             )
         })
+        .take_until(deadline)
         .chain(futures::stream::once(async {
             Ok(axum::response::sse::Event::default()
                 .event("complete")

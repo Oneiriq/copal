@@ -1209,6 +1209,7 @@
   },
   "x-limits": {
     "max_complexity": 500,
-    "max_depth": 10
+    "max_depth": 10,
+    "max_watches_per_principal": 8
   }
 }

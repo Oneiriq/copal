@@ -38,8 +38,12 @@ The first guard shipped end to end: version attribution is visible to
 admin-scoped keys and redacts identically on both faces through the
 shared projection API. Remaining:
 
-2. **The tail**: stream re-auth and per-principal watch caps,
-   persisted operations, and the same declared policies compiled into
+Stream lifetimes and watch ceilings shipped: subscriptions end at a
+configured lifetime and re-open through full authentication, and one
+caller holds a declared maximum of concurrent watches. Remaining:
+
+2. **Persisted operations and PERMISSIONS pushdown**: an allowlist of
+   known GraphQL documents, and the declared policies compiled into
    SurrealDB `PERMISSIONS` as a second, independent refusal layer.
 3. **A shared rate store** over SurrealDB for multi-node deployments;
    the in-memory ledger covers one process.

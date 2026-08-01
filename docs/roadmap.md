@@ -105,10 +105,11 @@ stack still glues object storage to a separate vector database.
 1. Malware scanning (shipped): the pipeline's first real verdict
    activity, and the precondition for trusting browser-direct
    uploads.
-2. Text extraction as a pipeline activity, which is also what
-   retrieval needs.
-3. Embeddings and a search endpoint over them, so stored files are
-   queryable semantically without a second datastore.
+2. Text extraction (shipped): native for text and JSON, an external
+   extractor seam for everything else, indexed for BM25 search in
+   the same database that holds the records.
+3. Embeddings beside that text, so retrieval is semantic as well as
+   lexical, and hybrid ranking fuses the two.
 4. On-the-fly rendition URLs, transcodes, and multi-source ingestion,
    the axes the hosted services sell.
 

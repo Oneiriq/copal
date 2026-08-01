@@ -55,6 +55,10 @@ pub struct Config {
     /// in the upload pipeline AND stops content serving while a scan
     /// is outstanding.
     pub clamav_addr: Option<String>,
+    /// Address (or full URL) of a text extractor speaking Tika's
+    /// shape. Text and JSON extract natively either way; this covers
+    /// the formats Copal declines to parse itself.
+    pub extractor_addr: Option<String>,
 }
 
 fn env_or(key: &str, default: &str) -> String {
@@ -114,6 +118,7 @@ impl Config {
                     .collect()
             }),
             clamav_addr: std::env::var("COPAL_CLAMAV_ADDR").ok(),
+            extractor_addr: std::env::var("COPAL_EXTRACTOR_ADDR").ok(),
             allow_private_webhook_targets: env_parse("COPAL_WEBHOOK_ALLOW_PRIVATE_TARGETS", false),
             residencies: std::env::var("COPAL_RESIDENCIES")
                 .ok()

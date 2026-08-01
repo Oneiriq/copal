@@ -62,6 +62,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         policy,
         config.enforce_type_match,
         config.clamav_addr.clone(),
+        config.extractor_addr.clone(),
     );
     if let Some(addr) = &config.clamav_addr {
         tracing::info!(clamd = %addr, "malware scanning enabled; content is withheld until scanned");

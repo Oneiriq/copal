@@ -385,3 +385,134 @@ async fn live_watch_wakes_on_outbox_writes() {
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].action, "file.failed");
 }
+
+#[tokio::test]
+async fn extracted_text_is_searchable_and_tenant_scoped() {
+    use copal_store::repo::text;
+
+    let store = fresh_store().await;
+    let acme = tenant();
+    let rival = TenantId::parse("rival").unwrap();
+
+    let manual = create(&store, &acme, "docs/manual.txt").await;
+    let notes = create(&store, &acme, "docs/notes.txt").await;
+    let theirs = create(&store, &rival, "docs/theirs.txt").await;
+
+    text::put_text(
+        &store,
+        &acme,
+        &manual.id,
+        "d1",
+        "the hydraulic press requires monthly maintenance and lubrication",
+        "native",
+    )
+    .await
+    .unwrap();
+    text::put_text(
+        &store,
+        &acme,
+        &notes.id,
+        "d2",
+        "coffee machine descaling notes",
+        "native",
+    )
+    .await
+    .unwrap();
+    text::put_text(
+        &store,
+        &rival,
+        &theirs.id,
+        "d3",
+        "their own hydraulic secrets",
+        "native",
+    )
+    .await
+    .unwrap();
+
+    // The term finds the right document and only this tenant's.
+    let hits = text::search(&store, &acme, "hydraulic", 10).await.unwrap();
+    assert_eq!(hits.len(), 1, "one match for this tenant: {hits:?}");
+    assert_eq!(hits[0].file_id().as_deref(), Some(manual.id.as_str()));
+
+    // The rival's document is invisible here and visible there.
+    let hits = text::search(&store, &rival, "hydraulic", 10).await.unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].file_id().as_deref(), Some(theirs.id.as_str()));
+
+    // Stemming: the analyzer folds "lubrication" and "lubricate" together.
+    let hits = text::search(&store, &acme, "lubricate", 10).await.unwrap();
+    assert_eq!(hits.len(), 1, "the analyzer stems: {hits:?}");
+
+    // Re-extraction replaces rather than accumulating.
+    text::put_text(
+        &store,
+        &acme,
+        &manual.id,
+        "d9",
+        "now about turbines",
+        "tika",
+    )
+    .await
+    .unwrap();
+    let stored = text::get_text(&store, &acme, &manual.id)
+        .await
+        .unwrap()
+        .expect("text row");
+    assert_eq!(stored.digest, "d9");
+    assert_eq!(stored.extractor, "tika");
+    assert!(text::search(&store, &acme, "hydraulic", 10)
+        .await
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        text::search(&store, &acme, "turbines", 10)
+            .await
+            .unwrap()
+            .len(),
+        1
+    );
+
+    // Empty terms refuse rather than matching everything.
+    assert!(text::search(&store, &acme, "  ", 10).await.is_err());
+
+    // Every matching document comes back, and the limit bounds the
+    // page. The ORDER is the engine's full-text scan order (BM25,
+    // which weighs term frequency against document length); this test
+    // does not assert a permutation, because the engine exposes no
+    // per-row score to verify one against, and asserting a guess
+    // would pin behavior nobody here can check.
+    let dense = create(&store, &acme, "docs/dense.txt").await;
+    let sparse = create(&store, &acme, "docs/sparse.txt").await;
+    text::put_text(
+        &store,
+        &acme,
+        &dense.id,
+        "d10",
+        "turbine turbine turbine blades and turbine housings",
+        "native",
+    )
+    .await
+    .unwrap();
+    text::put_text(
+        &store,
+        &acme,
+        &sparse.id,
+        "d11",
+        "one passing mention of a turbine in a long unrelated sentence",
+        "native",
+    )
+    .await
+    .unwrap();
+    let found = text::search(&store, &acme, "turbine", 10).await.unwrap();
+    let ids: Vec<_> = found.iter().filter_map(|h| h.file_id()).collect();
+    assert!(ids.contains(&dense.id.to_string()), "{found:?}");
+    assert!(ids.contains(&sparse.id.to_string()), "{found:?}");
+    assert_eq!(
+        text::search(&store, &acme, "turbine", 1)
+            .await
+            .unwrap()
+            .len(),
+        1,
+        "the limit bounds the page",
+    );
+}

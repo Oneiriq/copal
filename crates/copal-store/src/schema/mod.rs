@@ -17,6 +17,7 @@ pub mod delivery;
 pub mod eventing;
 pub mod flow;
 pub mod s3;
+pub mod text;
 pub mod tus;
 
 use surql::schema::{generate_table_sql, TableDefinition};
@@ -31,15 +32,25 @@ pub fn tables() -> Vec<TableDefinition> {
     tables.extend(tus::tables());
     tables.extend(eventing::tables());
     tables.extend(s3::tables());
+    tables.extend(text::tables());
     tables
 }
 
 /// Render the idempotent DDL statements for the full schema, in order.
+///
+/// Analyzers come first: a full-text index names one, so the index
+/// definition cannot apply before the analyzer exists.
 pub fn schema_statements() -> Vec<String> {
-    tables()
+    let mut statements: Vec<String> = text::analyzers()
         .iter()
-        .flat_map(|table| generate_table_sql(table, true))
-        .collect()
+        .map(|analyzer| analyzer.to_surql_with_options(true))
+        .collect();
+    statements.extend(
+        tables()
+            .iter()
+            .flat_map(|table| generate_table_sql(table, true)),
+    );
+    statements
 }
 
 /// Names that collide with SurrealQL keywords, as (table, name) pairs.
@@ -83,5 +94,15 @@ mod tests {
         assert_eq!(table_defines, tables().len());
         // Idempotency: applying twice must be safe.
         assert!(statements.iter().all(|s| s.contains("IF NOT EXISTS")));
+        // An analyzer must precede the index that names it.
+        let analyzer_at = statements
+            .iter()
+            .position(|s| s.starts_with("DEFINE ANALYZER"))
+            .expect("the text analyzer is defined");
+        let index_at = statements
+            .iter()
+            .position(|s| s.contains("ANALYZER copal_text"))
+            .expect("the text index names it");
+        assert!(analyzer_at < index_at);
     }
 }

@@ -191,6 +191,32 @@ download: their bytes flow only through issued grants. Listings walk
 the live-path index in key order; `delimiter` collapses shared segments
 into `CommonPrefixes`.
 
+## Search
+
+```
+GET /v1/search?q=terms&limit=20   search a tenant's documents
+GET /v1/files/{id}/text            one file's extracted text
+```
+
+Uploads run through a text-extraction step, and what it produces is
+indexed for full-text search in the same database that holds the file
+records. Text and JSON extract natively; other formats need an
+extractor service to be configured (see
+[operations.md](operations.md)), and a file with no extraction
+answers 404 on its text rather than an empty document.
+
+Hits carry the file id, the character count, and an excerpt bounded
+at 400 characters, in the engine's relevance order. There is no score
+field: SurrealDB 3.x does not report per-row BM25 values through the
+full-text scan, so a score column would be a constant dressed as
+relevance. The analyzer lowercases, folds accents, and stems English,
+so `inspect` finds `inspection`.
+
+Search is tenant-scoped in the query itself rather than filtered
+afterward, empty terms refuse, a re-upload replaces what matches, and
+deleting a file removes it from the index so results never name
+content nobody can fetch.
+
 ## Renditions
 
 `POST /v1/files/{id}/renditions` derives an image rendition on the

@@ -28,6 +28,7 @@ async fn pipelined_stack_with(
         ExtensionPolicy::standard(),
         enforce_type_match,
         None,
+        None,
     );
     let state = AppState::new(store, blobs).with_flow(registry);
     let engine = state.flow.clone();

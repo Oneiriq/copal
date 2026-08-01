@@ -414,6 +414,8 @@ pub fn api_router<B: BlobStore + 'static>(state: AppState<B>) -> Router {
         .route("/readyz", get(readyz::<B>))
         .route("/v1/files", post(create_file::<B>).get(list_files::<B>))
         .route("/v1/usage", get(tenant_usage::<B>))
+        .route("/v1/search", get(search_text::<B>))
+        .route("/v1/files/{id}/text", get(file_text::<B>))
         .route(
             "/v1/files/{id}",
             get(get_file::<B>).delete(delete_file::<B>),
@@ -494,6 +496,64 @@ async fn metrics_scrape<B: BlobStore>(
         )],
         crate::metrics::render(),
     ))
+}
+
+/// Search query parameters.
+#[derive(Debug, Deserialize)]
+struct SearchQuery {
+    q: String,
+    #[serde(default)]
+    limit: Option<i64>,
+}
+
+/// Search a tenant's extracted text.
+///
+/// Hits carry the file id and the matched text, in the engine's
+/// full-text relevance order. There is no score field: SurrealDB 3.x
+/// does not report per-row BM25 values, and a column that is always
+/// zero would read as relevance without being it.
+async fn search_text<B: BlobStore>(
+    State(state): State<AppState<B>>,
+    headers: HeaderMap,
+    axum::extract::Query(params): axum::extract::Query<SearchQuery>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let tenant = crate::auth::authenticate(&state, &headers).await?;
+    let limit = params.limit.unwrap_or(20).clamp(1, 100);
+    let hits = copal_store::repo::text::search(&state.store, &tenant, &params.q, limit).await?;
+    let items: Vec<_> = hits
+        .iter()
+        .map(|hit| {
+            json!({
+                "file": hit.file_id(),
+                "chars": hit.chars,
+                // A window, not the document: search results should
+                // not become a bulk text-export channel.
+                "excerpt": hit.body.chars().take(400).collect::<String>(),
+            })
+        })
+        .collect();
+    Ok(Json(json!({ "items": items })))
+}
+
+/// One file's extracted text.
+async fn file_text<B: BlobStore>(
+    State(state): State<AppState<B>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let tenant = crate::auth::authenticate(&state, &headers).await?;
+    let id = parse_id(&id)?;
+    let row = copal_store::repo::text::get_text(&state.store, &tenant, &id)
+        .await?
+        .ok_or_else(|| CopalError::not_found(format!("no extracted text for file {id}")))?;
+    Ok(Json(json!({
+        "file": id.as_str(),
+        "digest": row.digest,
+        "chars": row.chars,
+        "extractor": row.extractor,
+        "text": row.body,
+        "updated_at": row.updated_at,
+    })))
 }
 
 /// A tenant's own usage and ceiling.
@@ -931,6 +991,9 @@ pub(crate) async fn remove_file_core<B: BlobStore>(
         .await?
         .and_then(|record| record.size_bytes);
     file_repo::soft_delete(&state.store, tenant, id).await?;
+    // Search indexes what exists; a tombstoned file's text would keep
+    // answering queries with content nobody can fetch.
+    let _ = copal_store::repo::text::delete_text(&state.store, id).await;
     if let Some(bytes) = released {
         let _ = copal_store::repo::tenant::release_usage(&state.store, tenant, bytes as i64).await;
     }

@@ -48,6 +48,10 @@ pub const MAX_DERIVE_SOURCE_BYTES: u64 = 32 * 1024 * 1024;
 /// than exhausting the host.
 pub const MAX_DECODE_BYTES: u64 = 256 * 1024 * 1024;
 
+/// Ceiling on stored extracted text. Retrieval wants documents, not
+/// disk images; past this the extraction truncates and says so.
+pub const MAX_TEXT_CHARS: usize = 1_000_000;
+
 /// Deterministic idempotency key for a rendition run: one render per
 /// derived record per source content and parameter set.
 pub fn derive_run_key(derived: &FileId, source_digest: &ContentDigest, params: &str) -> String {
@@ -69,13 +73,18 @@ pub fn upload_run_key(file: &FileId, digest: &ContentDigest) -> String {
 /// contradicts its declared type is QUARANTINED instead of merely
 /// annotated; the declared-type lie becomes a blocking verdict.
 /// Unsniffable content never blocks (unverifiable is not a lie).
+#[allow(clippy::too_many_arguments)]
 pub fn standard_registry<B: BlobStore>(
     store: Store,
     residencies: crate::app::Residencies<B>,
     policy: ExtensionPolicy,
     enforce_type_match: bool,
     clamav_addr: Option<String>,
+    extractor_addr: Option<String>,
 ) -> FlowRegistry {
+    let extract_store = store.clone();
+    let extract_residencies = residencies.clone();
+    let extract_addr = extractor_addr;
     let scan_residencies = residencies.clone();
     let scan_addr = clamav_addr.clone();
     let sniff_residencies = residencies.clone();
@@ -84,6 +93,12 @@ pub fn standard_registry<B: BlobStore>(
     let finalize_store = store;
 
     FlowRegistry::new()
+        .activity("extract_text", move |input: Value| {
+            let store = extract_store.clone();
+            let residencies = extract_residencies.clone();
+            let addr = extract_addr.clone();
+            async move { extract_text(&store, &residencies, addr.as_deref(), input).await }
+        })
         .activity("scan_malware", move |input: Value| {
             let residencies = scan_residencies.clone();
             let addr = scan_addr.clone();
@@ -200,6 +215,9 @@ pub fn standard_registry<B: BlobStore>(
                     "type_matches": input["type_matches"],
                     "scanned": input["scanned"],
                     "scanned_digest": input["scanned_digest"],
+                    "extracted": input["extracted"],
+                    "extract_chars": input["extract_chars"],
+                    "extract_truncated": input["extract_truncated"],
                     "verdict": input["verdict"],
                     "verdict_reason": input["verdict_reason"],
                 });
@@ -236,12 +254,16 @@ pub fn standard_registry<B: BlobStore>(
         // The scan sits between the cheap checks and the transition
         // that would make content servable, so a blocked verdict
         // reaches finalize as quarantine rather than ready.
+        // Extraction runs AFTER the scan and BEFORE finalize: text is
+        // pulled from content a scanner has already judged, and the
+        // file becomes readable and searchable in the same step.
         .workflow(
             UPLOAD_WORKFLOW,
             &[
                 "sniff_type",
                 "extension_policy",
                 "scan_malware",
+                "extract_text",
                 "finalize_upload",
             ],
             3,
@@ -359,6 +381,88 @@ fn decode_bounded(source: &[u8]) -> Result<image::DynamicImage, image::ImageErro
         .map_err(image::ImageError::IoError)?;
     reader.limits(limits);
     reader.decode()
+}
+
+/// Pull searchable text out of content.
+///
+/// Text and JSON decode here; anything else needs a real parser, and
+/// Copal does not carry one. An optional extractor service (Apache
+/// Tika speaks this shape) handles the rest, the same seam clamd
+/// uses: configured, it participates; absent, the record says no
+/// extraction happened rather than implying the document was empty.
+async fn extract_text<B: BlobStore>(
+    store: &Store,
+    residencies: &crate::app::Residencies<B>,
+    extractor: Option<&str>,
+    input: Value,
+) -> copal_core::Result<Value> {
+    let mut out = input.clone();
+    // Blocked content is never opened for text: a quarantined body is
+    // exactly what should not be parsed further.
+    if out["verdict"] == json!("blocked") {
+        out["extracted"] = json!(false);
+        return Ok(out);
+    }
+    let tenant = TenantId::parse(input["tenant"].as_str().unwrap_or_default())?;
+    let file = FileId::parse(input["file"].as_str().unwrap_or_default())?;
+    let digest = ContentDigest::parse(input["digest"].as_str().unwrap_or_default())?;
+    let residency = input["residency"].as_str().unwrap_or("local");
+    let declared = input["declared_type"].as_str().unwrap_or_default();
+    let sniffed = input["sniffed_type"].as_str().unwrap_or_default();
+
+    let blobs = residencies.get(residency)?;
+    let content = blobs.read(&digest).await?;
+
+    let native = declared.starts_with("text/")
+        || sniffed.starts_with("text/")
+        || declared == "application/json"
+        || sniffed == "application/json";
+
+    let (body, extractor_name) = if native {
+        match std::str::from_utf8(&content) {
+            Ok(text) => (text.to_owned(), "native".to_owned()),
+            // Declared text that is not UTF-8 is not text we can index.
+            Err(_) => {
+                out["extracted"] = json!(false);
+                return Ok(out);
+            }
+        }
+    } else if let Some(addr) = extractor {
+        // A configured extractor that cannot be reached is an ERROR,
+        // so the run retries rather than recording an empty document.
+        (
+            crate::extract::fetch(addr, &content).await?,
+            "external".to_owned(),
+        )
+    } else {
+        out["extracted"] = json!(false);
+        return Ok(out);
+    };
+
+    let trimmed = body.trim();
+    if trimmed.is_empty() {
+        out["extracted"] = json!(false);
+        return Ok(out);
+    }
+    let truncated = trimmed.chars().count() > MAX_TEXT_CHARS;
+    let stored: String = if truncated {
+        trimmed.chars().take(MAX_TEXT_CHARS).collect()
+    } else {
+        trimmed.to_owned()
+    };
+    copal_store::repo::text::put_text(
+        store,
+        &tenant,
+        &file,
+        digest.as_str(),
+        &stored,
+        &extractor_name,
+    )
+    .await?;
+    out["extracted"] = json!(true);
+    out["extract_chars"] = json!(stored.chars().count());
+    out["extract_truncated"] = json!(truncated);
+    Ok(out)
 }
 
 /// A business refusal fails the derived record and completes the run.

@@ -31,6 +31,7 @@ Every value comes from the environment. Defaults target local development.
 | `COPAL_TUS_SESSION_TTL_SECS` | `86400` | Resumable-upload and S3 multipart sessions older than this are swept with their staged bytes. |
 | `COPAL_CORS_ORIGINS` | unset | Comma-separated browser-origin allowlist. Unset attaches no CORS layer at all. |
 | `COPAL_CLAMAV_ADDR` | unset | `host:port` of a clamd instance. Set adds a malware scan to the upload pipeline AND withholds content until a scan clears it. |
+| `COPAL_EXTRACTOR_ADDR` | unset | `host:port` (or full URL) of a text extractor speaking Apache Tika's shape: `PUT /tika` with the bytes, `Accept: text/plain`, text in the response body. Text and JSON extract natively without it. |
 | `COPAL_WEBHOOK_ALLOW_PRIVATE_TARGETS` | `false` | Permit webhook endpoints resolving to private, loopback, or link-local addresses. Off by default: tenant-supplied URLs pointing inside the deployment are server-side request forgery. Turn on only when receivers are genuinely internal and tenants are trusted. |
 | `COPAL_RESIDENCIES` | unset | JSON map of named storage residencies beyond `local`, e.g. `{"eu": {"scheme": "s3", "bucket": "...", "endpoint": "...", "region": "...", "access_key_id": "...", "secret_access_key": "...", "encryption_key": "<64 hex>"}}`. Filesystem residencies use `{"scheme": "fs", "root": "...", "encryption_key": "<64 hex>"}`. `encryption_key` is optional and seals that residency's objects under its own key instead of the master. Names are lowercase alphanumeric. |
 
@@ -120,6 +121,27 @@ activity fails, the run retries, and the file never reaches `ready`.
 Without `COPAL_CLAMAV_ADDR` nothing changes, and records say
 `metadata.processing.scanned: false` rather than implying a clean
 verdict nobody rendered.
+
+## Text extraction and search
+
+The upload pipeline extracts text after the malware scan and before
+the transition that publishes a file, so text is pulled from content
+a scanner has already judged, and the file becomes readable and
+searchable in one step. Extracted text lands in its own table with a
+BM25 index, which is what makes stored files searchable without a
+second datastore to keep in sync.
+
+Copal decodes text and JSON itself and carries no document parsers.
+PDF, Office formats, and OCR are large, fast-moving, and historically
+a rich source of memory-safety bugs, which is a poor trade inside a
+service holding other people's files; `COPAL_EXTRACTOR_ADDR` points
+at something that does that work instead. A configured extractor that
+cannot be reached is an error, so the run retries rather than
+recording the document as empty. Extractions are capped at a million
+characters and the record says when it truncated.
+
+Extracted text follows its content: a re-upload replaces it, a delete
+removes it, and each row records which digest it came from.
 
 ## Outbound request policy
 

@@ -10,6 +10,7 @@ pub mod config;
 pub mod contract;
 pub mod edge;
 pub mod error;
+pub mod extract;
 pub mod graphql;
 pub mod metrics;
 pub mod netguard;

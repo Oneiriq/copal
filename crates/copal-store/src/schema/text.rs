@@ -1,0 +1,86 @@
+//! Text cluster: extracted document text and its search index.
+//!
+//! Text lives in its own table rather than on the file row: a
+//! document's text can be megabytes, and file records are read on
+//! every listing. The row records WHICH content it came from, so a
+//! re-upload's stale text is detectable the same way a stale scan
+//! verdict is.
+//!
+//! The BM25 index is what makes stored files searchable without a
+//! second datastore. SurrealDB analyzes and scores in the database
+//! Copal already runs on, so lexical recall costs an index
+//! definition rather than a search cluster.
+
+use surql::schema::{
+    bm25_index, datetime_field, index, int_field, record_field, standard_analyzer, string_field,
+    table_schema, unique_index, AnalyzerDefinition, FieldDefinition, TableDefinition, TableMode,
+    TokenFilter,
+};
+
+/// The analyzer the text index uses: class tokenizer, lowercased and
+/// ASCII-folded, with English stemming so "running" finds "run".
+pub fn analyzers() -> Vec<AnalyzerDefinition> {
+    vec![standard_analyzer("copal_text").with_filter(TokenFilter::snowball("english"))]
+}
+
+/// All tables in this cluster.
+pub fn tables() -> Vec<TableDefinition> {
+    vec![file_text_table()]
+}
+
+fn built(builder: surql::schema::FieldBuilder) -> FieldDefinition {
+    builder
+        .build_unchecked()
+        .expect("static schema field definitions are valid by construction")
+}
+
+fn file_text_table() -> TableDefinition {
+    table_schema("file_text")
+        .with_mode(TableMode::Schemafull)
+        .with_fields([
+            built(string_field("tenant_id").assertion("$value != ''")),
+            built(record_field("file", Some("file")).nullable(true)),
+            // The content this text was extracted from; a re-upload
+            // leaves the old row detectable rather than silently
+            // authoritative.
+            built(string_field("digest").assertion("$value != ''")),
+            built(string_field("body")),
+            built(int_field("chars").default("0")),
+            // What produced it: `native` for text Copal decoded
+            // itself, or the extractor's name.
+            built(string_field("extractor").default("'native'")),
+            built(
+                datetime_field("created_at")
+                    .default("time::now()")
+                    .readonly(true),
+            ),
+            built(datetime_field("updated_at").value("time::now()")),
+        ])
+        .with_indexes([
+            // One text row per file; a re-extraction replaces it.
+            unique_index("uniq_text_file", ["file"]),
+            index("idx_text_tenant", ["tenant_id", "created_at"]),
+            bm25_index("idx_text_body", ["body"], "copal_text"),
+        ])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_index_is_analyzed_and_scored() {
+        let ddl = surql::schema::generate_table_sql(&file_text_table(), false).join("\n");
+        assert!(
+            ddl.contains("FULLTEXT ANALYZER copal_text BM25"),
+            "the text index must be analyzed and BM25-scored: {ddl}",
+        );
+    }
+
+    #[test]
+    fn the_analyzer_stems() {
+        let sql = analyzers()[0].to_surql();
+        assert!(sql.contains("snowball(english)"), "{sql}");
+        assert!(sql.contains("lowercase"), "{sql}");
+    }
+}

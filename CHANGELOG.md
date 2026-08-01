@@ -90,6 +90,17 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 - Admin token rotation without a restart, and forwarded origins recorded on
   audit rows.
 
+### Governance
+
+- **The contract declares its own ceilings.** The GraphQL depth and
+  complexity limits were hand-wired at the router, invisible to the
+  artifacts and the differ. They now live in the contract, the served
+  schema applies them from it, the OpenAPI document carries them as
+  `x-limits`, and tightening one is a breaking change the differ names.
+  An oversized payload also surfaces as 413 `payload_too_large` on the
+  GraphQL face; it was downgraded to a generic 400 because the error
+  vocabulary had no such refusal.
+
 ### Fixed
 
 - **Lexical search ranks by relevance.** The full-text index decides which

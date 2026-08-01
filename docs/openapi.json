@@ -1149,5 +1149,9 @@
         }
       }
     }
+  },
+  "x-limits": {
+    "max_complexity": 500,
+    "max_depth": 10
   }
 }

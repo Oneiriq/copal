@@ -7,7 +7,8 @@
 //! cannot disagree because they are the same object.
 
 use janus::{
-    Action, ActionField, ActionOutput, Contract, FieldExposure, Resource, SubResource, TypeRef,
+    Action, ActionField, ActionOutput, Contract, ContractLimits, FieldExposure, Resource,
+    SubResource, TypeRef,
 };
 
 /// The wire contract for the files resource.
@@ -16,6 +17,14 @@ pub fn contract() -> Contract {
         name: "copal".into(),
         version: "0.1.0".into(),
         ir_revision: 1,
+        // The ceilings the served schema enforces. Declared here so
+        // they appear in the artifacts and tightening them is a
+        // breaking change the differ names. The schema has no cycles,
+        // so honest queries sit far below both.
+        limits: Some(ContractLimits {
+            max_depth: Some(10),
+            max_complexity: Some(500),
+        }),
         resources: vec![
             Resource {
                 name: "files".into(),

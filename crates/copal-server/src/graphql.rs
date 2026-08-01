@@ -80,7 +80,7 @@ fn to_janus_error(err: CopalError) -> JanusError {
         CopalError::Forbidden(m) => JanusError::Forbidden(m),
         CopalError::NotFound(_) => JanusError::NotFound,
         CopalError::Conflict(m) => JanusError::Conflict(m),
-        CopalError::PayloadTooLarge(m) => JanusError::BadRequest(m),
+        CopalError::PayloadTooLarge(m) => JanusError::PayloadTooLarge(m),
         CopalError::Store(_) | CopalError::Blob(_) => {
             tracing::error!(error = %err, "internal failure");
             JanusError::Internal("internal error".into())
@@ -587,9 +587,10 @@ struct GraphqlState<B: BlobStore> {
 /// construction-time bugs the contract tests catch first.
 pub fn graphql_router<B: BlobStore + 'static>(state: AppState<B>) -> Router {
     let tables = copal_store::schema::tables();
-    // Depth and complexity ceilings close the alias-amplification hole
-    // (N aliases of files(limit: 100) multiplying into the store). The
-    // schema has no cycles, so honest queries sit far below both.
+    // The contract's declared limits close the alias-amplification
+    // hole (N aliases of files(limit: 100) multiplying into the
+    // store); schema_builder applies them, so the served schema and
+    // the published document cannot disagree about the ceilings.
     // Introspection stays on by choice: GET /graphql serves the SDL
     // openly, so introspection reveals nothing the contract does not.
     let schema = janus::runtime::graphql::schema_builder(
@@ -597,8 +598,6 @@ pub fn graphql_router<B: BlobStore + 'static>(state: AppState<B>) -> Router {
         dispatcher(state.clone()).expect("resolver completeness"),
     )
     .expect("contract builds a schema")
-    .limit_depth(10)
-    .limit_complexity(500)
     .finish()
     .expect("schema finishes");
     let sdl =

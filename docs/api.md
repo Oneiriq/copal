@@ -494,7 +494,12 @@ exposes its column as `action`: `event` is reserved in SurrealDB v3,
 and the contract refuses renames that would collide there.
 
 Depth is capped at 10 and complexity at 500, which rejects alias
-amplification before any resolver runs. Auth failures surface as GraphQL
+amplification before any resolver runs. A deployment can lock the
+face further with `COPAL_PERSISTED_OPERATIONS`, a JSON file of sha256
+hash to document: only listed operations run, named by hash in the
+Apollo `persistedQuery` shape or sent whole, and anything else
+refuses before parsing. The file is verified at startup, so an
+allowlist that lies about a hash refuses to boot. Auth failures surface as GraphQL
 errors with `extensions.code`, keeping transport status 200.
 
 ## Errors

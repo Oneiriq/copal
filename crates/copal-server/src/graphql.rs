@@ -623,11 +623,60 @@ pub fn graphql_router<B: BlobStore + 'static>(state: AppState<B>) -> Router {
 /// The GraphQL-over-HTTP request body.
 #[derive(serde::Deserialize)]
 struct GraphqlRequest {
-    query: String,
+    #[serde(default)]
+    query: Option<String>,
     #[serde(default)]
     variables: Option<serde_json::Value>,
     #[serde(default, rename = "operationName")]
     operation_name: Option<String>,
+    /// Carries `persistedQuery.sha256Hash` in the Apollo shape.
+    #[serde(default)]
+    extensions: Option<serde_json::Value>,
+}
+
+/// Resolve the document to execute under the persisted-operations
+/// policy. Unconfigured, any provided document runs. Configured, a
+/// request may name a known hash (with or without the document
+/// beside it) or send a document whose hash is known; anything else
+/// refuses before parsing costs anything.
+fn resolve_document(
+    allowlist: Option<&std::collections::HashMap<String, String>>,
+    body: &GraphqlRequest,
+) -> Result<String, String> {
+    let named_hash = body
+        .extensions
+        .as_ref()
+        .and_then(|e| e.get("persistedQuery"))
+        .and_then(|p| p.get("sha256Hash"))
+        .and_then(|h| h.as_str());
+    let Some(allowlist) = allowlist else {
+        return body
+            .query
+            .clone()
+            .ok_or_else(|| "query is required".to_owned());
+    };
+    if let Some(hash) = named_hash {
+        let Some(stored) = allowlist.get(hash) else {
+            return Err("unknown persisted operation".to_owned());
+        };
+        if let Some(query) = &body.query {
+            // A document sent beside its hash must BE that document,
+            // or the hash is decoration over something else.
+            if hex::encode(<sha2::Sha256 as sha2::Digest>::digest(query.as_bytes())) != hash {
+                return Err("query does not match the named hash".to_owned());
+            }
+        }
+        return Ok(stored.clone());
+    }
+    let Some(query) = &body.query else {
+        return Err("query is required".to_owned());
+    };
+    let hash = hex::encode(<sha2::Sha256 as sha2::Digest>::digest(query.as_bytes()));
+    if allowlist.contains_key(&hash) {
+        Ok(query.clone())
+    } else {
+        Err("this deployment runs persisted operations only".to_owned())
+    }
 }
 
 async fn execute<B: BlobStore>(
@@ -635,7 +684,19 @@ async fn execute<B: BlobStore>(
     headers: HeaderMap,
     Json(body): Json<GraphqlRequest>,
 ) -> axum::response::Response {
-    let mut request = async_graphql::Request::new(body.query);
+    let document = match resolve_document(gql.app.persisted_operations.as_deref(), &body) {
+        Ok(document) => document,
+        Err(message) => {
+            return Json(serde_json::json!({
+                "errors": [{
+                    "message": message,
+                    "extensions": { "code": "bad_request" },
+                }],
+            }))
+            .into_response();
+        }
+    };
+    let mut request = async_graphql::Request::new(document);
     if let Some(variables) = body.variables {
         request = request.variables(async_graphql::Variables::from_json(variables));
     }

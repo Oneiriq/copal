@@ -626,3 +626,81 @@ async fn webhooks_and_edge_tokens_serve_on_the_graphql_face() {
         "removal deactivates rather than deleting: {body}",
     );
 }
+
+#[tokio::test]
+async fn persisted_operations_lock_the_face_to_known_documents() {
+    use sha2::Digest as _;
+
+    let store = Store::connect(StoreConfig::memory()).await.unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let blobs = ObjectStore::open(dir.path().to_str().unwrap()).unwrap();
+    let mut state = AppState::new(store, blobs);
+    let listed = "{ files { items { id } } }";
+    let hash = hex::encode(sha2::Sha256::digest(listed.as_bytes()));
+    state.persisted_operations = Some(std::sync::Arc::new(
+        [(hash.clone(), listed.to_owned())].into_iter().collect(),
+    ));
+    let router = build_router(state);
+    let _dir = dir;
+
+    let send = |body: Value| {
+        let router = router.clone();
+        async move {
+            let request = Request::builder()
+                .method("POST")
+                .uri("/graphql")
+                .header("x-copal-tenant", "acme")
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap();
+            json_body(router.oneshot(request).await.unwrap()).await
+        }
+    };
+
+    // The named hash runs without carrying the document.
+    let body = send(json!({
+        "extensions": { "persistedQuery": { "sha256Hash": hash } }
+    }))
+    .await;
+    assert!(body.get("errors").is_none(), "{body:#?}");
+
+    // The raw document runs too, because its hash is listed.
+    let body = send(json!({ "query": listed })).await;
+    assert!(body.get("errors").is_none(), "{body:#?}");
+
+    // An unlisted document refuses before parsing.
+    let body = send(json!({ "query": "{ files { items { id path } } }" })).await;
+    assert!(
+        body["errors"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("persisted operations only"),
+        "{body:#?}",
+    );
+
+    // An unknown hash refuses, and a document that contradicts its
+    // named hash refuses rather than trusting either half.
+    let body = send(json!({
+        "extensions": { "persistedQuery": { "sha256Hash": "0".repeat(64) } }
+    }))
+    .await;
+    assert!(
+        body["errors"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("unknown persisted operation"),
+        "{body:#?}",
+    );
+    let body = send(json!({
+        "query": "{ files { items { id path } } }",
+        "extensions": { "persistedQuery": { "sha256Hash": hash } }
+    }))
+    .await;
+    assert!(
+        body["errors"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("does not match"),
+        "{body:#?}",
+    );
+}

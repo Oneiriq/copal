@@ -136,14 +136,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
         }
     }
+    if let Some(path) = &config.persisted_operations {
+        let raw = std::fs::read_to_string(path)
+            .map_err(|e| format!("COPAL_PERSISTED_OPERATIONS: {path}: {e}"))?;
+        let listed: std::collections::HashMap<String, String> = serde_json::from_str(&raw)
+            .map_err(|e| format!("COPAL_PERSISTED_OPERATIONS: {path}: {e}"))?;
+        // Every hash must be the hash of its document, checked now: an
+        // allowlist that lies refuses at startup rather than serving
+        // the wrong operation later.
+        for (hash, document) in &listed {
+            let actual = hex::encode(<sha2::Sha256 as sha2::Digest>::digest(document.as_bytes()));
+            if &actual != hash {
+                return Err(
+                    format!("COPAL_PERSISTED_OPERATIONS: entry {hash} hashes to {actual}",).into(),
+                );
+            }
+        }
+        tracing::info!(
+            operations = listed.len(),
+            "graphql runs persisted operations only"
+        );
+        state.persisted_operations = Some(std::sync::Arc::new(listed));
+    }
     tracing::info!(instance = %state.instance_id, "upload-claim owner id");
     let instance_id = state.instance_id.clone();
     let cors = config.cors_origins.as_deref();
 
-    // The S3 gateway serves bucket routes at the root of its own
-    // listener, so stock tooling needs only an endpoint URL. It exists
-    // only with an encryption key: SigV4 verification reads the shared
-    // secret back, and Copal stores such secrets sealed or not at all.
     if state.cipher.is_none() {
         tracing::info!("sealed-secret surfaces are disabled: COPAL_BLOB_ENCRYPTION_KEY is unset",);
     }

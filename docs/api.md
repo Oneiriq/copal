@@ -194,9 +194,15 @@ into `CommonPrefixes`.
 ## Search
 
 ```
-GET /v1/search?q=terms&limit=20   search a tenant's documents
-GET /v1/files/{id}/text            one file's extracted text
+GET /v1/search?q=terms&mode=hybrid&limit=20   search a tenant's documents
+GET /v1/files/{id}/text                        one file's extracted text
 ```
+
+`mode` is `lexical` (words), `semantic` (meaning), or `hybrid` (both,
+fused; the default). Semantic modes need an embedding service; without
+one they answer lexically and the response's `mode` field says which
+retrieval actually ran, so a client can tell. An unrecognised mode is
+a request error rather than a silent default.
 
 Uploads run through a text-extraction step, and what it produces is
 indexed for full-text search in the same database that holds the file
@@ -204,6 +210,16 @@ records. Text and JSON extract natively; other formats need an
 extractor service to be configured (see
 [operations.md](operations.md)), and a file with no extraction
 answers 404 on its text rather than an empty document.
+
+Hybrid fuses the two rankings by reciprocal rank rather than by
+score. Lexical and semantic relevance are not on a comparable scale,
+and this engine reports no lexical score at all, so fusing positions
+is both simpler and more honest: a document near the top of either
+ranking scores well, one near the top of both scores best.
+
+Embeddings are per document, not per passage. That answers "which
+documents are about this" and does not yet answer "which paragraph
+says it"; passage-level chunking is the next increment.
 
 Hits carry the file id, the character count, and an excerpt bounded
 at 400 characters, in the engine's relevance order. There is no score

@@ -108,8 +108,11 @@ stack still glues object storage to a separate vector database.
 2. Text extraction (shipped): native for text and JSON, an external
    extractor seam for everything else, indexed for BM25 search in
    the same database that holds the records.
-3. Embeddings beside that text, so retrieval is semantic as well as
-   lexical, and hybrid ranking fuses the two.
+3. Embeddings (shipped): per-document vectors from any service
+   speaking the OpenAI embeddings shape, HNSW-indexed, with hybrid
+   retrieval fusing lexical and semantic rankings. Remaining:
+   passage-level chunking, so retrieval returns the paragraph rather
+   than the document.
 4. On-the-fly rendition URLs, transcodes, and multi-source ingestion,
    the axes the hosted services sell.
 

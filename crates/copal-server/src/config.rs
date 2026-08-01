@@ -59,6 +59,12 @@ pub struct Config {
     /// shape. Text and JSON extract natively either way; this covers
     /// the formats Copal declines to parse itself.
     pub extractor_addr: Option<String>,
+    /// Embedding service (OpenAI `/v1/embeddings` shape), the model
+    /// to ask it for, and the width that model emits. All three are
+    /// needed: the vector index is defined at that dimension.
+    pub embedding_addr: Option<String>,
+    pub embedding_model: String,
+    pub embedding_dimension: u32,
 }
 
 fn env_or(key: &str, default: &str) -> String {
@@ -119,6 +125,9 @@ impl Config {
             }),
             clamav_addr: std::env::var("COPAL_CLAMAV_ADDR").ok(),
             extractor_addr: std::env::var("COPAL_EXTRACTOR_ADDR").ok(),
+            embedding_addr: std::env::var("COPAL_EMBEDDING_ADDR").ok(),
+            embedding_model: env_or("COPAL_EMBEDDING_MODEL", "nomic-embed-text"),
+            embedding_dimension: env_parse("COPAL_EMBEDDING_DIMENSION", 768),
             allow_private_webhook_targets: env_parse("COPAL_WEBHOOK_ALLOW_PRIVATE_TARGETS", false),
             residencies: std::env::var("COPAL_RESIDENCIES")
                 .ok()

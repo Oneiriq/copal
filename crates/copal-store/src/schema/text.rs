@@ -12,9 +12,9 @@
 //! definition rather than a search cluster.
 
 use surql::schema::{
-    bm25_index, datetime_field, index, int_field, record_field, standard_analyzer, string_field,
-    table_schema, unique_index, AnalyzerDefinition, FieldDefinition, TableDefinition, TableMode,
-    TokenFilter,
+    bm25_index, datetime_field, hnsw_index, index, int_field, record_field, standard_analyzer,
+    string_field, table_schema, unique_index, AnalyzerDefinition, FieldDefinition,
+    HnswDistanceType, IndexDefinition, MTreeVectorType, TableDefinition, TableMode, TokenFilter,
 };
 
 /// The analyzer the text index uses: class tokenizer, lowercased and
@@ -46,6 +46,11 @@ fn file_text_table() -> TableDefinition {
             built(string_field("digest").assertion("$value != ''")),
             built(string_field("body")),
             built(int_field("chars").default("0")),
+            // The document's embedding, when one was computed. Its
+            // width is the deployment's model's business, so the
+            // vector index is defined at startup rather than here.
+            built(surql::schema::array_field("embedding").nullable(true)),
+            built(string_field("embedding_model").nullable(true)),
             // What produced it: `native` for text Copal decoded
             // itself, or the extractor's name.
             built(string_field("extractor").default("'native'")),
@@ -64,6 +69,26 @@ fn file_text_table() -> TableDefinition {
         ])
 }
 
+/// The vector index over stored embeddings.
+///
+/// HNSW needs its dimension at definition time, and the dimension is
+/// whatever the configured embedding model emits. So this is not part
+/// of the static schema: a deployment with embeddings configured
+/// applies it at startup, and one without never defines it.
+pub fn vector_index(dimension: u32) -> IndexDefinition {
+    hnsw_index(
+        "idx_text_embedding",
+        "embedding",
+        dimension,
+        // Cosine is the metric the common embedding models are
+        // trained for; their vectors are direction, not magnitude.
+        HnswDistanceType::Cosine,
+        MTreeVectorType::F64,
+        None,
+        None,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -75,6 +100,13 @@ mod tests {
             ddl.contains("FULLTEXT ANALYZER copal_text BM25"),
             "the text index must be analyzed and BM25-scored: {ddl}",
         );
+    }
+
+    #[test]
+    fn the_vector_index_carries_its_dimension() {
+        let ddl = vector_index(768).to_surql("file_text");
+        assert!(ddl.contains("HNSW DIMENSION 768"), "{ddl}");
+        assert!(ddl.contains("DIST COSINE"), "{ddl}");
     }
 
     #[test]

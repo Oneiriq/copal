@@ -25,6 +25,7 @@ async fn stack() -> (axum::Router, FlowEngine, tempfile::TempDir) {
         false,
         None,
         None,
+        None,
     );
     let state = AppState::new(store, blobs).with_flow(registry);
     let engine = state.flow.clone();

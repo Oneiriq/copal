@@ -41,6 +41,7 @@ async fn stack(extractor: Option<String>) -> (axum::Router, FlowEngine, tempfile
         false,
         None,
         extractor,
+        None,
     );
     let state = AppState::new(store, blobs).with_flow(registry);
     let engine = state.flow.clone();
@@ -239,6 +240,168 @@ async fn search_is_tenant_scoped_and_bounded() {
 
     // Empty terms refuse rather than returning the corpus.
     let get = req("GET", "/v1/search?q=", Body::empty());
+    assert_eq!(
+        router.clone().oneshot(get).await.unwrap().status(),
+        StatusCode::BAD_REQUEST,
+    );
+}
+
+/// An embedding service in the OpenAI shape whose vectors encode a
+/// crude "topic": the returned vector leans toward whichever keyword
+/// the text contains, so semantic neighbours are predictable.
+async fn fake_embedder() -> String {
+    use axum::routing::post;
+    let app = Router::new().route(
+        "/v1/embeddings",
+        post(|body: axum::Json<Value>| async move {
+            let input = body.0["input"].as_str().unwrap_or_default().to_lowercase();
+            // Three axes: finance, machinery, and a constant so no
+            // vector is all zeros (cosine is undefined at the origin).
+            let finance = f64::from(
+                input.contains("revenue") || input.contains("earnings") || input.contains("profit"),
+            );
+            let machinery = f64::from(
+                input.contains("turbine") || input.contains("engine") || input.contains("motor"),
+            );
+            axum::Json(json!({
+                "data": [ { "embedding": [finance, machinery, 0.01] } ]
+            }))
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    addr
+}
+
+async fn semantic_stack() -> (axum::Router, FlowEngine, tempfile::TempDir) {
+    let addr = fake_embedder().await;
+    let store = Store::connect(StoreConfig::memory()).await.unwrap();
+    store.ensure_vector_index(3).await.unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let blobs = ObjectStore::open(dir.path().to_str().unwrap()).unwrap();
+    let embedding = Some((addr, "test-model".to_owned()));
+    let registry = standard_registry(
+        store.clone(),
+        Residencies::local_only(blobs.clone()),
+        ExtensionPolicy::standard(),
+        false,
+        None,
+        None,
+        embedding.clone(),
+    );
+    let state = AppState::new(store, blobs)
+        .with_flow(registry)
+        .with_embedding(embedding);
+    let engine = state.flow.clone();
+    (build_router(state), engine, dir)
+}
+
+async fn search_mode(router: &axum::Router, terms: &str, mode: &str) -> Value {
+    let get = req(
+        "GET",
+        &format!("/v1/search?q={terms}&mode={mode}"),
+        Body::empty(),
+    );
+    json_body(router.clone().oneshot(get).await.unwrap()).await
+}
+
+#[tokio::test]
+async fn semantic_search_finds_documents_that_share_no_words() {
+    let (router, engine, _dir) = semantic_stack().await;
+    let earnings = upload(
+        &router,
+        "docs/earnings.txt",
+        "text/plain",
+        b"quarterly revenue and profit summary",
+    )
+    .await;
+    upload(
+        &router,
+        "docs/maintenance.txt",
+        "text/plain",
+        b"turbine and motor service schedule",
+    )
+    .await;
+    assert!(engine.tick("w").await.unwrap());
+    assert!(engine.tick("w").await.unwrap());
+
+    // "earnings" appears in no document, so lexical search finds
+    // nothing; the embedding places it beside the finance document.
+    let lexical = search_mode(&router, "earnings", "lexical").await;
+    assert!(
+        lexical["items"].as_array().unwrap().is_empty(),
+        "no document contains the word: {lexical}",
+    );
+
+    let semantic = search_mode(&router, "earnings", "semantic").await;
+    assert_eq!(semantic["mode"], "semantic");
+    let items = semantic["items"].as_array().unwrap();
+    assert!(
+        !items.is_empty(),
+        "meaning found what words could not: {semantic}"
+    );
+    assert_eq!(items[0]["file"], earnings.as_str());
+}
+
+#[tokio::test]
+async fn hybrid_search_returns_what_either_retrieval_found() {
+    let (router, engine, _dir) = semantic_stack().await;
+    let revenue = upload(
+        &router,
+        "docs/revenue.txt",
+        "text/plain",
+        b"revenue grew in every region",
+    )
+    .await;
+    let turbine = upload(
+        &router,
+        "docs/turbine.txt",
+        "text/plain",
+        b"turbine blade replacement",
+    )
+    .await;
+    assert!(engine.tick("w").await.unwrap());
+    assert!(engine.tick("w").await.unwrap());
+
+    // A word one document uses literally, in a topic the other shares.
+    let hybrid = search_mode(&router, "revenue", "hybrid").await;
+    assert_eq!(hybrid["mode"], "hybrid");
+    let ids: Vec<&str> = hybrid["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["file"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids.first(), Some(&revenue.as_str()), "{hybrid}");
+    assert!(!ids.contains(&turbine.as_str()) || ids.len() > 1);
+}
+
+#[tokio::test]
+async fn semantic_modes_degrade_to_lexical_without_a_service() {
+    // No embedding service configured: asking for meaning gets words
+    // and the answer says so, rather than erroring or pretending.
+    let (router, engine, _dir) = stack(None).await;
+    upload(
+        &router,
+        "docs/plain.txt",
+        "text/plain",
+        b"turbine inspection",
+    )
+    .await;
+    assert!(engine.tick("w").await.unwrap());
+
+    let body = search_mode(&router, "turbine", "hybrid").await;
+    assert_eq!(body["mode"], "lexical", "{body}");
+    assert_eq!(body["items"].as_array().unwrap().len(), 1);
+
+    let body = search_mode(&router, "turbine", "semantic").await;
+    assert_eq!(body["mode"], "lexical", "{body}");
+
+    // An unknown mode is a request error, not a silent default.
+    let get = req("GET", "/v1/search?q=turbine&mode=telepathic", Body::empty());
     assert_eq!(
         router.clone().oneshot(get).await.unwrap().status(),
         StatusCode::BAD_REQUEST,

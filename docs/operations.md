@@ -32,6 +32,9 @@ Every value comes from the environment. Defaults target local development.
 | `COPAL_CORS_ORIGINS` | unset | Comma-separated browser-origin allowlist. Unset attaches no CORS layer at all. |
 | `COPAL_CLAMAV_ADDR` | unset | `host:port` of a clamd instance. Set adds a malware scan to the upload pipeline AND withholds content until a scan clears it. |
 | `COPAL_EXTRACTOR_ADDR` | unset | `host:port` (or full URL) of a text extractor speaking Apache Tika's shape: `PUT /tika` with the bytes, `Accept: text/plain`, text in the response body. Text and JSON extract natively without it. |
+| `COPAL_EMBEDDING_ADDR` | unset | Embedding service speaking the OpenAI `/v1/embeddings` shape (Ollama, llama.cpp, text-embeddings-inference, LocalAI, vLLM, OpenAI). Set enables semantic and hybrid search. |
+| `COPAL_EMBEDDING_MODEL` | `nomic-embed-text` | Model name passed to that service. |
+| `COPAL_EMBEDDING_DIMENSION` | `768` | Width the model emits. The vector index is defined at this dimension at startup, so it must match the model. |
 | `COPAL_WEBHOOK_ALLOW_PRIVATE_TARGETS` | `false` | Permit webhook endpoints resolving to private, loopback, or link-local addresses. Off by default: tenant-supplied URLs pointing inside the deployment are server-side request forgery. Turn on only when receivers are genuinely internal and tenants are trusted. |
 | `COPAL_RESIDENCIES` | unset | JSON map of named storage residencies beyond `local`, e.g. `{"eu": {"scheme": "s3", "bucket": "...", "endpoint": "...", "region": "...", "access_key_id": "...", "secret_access_key": "...", "encryption_key": "<64 hex>"}}`. Filesystem residencies use `{"scheme": "fs", "root": "...", "encryption_key": "<64 hex>"}`. `encryption_key` is optional and seals that residency's objects under its own key instead of the master. Names are lowercase alphanumeric. |
 
@@ -142,6 +145,21 @@ characters and the record says when it truncated.
 
 Extracted text follows its content: a re-upload replaces it, a delete
 removes it, and each row records which digest it came from.
+
+With an embedding service configured, the pipeline also embeds that
+text and stores the vector beside it, indexed with HNSW at the
+model's dimension. Copal runs no models: inference means weights, a
+runtime, and hardware assumptions that have no business inside a
+storage service, and anything speaking the OpenAI embeddings shape
+can serve it. Changing models means changing
+`COPAL_EMBEDDING_DIMENSION` to match and re-embedding existing
+documents; a vector of the wrong width is refused by the index.
+
+Embeddings are per document rather than per passage, which answers
+"which documents are about this" rather than "which paragraph says
+it". Attaching an embedding is guarded on the digest, so a vector
+computed for content that has since been replaced never attaches to
+the new text.
 
 ## Outbound request policy
 

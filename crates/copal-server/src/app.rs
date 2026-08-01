@@ -118,6 +118,9 @@ pub struct AppState<B: BlobStore> {
     /// scanning: serving bytes that no scanner has cleared would make
     /// the scanner decorative.
     pub scan_gates_serving: bool,
+    /// Embedding service address and model, when semantic retrieval
+    /// is configured.
+    pub embedding: Option<(String, String)>,
 }
 
 impl<B: BlobStore> AppState<B> {
@@ -133,7 +136,14 @@ impl<B: BlobStore> AppState<B> {
             instance_id: ulid::Ulid::new().to_string().to_ascii_lowercase(),
             auth: crate::auth::AuthConfig::default(),
             scan_gates_serving: false,
+            embedding: None,
         }
+    }
+
+    /// Install the embedding service semantic search asks.
+    pub fn with_embedding(mut self, embedding: Option<(String, String)>) -> Self {
+        self.embedding = embedding;
+        self
     }
 
     /// Withhold content while a scan is outstanding.
@@ -498,12 +508,15 @@ async fn metrics_scrape<B: BlobStore>(
     ))
 }
 
-/// Search query parameters.
+/// Search query parameters. `mode` selects retrieval: `lexical`
+/// (words), `semantic` (meaning), or `hybrid` (both, fused).
 #[derive(Debug, Deserialize)]
 struct SearchQuery {
     q: String,
     #[serde(default)]
     limit: Option<i64>,
+    #[serde(default)]
+    mode: Option<String>,
 }
 
 /// Search a tenant's extracted text.
@@ -519,20 +532,75 @@ async fn search_text<B: BlobStore>(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let tenant = crate::auth::authenticate(&state, &headers).await?;
     let limit = params.limit.unwrap_or(20).clamp(1, 100);
-    let hits = copal_store::repo::text::search(&state.store, &tenant, &params.q, limit).await?;
-    let items: Vec<_> = hits
+    let requested = params.mode.as_deref().unwrap_or("hybrid");
+    // Semantic modes need an embedding service; without one, asking
+    // for meaning gets words rather than an error, and the response
+    // says which retrieval actually ran.
+    let semantic_available = state.embedding.is_some();
+    let mode = match (requested, semantic_available) {
+        ("lexical", _) => "lexical",
+        ("semantic", true) => "semantic",
+        ("semantic", false) => "lexical",
+        ("hybrid", true) => "hybrid",
+        ("hybrid", false) => "lexical",
+        (other, _) => {
+            return Err(CopalError::validation(format!(
+                "mode must be lexical, semantic, or hybrid, not {other}",
+            ))
+            .into())
+        }
+    };
+
+    let lexical = if mode != "semantic" {
+        copal_store::repo::text::search(&state.store, &tenant, &params.q, limit).await?
+    } else {
+        Vec::new()
+    };
+    let semantic = if mode == "lexical" {
+        Vec::new()
+    } else {
+        let (addr, model) = state.embedding.clone().expect("checked above");
+        let vector = crate::embed::embed(&addr, &model, &params.q).await?;
+        copal_store::repo::text::semantic_search(&state.store, &tenant, &vector, limit).await?
+    };
+
+    // Fuse by rank, then render from whichever list carried the hit.
+    let mut bodies: std::collections::HashMap<String, (i64, String)> =
+        std::collections::HashMap::new();
+    let mut rank = |hits: &[copal_store::repo::text::SearchHit]| -> Vec<String> {
+        hits.iter()
+            .filter_map(|hit| {
+                let id = hit.file_id()?;
+                bodies
+                    .entry(id.clone())
+                    .or_insert_with(|| (hit.chars, hit.body.clone()));
+                Some(id)
+            })
+            .collect()
+    };
+    let lexical_ids = rank(&lexical);
+    let semantic_ids = rank(&semantic);
+    let ordered = match mode {
+        "lexical" => lexical_ids,
+        "semantic" => semantic_ids,
+        _ => crate::embed::reciprocal_rank_fusion(&[lexical_ids, semantic_ids], 60.0),
+    };
+
+    let items: Vec<_> = ordered
         .iter()
-        .map(|hit| {
-            json!({
-                "file": hit.file_id(),
-                "chars": hit.chars,
+        .take(limit as usize)
+        .filter_map(|id| {
+            let (chars, body) = bodies.get(id)?;
+            Some(json!({
+                "file": id,
+                "chars": chars,
                 // A window, not the document: search results should
                 // not become a bulk text-export channel.
-                "excerpt": hit.body.chars().take(400).collect::<String>(),
-            })
+                "excerpt": body.chars().take(400).collect::<String>(),
+            }))
         })
         .collect();
-    Ok(Json(json!({ "items": items })))
+    Ok(Json(json!({ "mode": mode, "items": items })))
 }
 
 /// One file's extracted text.

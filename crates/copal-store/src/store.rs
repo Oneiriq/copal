@@ -79,6 +79,21 @@ impl Store {
         Ok(())
     }
 
+    /// Define the vector index over embeddings, at the dimension the
+    /// configured model emits.
+    ///
+    /// Separate from [`Store::connect`] because the width is not a
+    /// property of the schema: a deployment without embeddings never
+    /// defines this index, and one that changes models redefines it.
+    pub async fn ensure_vector_index(&self, dimension: u32) -> copal_core::Result<()> {
+        let ddl = schema::text::vector_index(dimension).to_surql_with_options("file_text", true);
+        self.client
+            .query(&ddl)
+            .await
+            .map_err(|e| CopalError::Store(format!("vector index: {e}")))?;
+        Ok(())
+    }
+
     /// One cheap round trip proving the metadata plane answers.
     /// Readiness probes call this; it carries no schema assumptions.
     pub async fn ping(&self) -> copal_core::Result<()> {

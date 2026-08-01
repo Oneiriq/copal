@@ -63,7 +63,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.enforce_type_match,
         config.clamav_addr.clone(),
         config.extractor_addr.clone(),
+        config
+            .embedding_addr
+            .clone()
+            .map(|addr| (addr, config.embedding_model.clone())),
     );
+    if let Some(addr) = &config.embedding_addr {
+        // The index has to exist at the model's width before the
+        // first vector lands.
+        store
+            .ensure_vector_index(config.embedding_dimension)
+            .await?;
+        tracing::info!(
+            service = %addr,
+            model = %config.embedding_model,
+            dimension = config.embedding_dimension,
+            "semantic search enabled",
+        );
+    }
     if let Some(addr) = &config.clamav_addr {
         tracing::info!(clamd = %addr, "malware scanning enabled; content is withheld until scanned");
     }
@@ -77,7 +94,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_flow(registry.clone())
         .with_auth(config.auth.clone())
         .with_residencies(residencies.named.clone())
-        .with_scan_gate(config.clamav_addr.is_some());
+        .with_scan_gate(config.clamav_addr.is_some())
+        .with_embedding(
+            config
+                .embedding_addr
+                .clone()
+                .map(|addr| (addr, config.embedding_model.clone())),
+        );
     state.limits = copal_server::app::Limits {
         max_upload_bytes: config.max_upload_bytes,
         upload_lease_secs: config.upload_lease_secs,

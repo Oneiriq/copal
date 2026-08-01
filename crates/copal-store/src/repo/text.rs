@@ -154,6 +154,83 @@ pub async fn delete_text(store: &Store, file: &FileId) -> copal_core::Result<()>
     Ok(())
 }
 
+/// Attach an embedding to a file's stored text.
+///
+/// Guarded on the digest: an embedding computed for content that has
+/// since been replaced must not attach to the new text.
+pub async fn put_embedding(
+    store: &Store,
+    file: &FileId,
+    digest: &str,
+    embedding: &[f64],
+    model: &str,
+) -> copal_core::Result<bool> {
+    let file_rid = RecordID::<()>::new("file", file.as_str())
+        .map_err(|e| map_store_err("put_embedding", e))?;
+    let rendered = format!(
+        "[{}]",
+        embedding
+            .iter()
+            .map(|v| v.to_string())
+            .collect::<Vec<_>>()
+            .join(", "),
+    );
+    let update = Query::new()
+        .update_set(TABLE)
+        .map_err(|e| map_store_err("put_embedding", e))?
+        .set_expr("embedding", raw(rendered))
+        .map_err(|e| map_store_err("put_embedding", e))?
+        .set("embedding_model", Value::from(model))
+        .map_err(|e| map_store_err("put_embedding", e))?
+        .where_str(format!("file = {file_rid}"))
+        .where_(eq("digest", digest))
+        .return_after();
+    let rows: Vec<Value> = query_records(store.client(), &update)
+        .await
+        .map_err(|e| map_store_err("put_embedding", e))?;
+    Ok(!rows.is_empty())
+}
+
+/// Nearest documents to a query vector, tenant-scoped.
+///
+/// The `k` nearest come from the index; the tenant equality is a
+/// residual filter, so a tenant with few documents in a large corpus
+/// can see fewer than `k` results. Over-fetching and trimming keeps
+/// that from reading as "no matches".
+pub async fn semantic_search(
+    store: &Store,
+    tenant: &TenantId,
+    embedding: &[f64],
+    limit: i64,
+) -> copal_core::Result<Vec<SearchHit>> {
+    if embedding.is_empty() {
+        return Err(CopalError::validation("query embedding must not be empty"));
+    }
+    let over_fetch = (limit * 10).clamp(limit, 500);
+    let query = Query::new()
+        .select(Some(vec![
+            "file".to_owned(),
+            "body".to_owned(),
+            "chars".to_owned(),
+        ]))
+        .from_table(TABLE)
+        .map_err(|e| map_store_err("semantic_search", e))?
+        .vector_search(
+            "embedding",
+            embedding.to_vec(),
+            over_fetch,
+            surql::query::helpers::VectorDistanceType::Cosine,
+            None,
+        )
+        .map_err(|e| map_store_err("semantic_search", e))?
+        .where_(eq("tenant_id", tenant.as_str()))
+        .limit(limit)
+        .map_err(|e| map_store_err("semantic_search", e))?;
+    query_records(store.client(), &query)
+        .await
+        .map_err(|e| map_store_err("semantic_search", e))
+}
+
 /// One search hit: the file and the text that matched.
 ///
 /// There is no score field on purpose. SurrealDB 3.x does not plumb

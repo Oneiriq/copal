@@ -81,7 +81,10 @@ pub fn standard_registry<B: BlobStore>(
     enforce_type_match: bool,
     clamav_addr: Option<String>,
     extractor_addr: Option<String>,
+    embedding: Option<(String, String)>,
 ) -> FlowRegistry {
+    let embed_store = store.clone();
+    let embed_config = embedding;
     let extract_store = store.clone();
     let extract_residencies = residencies.clone();
     let extract_addr = extractor_addr;
@@ -93,6 +96,40 @@ pub fn standard_registry<B: BlobStore>(
     let finalize_store = store;
 
     FlowRegistry::new()
+        .activity("embed_text", move |input: Value| {
+            let store = embed_store.clone();
+            let config = embed_config.clone();
+            async move {
+                let mut out = input.clone();
+                // Nothing to embed without a service, and nothing to
+                // embed when extraction found no text.
+                let Some((addr, model)) = config else {
+                    out["embedded"] = json!(false);
+                    return Ok(out);
+                };
+                if out["extracted"] != json!(true) {
+                    out["embedded"] = json!(false);
+                    return Ok(out);
+                }
+                let tenant = TenantId::parse(input["tenant"].as_str().unwrap_or_default())?;
+                let file = FileId::parse(input["file"].as_str().unwrap_or_default())?;
+                let digest = input["digest"].as_str().unwrap_or_default();
+                let Some(row) = copal_store::repo::text::get_text(&store, &tenant, &file).await?
+                else {
+                    out["embedded"] = json!(false);
+                    return Ok(out);
+                };
+                // An unreachable service is an ERROR: silently
+                // skipping would leave the document out of semantic
+                // search with nothing recording why.
+                let vector = crate::embed::embed(&addr, &model, &row.body).await?;
+                let attached =
+                    copal_store::repo::text::put_embedding(&store, &file, digest, &vector, &model)
+                        .await?;
+                out["embedded"] = json!(attached);
+                Ok(out)
+            }
+        })
         .activity("extract_text", move |input: Value| {
             let store = extract_store.clone();
             let residencies = extract_residencies.clone();
@@ -218,6 +255,7 @@ pub fn standard_registry<B: BlobStore>(
                     "extracted": input["extracted"],
                     "extract_chars": input["extract_chars"],
                     "extract_truncated": input["extract_truncated"],
+                    "embedded": input["embedded"],
                     "verdict": input["verdict"],
                     "verdict_reason": input["verdict_reason"],
                 });
@@ -264,6 +302,7 @@ pub fn standard_registry<B: BlobStore>(
                 "extension_policy",
                 "scan_malware",
                 "extract_text",
+                "embed_text",
                 "finalize_upload",
             ],
             3,

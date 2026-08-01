@@ -508,6 +508,40 @@ async fn metrics_scrape<B: BlobStore>(
     ))
 }
 
+/// Characters of passage returned with a hit. A window, not the
+/// document: search results should not become a bulk text-export
+/// channel.
+const EXCERPT_CHARS: usize = 400;
+
+/// A window of `body` showing why it matched.
+///
+/// An excerpt that does not contain the searched words tells a reader
+/// nothing, and a matching sentence can sit anywhere in a passage. So
+/// the window centres on the first term that appears literally.
+/// Semantic hits may share no words at all, and stemmed matches
+/// ("inspection" for "inspect") may not match case-sensitively; both
+/// fall back to the opening, which is the best available summary.
+fn excerpt_around(body: &str, query: &str) -> String {
+    let chars: Vec<char> = body.chars().collect();
+    if chars.len() <= EXCERPT_CHARS {
+        return body.to_owned();
+    }
+    let haystack = body.to_lowercase();
+    let found = query
+        .split_whitespace()
+        .filter(|term| term.len() > 2)
+        .filter_map(|term| haystack.find(&term.to_lowercase()))
+        .min();
+    let Some(byte_index) = found else {
+        return chars.iter().take(EXCERPT_CHARS).collect();
+    };
+    // Byte offset to character offset, then a window around it.
+    let char_index = body[..byte_index].chars().count();
+    let start = char_index.saturating_sub(EXCERPT_CHARS / 3);
+    let end = (start + EXCERPT_CHARS).min(chars.len());
+    chars[start..end].iter().collect()
+}
+
 /// Search query parameters. `mode` selects retrieval: `lexical`
 /// (words), `semantic` (meaning), or `hybrid` (both, fused).
 #[derive(Debug, Deserialize)]
@@ -567,13 +601,16 @@ async fn search_text<B: BlobStore>(
     // Fuse by rank, then render from whichever list carried the hit.
     let mut bodies: std::collections::HashMap<String, (i64, String)> =
         std::collections::HashMap::new();
+    // A document can match in several passages; the first one each
+    // ranking offers is its best, so later ones add nothing.
+
     let mut rank = |hits: &[copal_store::repo::text::SearchHit]| -> Vec<String> {
         hits.iter()
             .filter_map(|hit| {
                 let id = hit.file_id()?;
                 bodies
                     .entry(id.clone())
-                    .or_insert_with(|| (hit.chars, hit.body.clone()));
+                    .or_insert_with(|| (hit.ordinal, hit.body.clone()));
                 Some(id)
             })
             .collect()
@@ -590,13 +627,12 @@ async fn search_text<B: BlobStore>(
         .iter()
         .take(limit as usize)
         .filter_map(|id| {
-            let (chars, body) = bodies.get(id)?;
+            let (ordinal, body) = bodies.get(id)?;
             Some(json!({
                 "file": id,
-                "chars": chars,
-                // A window, not the document: search results should
-                // not become a bulk text-export channel.
-                "excerpt": body.chars().take(400).collect::<String>(),
+                // Which passage matched, so a caller can point at it.
+                "passage": ordinal,
+                "excerpt": excerpt_around(body, &params.q),
             }))
         })
         .collect();
@@ -1062,6 +1098,7 @@ pub(crate) async fn remove_file_core<B: BlobStore>(
     // Search indexes what exists; a tombstoned file's text would keep
     // answering queries with content nobody can fetch.
     let _ = copal_store::repo::text::delete_text(&state.store, id).await;
+    let _ = copal_store::repo::text::delete_chunks(&state.store, id).await;
     if let Some(bytes) = released {
         let _ = copal_store::repo::tenant::release_usage(&state.store, tenant, bytes as i64).await;
     }

@@ -5,6 +5,7 @@
 //! database, no async. The store, blob, and server crates depend on this
 //! crate; it depends on nothing of theirs.
 
+pub mod chunk;
 pub mod digest;
 pub mod error;
 pub mod file;
@@ -12,6 +13,7 @@ pub mod id;
 pub mod inspect;
 pub mod state;
 
+pub use chunk::split as split_passages;
 pub use digest::{ContentDigest, DigestBuilder};
 pub use error::CopalError;
 pub use file::{CreatedFile, FileRecord, FileSpec, FileVersion};

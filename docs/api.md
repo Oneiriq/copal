@@ -211,18 +211,28 @@ extractor service to be configured (see
 [operations.md](operations.md)), and a file with no extraction
 answers 404 on its text rather than an empty document.
 
+Retrieval works over passages, not whole documents. Extraction splits
+text at boundaries a reader would recognise (blank lines, then
+sentence ends) into overlapping windows, and each passage is indexed
+and embedded on its own. A hit therefore names the passage that
+matched, and its excerpt is the window around the matching words
+rather than the opening of a long document. `GET /v1/files/{id}/text`
+still returns the whole text in one piece.
+
+Semantic retrieval returns the nearest passages however far away they
+are, which is what nearest-neighbour search means: in a small corpus
+every passage is somebody's neighbour, so a semantic query cannot
+express "nothing matches". Lexical retrieval can, and hybrid inherits
+the semantic side's behavior. A relevance floor is future work.
+
 Hybrid fuses the two rankings by reciprocal rank rather than by
 score. Lexical and semantic relevance are not on a comparable scale,
 and this engine reports no lexical score at all, so fusing positions
 is both simpler and more honest: a document near the top of either
 ranking scores well, one near the top of both scores best.
 
-Embeddings are per document, not per passage. That answers "which
-documents are about this" and does not yet answer "which paragraph
-says it"; passage-level chunking is the next increment.
-
-Hits carry the file id, the character count, and an excerpt bounded
-at 400 characters, in the engine's relevance order. There is no score
+Hits carry the file id, the passage that matched, and an excerpt
+bounded at 400 characters, in the engine's relevance order. There is no score
 field: SurrealDB 3.x does not report per-row BM25 values through the
 full-text scan, so a score column would be a constant dressed as
 relevance. The analyzer lowercases, folds accents, and stems English,

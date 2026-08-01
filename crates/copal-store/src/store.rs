@@ -86,7 +86,7 @@ impl Store {
     /// property of the schema: a deployment without embeddings never
     /// defines this index, and one that changes models redefines it.
     pub async fn ensure_vector_index(&self, dimension: u32) -> copal_core::Result<()> {
-        let ddl = schema::text::vector_index(dimension).to_surql_with_options("file_text", true);
+        let ddl = schema::text::vector_index(dimension).to_surql_with_options("text_chunk", true);
         self.client
             .query(&ddl)
             .await

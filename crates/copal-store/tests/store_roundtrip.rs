@@ -386,6 +386,27 @@ async fn live_watch_wakes_on_outbox_writes() {
     assert_eq!(events[0].action, "file.failed");
 }
 
+/// Store a document's text and its passages together, which is what
+/// the pipeline does: the text row is for reading back, the chunk
+/// rows are what retrieval searches.
+async fn index_text(
+    store: &Store,
+    tenant: &TenantId,
+    file: &copal_core::FileId,
+    digest: &str,
+    body: &str,
+    extractor: &str,
+) {
+    use copal_store::repo::text;
+    text::put_text(store, tenant, file, digest, body, extractor)
+        .await
+        .unwrap();
+    let passages = copal_core::split_passages(body);
+    text::put_chunks(store, tenant, file, digest, &passages)
+        .await
+        .unwrap();
+}
+
 #[tokio::test]
 async fn extracted_text_is_searchable_and_tenant_scoped() {
     use copal_store::repo::text;
@@ -398,7 +419,7 @@ async fn extracted_text_is_searchable_and_tenant_scoped() {
     let notes = create(&store, &acme, "docs/notes.txt").await;
     let theirs = create(&store, &rival, "docs/theirs.txt").await;
 
-    text::put_text(
+    index_text(
         &store,
         &acme,
         &manual.id,
@@ -406,9 +427,8 @@ async fn extracted_text_is_searchable_and_tenant_scoped() {
         "the hydraulic press requires monthly maintenance and lubrication",
         "native",
     )
-    .await
-    .unwrap();
-    text::put_text(
+    .await;
+    index_text(
         &store,
         &acme,
         &notes.id,
@@ -416,9 +436,8 @@ async fn extracted_text_is_searchable_and_tenant_scoped() {
         "coffee machine descaling notes",
         "native",
     )
-    .await
-    .unwrap();
-    text::put_text(
+    .await;
+    index_text(
         &store,
         &rival,
         &theirs.id,
@@ -426,8 +445,7 @@ async fn extracted_text_is_searchable_and_tenant_scoped() {
         "their own hydraulic secrets",
         "native",
     )
-    .await
-    .unwrap();
+    .await;
 
     // The term finds the right document and only this tenant's.
     let hits = text::search(&store, &acme, "hydraulic", 10).await.unwrap();
@@ -444,7 +462,7 @@ async fn extracted_text_is_searchable_and_tenant_scoped() {
     assert_eq!(hits.len(), 1, "the analyzer stems: {hits:?}");
 
     // Re-extraction replaces rather than accumulating.
-    text::put_text(
+    index_text(
         &store,
         &acme,
         &manual.id,
@@ -452,8 +470,7 @@ async fn extracted_text_is_searchable_and_tenant_scoped() {
         "now about turbines",
         "tika",
     )
-    .await
-    .unwrap();
+    .await;
     let stored = text::get_text(&store, &acme, &manual.id)
         .await
         .unwrap()
@@ -483,7 +500,7 @@ async fn extracted_text_is_searchable_and_tenant_scoped() {
     // would pin behavior nobody here can check.
     let dense = create(&store, &acme, "docs/dense.txt").await;
     let sparse = create(&store, &acme, "docs/sparse.txt").await;
-    text::put_text(
+    index_text(
         &store,
         &acme,
         &dense.id,
@@ -491,9 +508,8 @@ async fn extracted_text_is_searchable_and_tenant_scoped() {
         "turbine turbine turbine blades and turbine housings",
         "native",
     )
-    .await
-    .unwrap();
-    text::put_text(
+    .await;
+    index_text(
         &store,
         &acme,
         &sparse.id,
@@ -501,8 +517,7 @@ async fn extracted_text_is_searchable_and_tenant_scoped() {
         "one passing mention of a turbine in a long unrelated sentence",
         "native",
     )
-    .await
-    .unwrap();
+    .await;
     let found = text::search(&store, &acme, "turbine", 10).await.unwrap();
     let ids: Vec<_> = found.iter().filter_map(|h| h.file_id()).collect();
     assert!(ids.contains(&dense.id.to_string()), "{found:?}");

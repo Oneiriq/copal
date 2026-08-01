@@ -110,9 +110,10 @@ stack still glues object storage to a separate vector database.
    the same database that holds the records.
 3. Embeddings (shipped): per-document vectors from any service
    speaking the OpenAI embeddings shape, HNSW-indexed, with hybrid
-   retrieval fusing lexical and semantic rankings. Remaining:
-   passage-level chunking, so retrieval returns the paragraph rather
-   than the document.
+   retrieval fusing lexical and semantic rankings, over overlapping
+   passages so a hit names the part that answers the question.
+   Remaining: a relevance floor, since nearest-neighbour search
+   returns its k nearest however far away they are.
 4. On-the-fly rendition URLs, transcodes, and multi-source ingestion,
    the axes the hosted services sell.
 

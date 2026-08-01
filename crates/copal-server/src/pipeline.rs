@@ -111,22 +111,33 @@ pub fn standard_registry<B: BlobStore>(
                     out["embedded"] = json!(false);
                     return Ok(out);
                 }
-                let tenant = TenantId::parse(input["tenant"].as_str().unwrap_or_default())?;
                 let file = FileId::parse(input["file"].as_str().unwrap_or_default())?;
                 let digest = input["digest"].as_str().unwrap_or_default();
-                let Some(row) = copal_store::repo::text::get_text(&store, &tenant, &file).await?
-                else {
-                    out["embedded"] = json!(false);
-                    return Ok(out);
-                };
-                // An unreachable service is an ERROR: silently
-                // skipping would leave the document out of semantic
-                // search with nothing recording why.
-                let vector = crate::embed::embed(&addr, &model, &row.body).await?;
-                let attached =
-                    copal_store::repo::text::put_embedding(&store, &file, digest, &vector, &model)
-                        .await?;
-                out["embedded"] = json!(attached);
+                // Only passages still lacking a vector are embedded,
+                // so a retried run resumes rather than paying for the
+                // whole document again.
+                let pending =
+                    copal_store::repo::text::chunks_without_embedding(&store, &file).await?;
+                let mut embedded = 0usize;
+                for chunk in &pending {
+                    // An unreachable service is an ERROR: silently
+                    // skipping would leave passages out of semantic
+                    // search with nothing recording why.
+                    let vector = crate::embed::embed(&addr, &model, &chunk.body).await?;
+                    if copal_store::repo::text::put_embedding(
+                        &store,
+                        &chunk.chunk_id(),
+                        digest,
+                        &vector,
+                        &model,
+                    )
+                    .await?
+                    {
+                        embedded += 1;
+                    }
+                }
+                out["embedded"] = json!(embedded > 0);
+                out["embedded_passages"] = json!(embedded);
                 Ok(out)
             }
         })
@@ -255,7 +266,9 @@ pub fn standard_registry<B: BlobStore>(
                     "extracted": input["extracted"],
                     "extract_chars": input["extract_chars"],
                     "extract_truncated": input["extract_truncated"],
+                    "passages": input["passages"],
                     "embedded": input["embedded"],
+                    "embedded_passages": input["embedded_passages"],
                     "verdict": input["verdict"],
                     "verdict_reason": input["verdict_reason"],
                 });
@@ -498,9 +511,16 @@ async fn extract_text<B: BlobStore>(
         &extractor_name,
     )
     .await?;
+    // Passages are the retrieval unit, so they are written with the
+    // text rather than lazily: a document that extracted but never
+    // chunked would be readable and unfindable.
+    let passages = copal_core::split_passages(&stored);
+    copal_store::repo::text::put_chunks(store, &tenant, &file, digest.as_str(), &passages).await?;
+
     out["extracted"] = json!(true);
     out["extract_chars"] = json!(stored.chars().count());
     out["extract_truncated"] = json!(truncated);
+    out["passages"] = json!(passages.len());
     Ok(out)
 }
 

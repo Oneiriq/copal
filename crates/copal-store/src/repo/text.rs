@@ -154,18 +154,119 @@ pub async fn delete_text(store: &Store, file: &FileId) -> copal_core::Result<()>
     Ok(())
 }
 
-/// Attach an embedding to a file's stored text.
+const CHUNK_TABLE: &str = "text_chunk";
+
+/// Replace a file's passages.
+///
+/// Every chunk of the file goes before the new ones land, so a
+/// re-extraction cannot leave passages of superseded content behind
+/// to answer queries.
+pub async fn put_chunks(
+    store: &Store,
+    tenant: &TenantId,
+    file: &FileId,
+    digest: &str,
+    passages: &[String],
+) -> copal_core::Result<()> {
+    let file_rid =
+        RecordID::<()>::new("file", file.as_str()).map_err(|e| map_store_err("put_chunks", e))?;
+    delete_chunks(store, file).await?;
+    for (ordinal, body) in passages.iter().enumerate() {
+        let id = ulid::Ulid::new().to_string().to_ascii_lowercase();
+        let rid = RecordID::<()>::new(CHUNK_TABLE, id.as_str())
+            .map_err(|e| map_store_err("put_chunks", e))?;
+        let payload = json!({
+            "tenant_id": tenant.as_str(),
+            "digest": digest,
+            "ordinal": ordinal,
+            "body": body,
+        });
+        create_record(store.client(), &rid.to_string(), payload)
+            .await
+            .map_err(|e| map_store_err("put_chunks", e))?;
+        let arm = Query::new()
+            .update_set(rid.to_string())
+            .map_err(|e| map_store_err("put_chunks", e))?
+            .set_expr("file", raw(file_rid.to_string()))
+            .map_err(|e| map_store_err("put_chunks", e))?
+            .return_after();
+        query_records::<Value>(store.client(), &arm)
+            .await
+            .map_err(|e| map_store_err("put_chunks", e))?;
+    }
+    Ok(())
+}
+
+/// Drop every passage of a file.
+pub async fn delete_chunks(store: &Store, file: &FileId) -> copal_core::Result<()> {
+    let file_rid = RecordID::<()>::new("file", file.as_str())
+        .map_err(|e| map_store_err("delete_chunks", e))?;
+    let query = Query::new()
+        .delete(CHUNK_TABLE)
+        .map_err(|e| map_store_err("delete_chunks", e))?
+        .where_str(format!("file = {file_rid}"));
+    query_records::<Value>(store.client(), &query)
+        .await
+        .map_err(|e| map_store_err("delete_chunks", e))?;
+    Ok(())
+}
+
+/// One stored passage.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ChunkRow {
+    pub id: String,
+    #[serde(default)]
+    pub file: Option<String>,
+    pub ordinal: i64,
+    pub body: String,
+}
+
+impl ChunkRow {
+    /// The bare chunk id.
+    pub fn chunk_id(&self) -> String {
+        strip_record_prefix(&self.id, CHUNK_TABLE).to_owned()
+    }
+
+    /// The bare file id this passage belongs to.
+    pub fn file_id(&self) -> Option<String> {
+        self.file
+            .as_deref()
+            .map(|raw| strip_record_prefix(raw, "file").to_owned())
+    }
+}
+
+/// A file's passages that still lack an embedding, oldest first.
+pub async fn chunks_without_embedding(
+    store: &Store,
+    file: &FileId,
+) -> copal_core::Result<Vec<ChunkRow>> {
+    let file_rid = RecordID::<()>::new("file", file.as_str())
+        .map_err(|e| map_store_err("pending_chunks", e))?;
+    let query = Query::new()
+        .select(None)
+        .from_table(CHUNK_TABLE)
+        .map_err(|e| map_store_err("pending_chunks", e))?
+        .where_str(format!("file = {file_rid}"))
+        .where_str("embedding IS NONE")
+        .order_by("ordinal", "ASC")
+        .map_err(|e| map_store_err("pending_chunks", e))?;
+    query_records(store.client(), &query)
+        .await
+        .map_err(|e| map_store_err("pending_chunks", e))
+}
+
+/// Attach an embedding to one passage.
 ///
 /// Guarded on the digest: an embedding computed for content that has
 /// since been replaced must not attach to the new text.
 pub async fn put_embedding(
     store: &Store,
-    file: &FileId,
+    chunk_id: &str,
     digest: &str,
     embedding: &[f64],
     model: &str,
 ) -> copal_core::Result<bool> {
-    let file_rid = RecordID::<()>::new("file", file.as_str())
+    let rid = RecordID::<()>::new(CHUNK_TABLE, chunk_id)
         .map_err(|e| map_store_err("put_embedding", e))?;
     let rendered = format!(
         "[{}]",
@@ -176,13 +277,14 @@ pub async fn put_embedding(
             .join(", "),
     );
     let update = Query::new()
-        .update_set(TABLE)
+        .update_set(rid.to_string())
         .map_err(|e| map_store_err("put_embedding", e))?
         .set_expr("embedding", raw(rendered))
         .map_err(|e| map_store_err("put_embedding", e))?
         .set("embedding_model", Value::from(model))
         .map_err(|e| map_store_err("put_embedding", e))?
-        .where_str(format!("file = {file_rid}"))
+        // Guarded on the digest: a vector computed for content that
+        // has since been replaced must not attach to new passages.
         .where_(eq("digest", digest))
         .return_after();
     let rows: Vec<Value> = query_records(store.client(), &update)
@@ -211,9 +313,9 @@ pub async fn semantic_search(
         .select(Some(vec![
             "file".to_owned(),
             "body".to_owned(),
-            "chars".to_owned(),
+            "ordinal".to_owned(),
         ]))
-        .from_table(TABLE)
+        .from_table(CHUNK_TABLE)
         .map_err(|e| map_store_err("semantic_search", e))?
         .vector_search(
             "embedding",
@@ -243,7 +345,9 @@ pub struct SearchHit {
     #[serde(default)]
     pub file: Option<String>,
     pub body: String,
-    pub chars: i64,
+    /// Which passage of the document matched.
+    #[serde(default)]
+    pub ordinal: i64,
 }
 
 impl SearchHit {
@@ -279,9 +383,9 @@ pub async fn search(
         .select(Some(vec![
             "file".to_owned(),
             "body".to_owned(),
-            "chars".to_owned(),
+            "ordinal".to_owned(),
         ]))
-        .from_table(TABLE)
+        .from_table(CHUNK_TABLE)
         .map_err(|e| map_store_err("search", e))?
         .where_(eq("tenant_id", tenant.as_str()))
         .fulltext_search("body", 1, terms)

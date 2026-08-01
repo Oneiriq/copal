@@ -407,3 +407,97 @@ async fn semantic_modes_degrade_to_lexical_without_a_service() {
         StatusCode::BAD_REQUEST,
     );
 }
+
+#[tokio::test]
+async fn a_long_document_matches_at_the_passage_that_says_it() {
+    // The reason chunking exists: one vector for a long document
+    // points at its average meaning, and one BM25 row buries a single
+    // relevant sentence among thousands of irrelevant words. Passages
+    // let retrieval name the part that answers the question.
+    let (router, engine, _dir) = stack(None).await;
+
+    let filler = "Routine safety notices are reviewed each quarter. ".repeat(60);
+    let buried = "The evacuation muster point is the north car park. ";
+    let more_filler = "Attendance records are retained for seven years. ".repeat(60);
+    let document = format!("{filler}{buried}{more_filler}");
+    let id = upload(
+        &router,
+        "docs/handbook-long.txt",
+        "text/plain",
+        document.as_bytes(),
+    )
+    .await;
+    assert!(engine.tick("w").await.unwrap());
+
+    let hits = search(&router, "evacuation").await;
+    assert_eq!(hits.len(), 1, "{hits:?}");
+    assert_eq!(hits[0]["file"], id.as_str());
+
+    // The excerpt is the passage that contains the sentence, not the
+    // opening of a long document that happens to mention it later.
+    let excerpt = hits[0]["excerpt"].as_str().unwrap();
+    assert!(
+        excerpt.contains("muster point"),
+        "the matching passage is returned, not the document head: {excerpt}",
+    );
+    // And the hit names which passage it was.
+    assert!(
+        hits[0]["passage"].as_i64().unwrap() > 0,
+        "the match is not the first passage: {hits:?}",
+    );
+
+    // The whole document is still readable in one piece.
+    let get = req("GET", &format!("/v1/files/{id}/text"), Body::empty());
+    let body = json_body(router.clone().oneshot(get).await.unwrap()).await;
+    assert!(body["text"].as_str().unwrap().contains("muster point"));
+    assert_eq!(body["chars"], document.trim().chars().count());
+}
+
+#[tokio::test]
+async fn passages_are_embedded_individually_and_replaced_together() {
+    let (router, engine, _dir) = semantic_stack().await;
+    let long = format!(
+        "{}{}",
+        "Quarterly revenue and profit commentary. ".repeat(30),
+        "Turbine and motor overhaul scheduling. ".repeat(30),
+    );
+    let id = upload(&router, "docs/mixed.txt", "text/plain", long.as_bytes()).await;
+    // One upload is one run; the run embeds every passage in it.
+    assert!(engine.tick("w").await.unwrap());
+
+    // One document, two topics: each passage embeds on its own, so a
+    // query about either finds this file.
+    for term in ["earnings", "engine"] {
+        let body = search_mode(&router, term, "semantic").await;
+        let items = body["items"].as_array().unwrap();
+        assert!(!items.is_empty(), "{term} finds the document: {body}");
+        assert_eq!(items[0]["file"], id.as_str());
+    }
+
+    // Replacing the content replaces every passage: the old topics
+    // must stop matching, not linger as orphaned vectors.
+    let put = Request::builder()
+        .method("PUT")
+        .uri(format!("/v1/files/{id}/content"))
+        .header("x-copal-tenant", "acme")
+        .header("content-length", "31")
+        .body(Body::from("nothing about money or machines"))
+        .unwrap();
+    assert_eq!(
+        router.clone().oneshot(put).await.unwrap().status(),
+        StatusCode::OK,
+    );
+    assert!(engine.tick("w").await.unwrap());
+
+    // Asked lexically, because nearest-neighbour search always
+    // returns its k nearest however far away they are: in a corpus
+    // this small every passage is somebody's neighbour, so a semantic
+    // query cannot express "no longer present".
+    let gone = search_mode(&router, "revenue", "lexical").await;
+    assert!(
+        gone["items"].as_array().unwrap().is_empty(),
+        "superseded passages stop matching: {gone}",
+    );
+    let now = search_mode(&router, "machines", "lexical").await;
+    assert_eq!(now["items"].as_array().unwrap().len(), 1, "{now}");
+}

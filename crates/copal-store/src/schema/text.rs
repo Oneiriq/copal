@@ -25,7 +25,7 @@ pub fn analyzers() -> Vec<AnalyzerDefinition> {
 
 /// All tables in this cluster.
 pub fn tables() -> Vec<TableDefinition> {
-    vec![file_text_table()]
+    vec![file_text_table(), text_chunk_table()]
 }
 
 fn built(builder: surql::schema::FieldBuilder) -> FieldDefinition {
@@ -46,11 +46,6 @@ fn file_text_table() -> TableDefinition {
             built(string_field("digest").assertion("$value != ''")),
             built(string_field("body")),
             built(int_field("chars").default("0")),
-            // The document's embedding, when one was computed. Its
-            // width is the deployment's model's business, so the
-            // vector index is defined at startup rather than here.
-            built(surql::schema::array_field("embedding").nullable(true)),
-            built(string_field("embedding_model").nullable(true)),
             // What produced it: `native` for text Copal decoded
             // itself, or the extractor's name.
             built(string_field("extractor").default("'native'")),
@@ -65,7 +60,40 @@ fn file_text_table() -> TableDefinition {
             // One text row per file; a re-extraction replaces it.
             unique_index("uniq_text_file", ["file"]),
             index("idx_text_tenant", ["tenant_id", "created_at"]),
-            bm25_index("idx_text_body", ["body"], "copal_text"),
+        ])
+}
+
+/// A passage of a document: the unit retrieval actually returns.
+///
+/// One embedding for a fifty-page document points at its average
+/// meaning, which is nobody's question. Chunks are what make
+/// retrieval answer "which passage says this" rather than "which
+/// file is vaguely about this", so both indexes live here and the
+/// document row keeps only the full text for reading back.
+fn text_chunk_table() -> TableDefinition {
+    table_schema("text_chunk")
+        .with_mode(TableMode::Schemafull)
+        .with_fields([
+            built(string_field("tenant_id").assertion("$value != ''")),
+            built(record_field("file", Some("file")).nullable(true)),
+            // The content this passage came from; a re-extraction
+            // replaces every chunk of the file.
+            built(string_field("digest").assertion("$value != ''")),
+            // Position in the document, so a hit can be located.
+            built(int_field("ordinal").assertion("$value >= 0")),
+            built(string_field("body")),
+            built(surql::schema::array_field("embedding").nullable(true)),
+            built(string_field("embedding_model").nullable(true)),
+            built(
+                datetime_field("created_at")
+                    .default("time::now()")
+                    .readonly(true),
+            ),
+        ])
+        .with_indexes([
+            unique_index("uniq_chunk_position", ["file", "ordinal"]),
+            index("idx_chunk_tenant", ["tenant_id", "created_at"]),
+            bm25_index("idx_chunk_body", ["body"], "copal_text"),
         ])
 }
 
@@ -77,7 +105,7 @@ fn file_text_table() -> TableDefinition {
 /// applies it at startup, and one without never defines it.
 pub fn vector_index(dimension: u32) -> IndexDefinition {
     hnsw_index(
-        "idx_text_embedding",
+        "idx_chunk_embedding",
         "embedding",
         dimension,
         // Cosine is the metric the common embedding models are
@@ -94,19 +122,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_index_is_analyzed_and_scored() {
-        let ddl = surql::schema::generate_table_sql(&file_text_table(), false).join("\n");
+    fn passages_carry_both_search_indexes() {
+        // Retrieval happens over chunks, so both the lexical and the
+        // vector index belong to that table.
+        let ddl = surql::schema::generate_table_sql(&text_chunk_table(), false).join("\n");
         assert!(
             ddl.contains("FULLTEXT ANALYZER copal_text BM25"),
-            "the text index must be analyzed and BM25-scored: {ddl}",
+            "passages are analyzed and BM25-scored: {ddl}",
         );
-    }
+        let vector = vector_index(768).to_surql("text_chunk");
+        assert!(vector.contains("HNSW DIMENSION 768"), "{vector}");
+        assert!(vector.contains("DIST COSINE"), "{vector}");
 
-    #[test]
-    fn the_vector_index_carries_its_dimension() {
-        let ddl = vector_index(768).to_surql("file_text");
-        assert!(ddl.contains("HNSW DIMENSION 768"), "{ddl}");
-        assert!(ddl.contains("DIST COSINE"), "{ddl}");
+        // The document row keeps the text for reading back, not for
+        // searching: two lexical indexes over the same words would
+        // return the same file twice under different rankings.
+        let document = surql::schema::generate_table_sql(&file_text_table(), false).join("\n");
+        assert!(!document.contains("BM25"), "{document}");
     }
 
     #[test]

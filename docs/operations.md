@@ -155,11 +155,14 @@ can serve it. Changing models means changing
 `COPAL_EMBEDDING_DIMENSION` to match and re-embedding existing
 documents; a vector of the wrong width is refused by the index.
 
-Embeddings are per document rather than per passage, which answers
-"which documents are about this" rather than "which paragraph says
-it". Attaching an embedding is guarded on the digest, so a vector
+Text is split into overlapping passages and each one is embedded
+separately, so a long document is retrievable by whichever part
+answers the question rather than by its average meaning. Passages are
+capped per document, and a re-extraction replaces all of them at
+once. Attaching an embedding is guarded on the digest, so a vector
 computed for content that has since been replaced never attaches to
-the new text.
+the new passages, and a retried run embeds only what still lacks a
+vector rather than paying for the whole document again.
 
 ## Outbound request policy
 

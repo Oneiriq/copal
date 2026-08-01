@@ -226,16 +226,22 @@ pub async fn undispatched_events(store: &Store, limit: i64) -> copal_core::Resul
 }
 
 /// A tenant's recent events, newest first (API surface and tests).
+/// `action` narrows the feed to one dotted verb.
 pub async fn list_events(
     store: &Store,
     tenant: &TenantId,
+    action: Option<&str>,
     limit: i64,
 ) -> copal_core::Result<Vec<EventRow>> {
-    let query = Query::new()
+    let mut query = Query::new()
         .select(None)
         .from_table(EVENT_TABLE)
         .map_err(|e| map_store_err("list_events", e))?
-        .where_(eq("tenant_id", tenant.as_str()))
+        .where_(eq("tenant_id", tenant.as_str()));
+    if let Some(action) = action {
+        query = query.where_(eq("action", action));
+    }
+    let query = query
         .order_by("created_at", "DESC")
         .map_err(|e| map_store_err("list_events", e))?
         .limit(limit)
@@ -243,6 +249,31 @@ pub async fn list_events(
     query_records(store.client(), &query)
         .await
         .map_err(|e| map_store_err("list_events", e))
+}
+
+/// A live stream of a tenant's events, narrowed to one dotted verb when
+/// `action` is given. The engine applies both conditions, so the tenant
+/// scope is never a check this code can forget.
+pub async fn watch_events(
+    store: &Store,
+    tenant: &TenantId,
+    action: Option<&str>,
+) -> copal_core::Result<impl futures::Stream<Item = copal_core::Result<EventRow>> + Send + Unpin> {
+    use futures::StreamExt as _;
+    let mut conditions = vec![surql::query::Condition::from(eq(
+        "tenant_id",
+        tenant.as_str(),
+    ))];
+    if let Some(action) = action {
+        conditions.push(surql::query::Condition::from(eq("action", action)));
+    }
+    let rows = store.watch_rows(EVENT_TABLE, conditions).await?;
+    Ok(rows.map(|item| {
+        let row = item?;
+        serde_json::from_value::<EventRow>(row).map_err(|e| {
+            copal_core::CopalError::Store(format!("watch_events: outbox row did not decode: {e}"))
+        })
+    }))
 }
 
 /// Mark an event dispatched, exactly once. Runs AFTER its deliveries

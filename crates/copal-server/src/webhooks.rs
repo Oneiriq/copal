@@ -184,6 +184,10 @@ pub(crate) async fn remove_core<B: BlobStore>(
 struct ListQuery {
     #[serde(default)]
     limit: Option<i64>,
+    /// Narrow the feed to one dotted verb, the same filter the
+    /// subscription takes.
+    #[serde(default)]
+    action: Option<String>,
 }
 
 /// A tenant's recent file events, newest first.
@@ -194,7 +198,8 @@ async fn list_events<B: BlobStore>(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let tenant = crate::auth::authenticate(&state.app, &headers).await?;
     let limit = params.limit.unwrap_or(100).clamp(1, 1_000);
-    let rows = eventing::list_events(&state.app.store, &tenant, limit).await?;
+    let rows =
+        eventing::list_events(&state.app.store, &tenant, params.action.as_deref(), limit).await?;
     let items: Vec<_> = rows
         .iter()
         .map(|row| {

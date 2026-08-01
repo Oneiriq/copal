@@ -85,7 +85,7 @@ type Query {
   file(id: ID!): File
   webhooks(limit: Int = 100, cursor: String, sort: WebhookSort): WebhookPage!
   webhook(id: ID!): Webhook
-  events(limit: Int = 100, cursor: String, sort: EventSort): EventPage!
+  events(limit: Int = 100, cursor: String, action: String, sort: EventSort): EventPage!
   event(id: ID!): Event
   runs(limit: Int = 100, cursor: String, status: String, sort: RunSort): RunPage!
   run(id: ID!): Run
@@ -101,4 +101,8 @@ type Mutation {
   webhookRemove(id: ID!): Boolean!
   runStart(workflow: String!, input: JSON, file: String, idempotencyKey: String, mode: String): JSON!
   runRetry(id: ID!): JSON!
+}
+
+type Subscription {
+  eventChanged(action: String): Event!
 }

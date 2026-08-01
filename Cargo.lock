@@ -3210,9 +3210,10 @@ checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 [[package]]
 name = "oneiriq-janus"
 version = "0.1.0"
-source = "git+ssh://git@github.com/Oneiriq/janus.git?branch=main#a214a4388126c3a63ef7a4ce45c2abe6d4a9c736"
+source = "git+ssh://git@github.com/Oneiriq/janus.git?branch=main#ed10b6e086d378ea6e76c0678fcec8c2369d4ad1"
 dependencies = [
  "async-graphql",
+ "futures-core",
  "oneiriq-surql",
  "serde",
  "serde_json",
@@ -3222,7 +3223,7 @@ dependencies = [
 [[package]]
 name = "oneiriq-surql"
 version = "0.31.0"
-source = "git+https://github.com/Oneiriq/surql-rs?branch=feat%2Fcopal-janus#21d3a8a95e483f393cbb2de4a93244f5784f33db"
+source = "git+https://github.com/Oneiriq/surql-rs?branch=feat%2Fcopal-janus#ef7f868a5390440fd193b32831fed8ca9777257f"
 dependencies = [
  "chrono",
  "futures",

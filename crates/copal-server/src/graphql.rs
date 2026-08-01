@@ -21,9 +21,10 @@ use copal_blob::BlobStore;
 use copal_core::{CopalError, FileId, FileState, TenantId};
 use copal_store::repo::{file as file_repo, flow as flow_repo};
 
+use futures::StreamExt as _;
 use janus::runtime::{
     BoxFuture, Dispatcher, JanusContext, JanusError, ListOutput, Middleware, Next, Operation,
-    Outcome, Payload, Resolvers, SortDirection,
+    Outcome, Payload, Resolvers, RowStream, SortDirection,
 };
 
 use crate::app::{
@@ -115,6 +116,7 @@ fn dispatcher<B: BlobStore + 'static>(
     let remove_state = state.clone();
     let events_list_state = state.clone();
     let events_get_state = state.clone();
+    let events_watch_state = state.clone();
     let runs_list_state = state.clone();
     let runs_get_state = state.clone();
     let runs_start_state = state.clone();
@@ -361,9 +363,11 @@ fn dispatcher<B: BlobStore + 'static>(
             async move {
                 let tenant = tenant_of(&ctx)?;
                 let limit = i64::from(args.limit);
-                let rows = copal_store::repo::eventing::list_events(&state.store, &tenant, limit)
-                    .await
-                    .map_err(to_janus_error)?;
+                let action = args.filters.get("action").and_then(|v| v.as_str());
+                let rows =
+                    copal_store::repo::eventing::list_events(&state.store, &tenant, action, limit)
+                        .await
+                        .map_err(to_janus_error)?;
                 Ok(ListOutput {
                     items: rows.iter().map(wire_event).collect(),
                     // The outbox listing is newest-first and bounded;
@@ -371,6 +375,31 @@ fn dispatcher<B: BlobStore + 'static>(
                     // the way files and runs have.
                     next_cursor: None,
                 })
+            }
+        })
+        .watch("events", move |ctx, args| {
+            let state = events_watch_state.clone();
+            async move {
+                let tenant = tenant_of(&ctx)?;
+                let action = args
+                    .filters
+                    .get("action")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_owned);
+                let rows = copal_store::repo::eventing::watch_events(
+                    &state.store,
+                    &tenant,
+                    action.as_deref(),
+                )
+                .await
+                .map_err(to_janus_error)?;
+                // The same mapper the list face uses, so a row looks
+                // identical whether it was polled or pushed.
+                Ok(
+                    Box::pin(
+                        rows.map(|row| row.map(|row| wire_event(&row)).map_err(to_janus_error)),
+                    ) as RowStream,
+                )
             }
         })
         .get("events", move |ctx, args| {
@@ -549,7 +578,7 @@ async fn execute<B: BlobStore>(
     State(gql): State<GraphqlState<B>>,
     headers: HeaderMap,
     Json(body): Json<GraphqlRequest>,
-) -> impl IntoResponse {
+) -> axum::response::Response {
     let mut request = async_graphql::Request::new(body.query);
     if let Some(variables) = body.variables {
         request = request.variables(async_graphql::Variables::from_json(variables));
@@ -569,8 +598,51 @@ async fn execute<B: BlobStore>(
     if let Some(origin) = crate::app::forwarded_origin(&headers) {
         ctx.insert(RequestOrigin(origin));
     }
-    let response = gql.schema.execute(request.data(ctx)).await;
-    Json(serde_json::to_value(response).expect("graphql response serializes"))
+    let request = request.data(ctx);
+
+    if wants_event_stream(&headers) {
+        return stream_response(gql.schema.execute_stream(request));
+    }
+    Json(serde_json::to_value(gql.schema.execute(request).await).expect("graphql serializes"))
+        .into_response()
+}
+
+/// Whether the caller asked for the streaming transport.
+fn wants_event_stream(headers: &HeaderMap) -> bool {
+    headers
+        .get(axum::http::header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|accept| accept.contains("text/event-stream"))
+}
+
+/// Render a GraphQL response stream as graphql-sse in distinct
+/// connections mode: one `next` event per payload, then `complete`.
+///
+/// Subscriptions ride the SAME route and the SAME authenticator as
+/// every other operation, which is why this is server-sent events
+/// instead of a WebSocket. A browser cannot set headers on a WebSocket
+/// handshake, so graphql-ws carries credentials in its own init
+/// payload; that would be a second authentication path to keep correct.
+fn stream_response(
+    stream: impl futures::Stream<Item = async_graphql::Response> + Send + 'static,
+) -> axum::response::Response {
+    let events = stream
+        .map(|response| {
+            let payload = serde_json::to_string(&response).expect("graphql response serializes");
+            Ok::<_, std::convert::Infallible>(
+                axum::response::sse::Event::default()
+                    .event("next")
+                    .data(payload),
+            )
+        })
+        .chain(futures::stream::once(async {
+            Ok(axum::response::sse::Event::default()
+                .event("complete")
+                .data(""))
+        }));
+    axum::response::Sse::new(events)
+        .keep_alive(axum::response::sse::KeepAlive::default())
+        .into_response()
 }
 
 async fn sdl_document<B: BlobStore>(State(gql): State<GraphqlState<B>>) -> impl IntoResponse {

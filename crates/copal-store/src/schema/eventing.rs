@@ -73,6 +73,9 @@ fn file_event_table() -> TableDefinition {
         .with_indexes([
             index("idx_event_tenant", ["tenant_id", "created_at"]),
             index("idx_event_dispatch", ["dispatched", "created_at"]),
+            // Narrowing a feed to one verb, on both the list face and
+            // the subscription, which share a filter vocabulary.
+            index("idx_event_action", ["tenant_id", "action", "created_at"]),
         ])
 }
 

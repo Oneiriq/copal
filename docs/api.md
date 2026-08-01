@@ -279,7 +279,9 @@ Terminal state transitions (`file.ready`, `file.quarantined`,
 engine, in the same transaction as the state change. Every face
 produces events this way: REST, resumable sessions, the S3 gateway,
 the processing pipeline, and the sweeps, none of which carry eventing
-code. `GET /v1/events` lists a tenant's recent events.
+code. `GET /v1/events` lists a tenant's recent events, and
+`?action=file.ready` narrows the feed to one verb. To watch instead of
+poll, subscribe over GraphQL (below).
 
 ```
 POST   /v1/webhooks               register: { "url": ..., "events": [...] }
@@ -399,17 +401,35 @@ a newer upload of different content refuses with 409. See
 
 ## GraphQL
 
-`POST /graphql` executes queries and mutations; `GET /graphql` serves the SDL.
+`POST /graphql` executes queries, mutations, and subscriptions;
+`GET /graphql` serves the SDL.
 The schema is built at startup from the contract, so it matches
 `docs/schema.graphql` exactly.
 
 Queries follow the contract vocabulary: `files(limit, cursor, state, sort)`,
-`file(id)`, `events(limit, cursor, sort)`, `event(id)`,
+`file(id)`, `events(limit, cursor, action, sort)`, `event(id)`,
 `webhooks(limit, cursor, sort)`, `webhook(id)`,
 `runs(limit, cursor, status, sort)`, `run(id)`. Mutations map the
 contract actions: `fileIssueUrl`, `fileIssueUploadUrl`,
 `fileIssueEdgeUrl`, `fileRequestRendition`, `fileRemove`,
 `webhookRegister`, `webhookRemove`, `runStart`, `runRetry`.
+
+One subscription is served, `eventChanged(action)`, which delivers
+outbox rows as the engine writes them. It takes the same `action`
+filter the listing takes, and the engine applies both that filter and
+the tenant scope before a row is delivered, so narrowing happens in the
+database rather than in application code.
+
+Subscriptions ride `POST /graphql` with `Accept: text/event-stream`,
+answered as graphql-sse in distinct connections mode: one `next` event
+per payload, then `complete`. That keeps one route and one
+authenticator for every operation. A WebSocket transport would need a
+second one, since a browser cannot set headers on a WebSocket
+handshake and graphql-ws carries credentials in its own init payload.
+
+A subscription is authorized when it opens. Revoking a key stops new
+operations and does not close streams already running; bound their
+lifetime at the proxy if a deployment needs that.
 
 Usage and quotas stay REST-only: they report a number rather than a
 collection of rows, which is not a shape this contract expresses.

@@ -124,4 +124,39 @@ impl Store {
             .map_err(|e| CopalError::Store(format!("live query: {e}")))?;
         Ok(live.map(|_| ()))
     }
+
+    /// A live-query row stream for a table, narrowed by `conditions`.
+    ///
+    /// The engine evaluates the conditions per notification, so a
+    /// subscriber never sees a row it did not ask for. That is what
+    /// keeps tenant scoping out of application code, where a missed
+    /// check leaks another tenant's rows.
+    ///
+    /// Unlike [`Store::watch`], the payload IS the delivery here: a
+    /// notification the connection drops is a row the subscriber never
+    /// learns about. Use this to serve subscriptions, never to drive
+    /// durable work.
+    pub async fn watch_rows(
+        &self,
+        table: &str,
+        conditions: Vec<surql::query::Condition>,
+    ) -> copal_core::Result<
+        impl futures::Stream<Item = copal_core::Result<serde_json::Value>> + Send + Unpin,
+    > {
+        use futures::StreamExt as _;
+        let live = surql::connection::LiveQuery::<serde_json::Value>::start_where(
+            &self.client,
+            table,
+            conditions,
+        )
+        .await
+        .map_err(|e| CopalError::Store(format!("live query: {e}")))?;
+        // CREATE and UPDATE carry the row; DELETE carries it as it was.
+        // Every action is a fact worth relaying. A notification error
+        // travels as an item so the subscriber learns the feed broke.
+        Ok(live.map(|item| match item {
+            Ok(notification) => Ok(notification.data),
+            Err(error) => Err(CopalError::Store(format!("live query: {error}"))),
+        }))
+    }
 }

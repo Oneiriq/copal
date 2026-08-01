@@ -102,11 +102,18 @@ delete, and neither content nor grants serve from it.
 
 Enabling a scanner also changes what serving means. Copal otherwise
 serves on the digest alone, so bytes are readable while their
-pipeline runs; with scanning on, only `ready` serves. That covers the
-case the narrower rule misses: a run that failed leaves the record in
-`failed` with its digest intact, and "withhold only while scanning"
-would serve exactly the content nobody cleared. A re-upload therefore
-withholds until its own scan clears.
+pipeline runs; with scanning on, content serves only once a scan has
+cleared THAT content. The scan records which digest it cleared, and
+serving compares it against the digest the record currently points
+at, which is a question about content rather than lifecycle.
+
+Reading the record's state instead would get two cases wrong. A run
+that failed leaves unscanned bytes in place, which a "withhold only
+while scanning" rule would serve. And a re-upload in flight still
+points at the previous digest until it completes, which a
+"`ready` only" rule would withhold even though that content passed
+its own scan; Copal's documented behavior is that the previous
+version keeps serving through a re-upload, and it still does.
 
 A scanner that cannot be reached is an error, never a pass: the
 activity fails, the run retries, and the file never reaches `ready`.

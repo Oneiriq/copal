@@ -150,14 +150,27 @@ impl<B: BlobStore> AppState<B> {
     /// would still reach readers, and the scanner would only ever
     /// quarantine content that had already been served.
     ///
-    /// The rule is `ready` or nothing, which covers the case a
-    /// narrower one misses: a run that FAILED leaves the record in
-    /// `failed` with its digest intact, and "still scanning" would
-    /// happily serve it. A re-upload therefore also withholds until
-    /// its own scan clears, which is the conservative reading a
-    /// deployment that asked for scanning wants.
+    /// The question is about CONTENT, not lifecycle: has the digest
+    /// this record currently serves been cleared? Reading state
+    /// instead gets two cases wrong. A run that failed leaves the
+    /// record in `failed` with unscanned bytes, which "still
+    /// scanning" would serve; and a re-upload in flight still points
+    /// at the PREVIOUS digest until completion, which a `ready`-only
+    /// rule would withhold even though that content was scanned.
+    /// Comparing digests answers both.
     pub(crate) fn withholds_pending_scan(&self, record: &copal_core::FileRecord) -> bool {
-        self.scan_gates_serving && record.state != FileState::Ready
+        if !self.scan_gates_serving {
+            return false;
+        }
+        let Some(digest) = record.digest.as_ref() else {
+            return true;
+        };
+        record
+            .metadata
+            .get("processing")
+            .and_then(|p| p.get("scanned_digest"))
+            .and_then(|v| v.as_str())
+            != Some(digest.as_str())
     }
 
     /// Install a populated activity/workflow registry.

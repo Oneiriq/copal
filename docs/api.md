@@ -53,8 +53,9 @@ a caller supplies there is stripped, because the pipeline writes its verdicts
 under that key.
 
 When malware scanning is configured, content is withheld until a scan
-clears it: reads and signed URLs answer 409 until the record reaches
-`ready`, and a detection quarantines the file. See
+clears that content: reads and signed URLs answer 409 for bytes no
+scan has covered, and a detection quarantines the file. A re-upload
+keeps serving the previous version until the new one clears. See
 [operations.md](operations.md).
 
 Upload is a single PUT of raw bytes. The server streams to staging while the

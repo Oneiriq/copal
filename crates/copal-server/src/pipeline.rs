@@ -112,9 +112,15 @@ pub fn standard_registry<B: BlobStore>(
                 match crate::clamav::scan(&addr, &content).await? {
                     crate::clamav::Verdict::Clean => {
                         out["scanned"] = json!(true);
+                        // WHICH content was cleared, not merely that a
+                        // scan happened: serving compares this against
+                        // the record's current digest, so bytes that
+                        // replaced it are not covered by its verdict.
+                        out["scanned_digest"] = json!(digest.as_str());
                     }
                     crate::clamav::Verdict::Infected(signature) => {
                         out["scanned"] = json!(true);
+                        out["scanned_digest"] = json!(digest.as_str());
                         out["verdict"] = json!("blocked");
                         out["verdict_reason"] = json!(format!("malware detected: {signature}"));
                     }
@@ -193,6 +199,7 @@ pub fn standard_registry<B: BlobStore>(
                     "sniffed_type": input["sniffed_type"],
                     "type_matches": input["type_matches"],
                     "scanned": input["scanned"],
+                    "scanned_digest": input["scanned_digest"],
                     "verdict": input["verdict"],
                     "verdict_reason": input["verdict_reason"],
                 });

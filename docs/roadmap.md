@@ -91,8 +91,9 @@ From the July 2026 audit, in the order they matter:
    needs a resource shape the contract can express), then
    subscriptions over the outbox via the Janus runtime seam.
 6. Metrics shipped: a guarded Prometheus endpoint over process
-   counters. Remaining: OTel traces, and cached usage counters for
-   tenants with enough files that the aggregate stops being cheap.
+   counters. Cached usage counters shipped with them, which also
+   closed the concurrent-upload over-commit gap. Remaining: OTel
+   traces.
 
 ## Tier 4: platform depth
 

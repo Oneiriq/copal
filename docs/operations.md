@@ -156,8 +156,18 @@ The ceiling compares against logical usage: the sum of live files'
 current sizes, which is also what `GET /v1/usage` shows the tenant.
 Physical storage can be lower (dedupe) or higher (version history
 until GC); the accounting follows what tenants can see and delete.
-Enforcement is per upload with one aggregate query; the audit trail
-records `tenant.quota_set` and `tenant.quota_cleared`.
+The audit trail records `tenant.quota_set` and `tenant.quota_cleared`.
+
+Usage is a maintained counter rather than an aggregate per upload,
+because summing a tenant's files stops being cheap once there are
+many. Uploads whose length is declared reserve their bytes in the
+same statement that checks the ceiling, so concurrent uploads cannot
+each read the same headroom and collectively overshoot; the
+reservation settles to the real size when the body lands and is
+released when it fails. The counter is a cache, not the truth: every
+sweep recomputes it from the file rows, the same way blob reference
+counts are derived rather than trusted, so any drift a crash leaves
+behind corrects within one interval.
 
 ## Maintenance sweeps
 

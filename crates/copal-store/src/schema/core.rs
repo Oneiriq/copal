@@ -26,7 +26,28 @@ pub fn tables() -> Vec<TableDefinition> {
         file_version_table(),
         tenant_storage_table(),
         tenant_quota_table(),
+        tenant_usage_table(),
     ]
+}
+
+/// Cached usage per tenant: an advisory counter, not the truth.
+///
+/// The authoritative figure is the sum over live file rows, but
+/// paying for that aggregate on every upload stops being cheap once a
+/// tenant has many files. So writes maintain this row and a sweep
+/// recomputes it from the files, the same cache-plus-recount shape
+/// the blob refcount already uses: drift is bounded by one sweep
+/// interval and self-corrects.
+fn tenant_usage_table() -> TableDefinition {
+    table_schema("tenant_usage")
+        .with_mode(TableMode::Schemafull)
+        .with_fields([
+            built(string_field("tenant_id").assertion("$value != ''")),
+            built(int_field("bytes").default("0")),
+            built(int_field("files").default("0")),
+            built(datetime_field("updated_at").value("time::now()")),
+        ])
+        .with_indexes([unique_index("uniq_tenant_usage", ["tenant_id"])])
 }
 
 /// Tenant storage quota: a ceiling on logical bytes (the sum of live

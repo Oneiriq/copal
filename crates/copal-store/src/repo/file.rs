@@ -98,6 +98,10 @@ pub async fn create_file(
     let record = serde_json::from_value::<FileRow>(row)
         .map_err(|e| CopalError::Store(format!("create_file row shape: {e}")))?
         .into_domain()?;
+    // The cached counter tracks LIVE ROWS, the same population the
+    // aggregate sums; a replay returns early above and never lands
+    // here, so this counts each row exactly once.
+    let _ = super::tenant::bump_files(store, tenant, 1).await;
     Ok(CreatedFile {
         record,
         created: true,
@@ -484,6 +488,7 @@ pub async fn soft_delete(store: &Store, tenant: &TenantId, id: &FileId) -> copal
     if rows.is_empty() {
         return Err(CopalError::not_found(format!("file {id}")));
     }
+    let _ = super::tenant::bump_files(store, tenant, -1).await;
     Ok(())
 }
 

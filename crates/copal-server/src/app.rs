@@ -171,10 +171,24 @@ impl<B: BlobStore> AppState<B> {
         tenant: &TenantId,
         declared: Option<u64>,
     ) -> Result<Option<u64>, ApiError> {
-        let Some(quota) = copal_store::repo::tenant::get_quota(&self.store, tenant).await? else {
+        use copal_store::repo::tenant as tenant_repo;
+
+        let quota = tenant_repo::get_quota(&self.store, tenant).await?;
+        // The counter is the cheap read; the aggregate initializes it
+        // once per tenant and the sweep keeps it honest thereafter.
+        let (used, _) = match tenant_repo::cached_usage(&self.store, tenant).await? {
+            Some(cached) => cached,
+            None => tenant_repo::reconcile_usage(&self.store, tenant).await?,
+        };
+        let Some(quota) = quota else {
+            // No ceiling: still account the bytes so the counter stays
+            // usable the moment a quota is set.
+            if let Some(declared) = declared {
+                tenant_repo::reserve_usage(&self.store, tenant, declared as i64, None).await?;
+            }
             return Ok(None);
         };
-        let (used, _) = copal_store::repo::tenant::usage(&self.store, tenant).await?;
+
         let remaining = (quota - used).max(0) as u64;
         if remaining == 0 {
             crate::metrics::incr("copal_quota_refusals_total");
@@ -184,7 +198,12 @@ impl<B: BlobStore> AppState<B> {
             .into());
         }
         if let Some(declared) = declared {
-            if declared > remaining {
+            // Guard and increment in ONE statement: concurrent uploads
+            // cannot each see the same headroom and collectively
+            // overshoot, because the loser's condition no longer holds.
+            if !tenant_repo::reserve_usage(&self.store, tenant, declared as i64, Some(quota))
+                .await?
+            {
                 crate::metrics::incr("copal_quota_refusals_total");
                 return Err(CopalError::conflict(format!(
                     "upload of {declared} bytes exceeds remaining quota of {remaining} bytes",
@@ -193,6 +212,35 @@ impl<B: BlobStore> AppState<B> {
             }
         }
         Ok(Some(remaining))
+    }
+
+    /// Settle a reservation once the real size is known: releases the
+    /// difference when the body came in smaller, adds the remainder
+    /// when it came in larger or arrived undeclared.
+    pub(crate) async fn settle_reservation(
+        &self,
+        tenant: &TenantId,
+        reserved: Option<u64>,
+        actual: u64,
+    ) {
+        use copal_store::repo::tenant as tenant_repo;
+        let reserved = reserved.unwrap_or(0) as i64;
+        let actual = actual as i64;
+        let _ = if actual >= reserved {
+            tenant_repo::reserve_usage(&self.store, tenant, actual - reserved, None).await
+        } else {
+            tenant_repo::release_usage(&self.store, tenant, reserved - actual)
+                .await
+                .map(|()| true)
+        };
+    }
+
+    /// Give a whole reservation back: the upload never landed.
+    pub(crate) async fn abandon_reservation(&self, tenant: &TenantId, reserved: Option<u64>) {
+        if let Some(reserved) = reserved {
+            let _ = copal_store::repo::tenant::release_usage(&self.store, tenant, reserved as i64)
+                .await;
+        }
     }
 }
 
@@ -412,7 +460,11 @@ async fn tenant_usage<B: BlobStore>(
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let tenant = crate::auth::authenticate(&state, &headers).await?;
-    let (bytes, files) = copal_store::repo::tenant::usage(&state.store, &tenant).await?;
+    let (bytes, files) =
+        match copal_store::repo::tenant::cached_usage(&state.store, &tenant).await? {
+            Some(cached) => cached,
+            None => copal_store::repo::tenant::reconcile_usage(&state.store, &tenant).await?,
+        };
     let quota = copal_store::repo::tenant::get_quota(&state.store, &tenant).await?;
     Ok(Json(json!({
         "bytes": bytes,
@@ -831,7 +883,16 @@ pub(crate) async fn remove_file_core<B: BlobStore>(
     id: &FileId,
     origin: Option<&str>,
 ) -> Result<(), ApiError> {
+    // Read the size before the tombstone hides it, so the counter can
+    // give the bytes back; the sweep's recount corrects any drift.
+    let released = file_repo::get_file(&state.store, tenant, id)
+        .await?
+        .and_then(|record| record.size_bytes);
     file_repo::soft_delete(&state.store, tenant, id).await?;
+    if let Some(bytes) = released {
+        let _ = copal_store::repo::tenant::release_usage(&state.store, tenant, bytes as i64).await;
+    }
+
     copal_store::repo::auth::record_audit(
         &state.store,
         tenant,
@@ -1107,6 +1168,7 @@ async fn upload_content<B: BlobStore>(
     let stored = match backend.put_streamed(body).await {
         Ok(stored) => stored,
         Err(err) => {
+            state.abandon_reservation(&tenant, declared_len).await;
             // Leave the record retryable; the claim owner reports the
             // original failure even if the fallback transition fails too.
             let _ = file_repo::transition(
@@ -1159,6 +1221,9 @@ async fn upload_content<B: BlobStore>(
         }
     }
 
+    state
+        .settle_reservation(&tenant, declared_len, size_bytes)
+        .await;
     let record = finalize_new_content(
         &state,
         &tenant,

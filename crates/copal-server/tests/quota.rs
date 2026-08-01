@@ -202,3 +202,116 @@ async fn quotas_meter_enforce_and_release() {
         "unlimited again",
     );
 }
+
+#[tokio::test]
+async fn concurrent_uploads_cannot_overshoot_the_ceiling() {
+    // The reservation is the point of this design: without it, every
+    // in-flight upload reads the same headroom and they collectively
+    // exceed the quota.
+    let (router, _dir) = stack().await;
+    let response = router
+        .clone()
+        .oneshot(admin(
+            "PUT",
+            "/v1/admin/tenants/acme/quota",
+            Body::from(json!({ "max_bytes": 100 }).to_string()),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // Five records, each wanting 40 bytes against a 100-byte ceiling:
+    // at most two can fit.
+    let mut ids = Vec::new();
+    for n in 0..5 {
+        ids.push(create(&router, &format!("racer-{n}.bin")).await);
+    }
+    let mut handles = Vec::new();
+    for id in ids {
+        let router = router.clone();
+        handles.push(tokio::spawn(async move {
+            let put = Request::builder()
+                .method("PUT")
+                .uri(format!("/v1/files/{id}/content"))
+                .header("x-copal-tenant", "acme")
+                .header("content-length", "40")
+                .body(Body::from(vec![b'x'; 40]))
+                .unwrap();
+            router.oneshot(put).await.unwrap().status()
+        }));
+    }
+    let mut accepted = 0;
+    for handle in handles {
+        if handle.await.unwrap() == StatusCode::OK {
+            accepted += 1;
+        }
+    }
+    assert!(
+        (1..=2).contains(&accepted),
+        "at most two 40-byte uploads fit under 100 bytes, {accepted} were accepted",
+    );
+
+    let body = json_body(
+        router
+            .clone()
+            .oneshot(req("GET", "/v1/usage", Body::empty()))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(
+        body["bytes"].as_i64().unwrap() <= 100,
+        "usage never exceeds the ceiling: {body}",
+    );
+}
+
+#[tokio::test]
+async fn the_sweep_recomputes_a_drifted_counter() {
+    use copal_server::app::Residencies;
+    use copal_server::sweeps::{run_pass, SweepConfig};
+    use copal_store::repo::tenant as tenant_repo;
+
+    // The counter is a cache, so it can drift (a crash between the
+    // reservation and the release, say). The sweep recomputes it from
+    // the file rows, which are the truth.
+    let store = Store::connect(StoreConfig::memory()).await.unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let blobs = ObjectStore::open(dir.path().to_str().unwrap()).unwrap();
+    let state = AppState::new(store.clone(), blobs.clone());
+    let router = build_router(state);
+    let tenant = copal_core::TenantId::parse("acme").unwrap();
+
+    let id = create(&router, "counted.txt").await;
+    assert_eq!(put_content(&router, &id, &[b'z'; 42]).await, StatusCode::OK);
+    assert_eq!(
+        tenant_repo::cached_usage(&store, &tenant).await.unwrap(),
+        Some((42, 1)),
+    );
+
+    // Drift it far from the truth in both directions.
+    tenant_repo::set_usage(&store, &tenant, 9_999, 7)
+        .await
+        .unwrap();
+    let body = json_body(
+        router
+            .clone()
+            .oneshot(req("GET", "/v1/usage", Body::empty()))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(body["bytes"], 9_999, "the cache is believed until swept");
+
+    let report = run_pass(
+        &store,
+        &Residencies::local_only(blobs),
+        &SweepConfig::default(),
+    )
+    .await;
+    assert_eq!(report.usage_reconciled, 1);
+    assert_eq!(
+        tenant_repo::cached_usage(&store, &tenant).await.unwrap(),
+        Some((42, 1)),
+        "the recount restores the truth",
+    );
+}

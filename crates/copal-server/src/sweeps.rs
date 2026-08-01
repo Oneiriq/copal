@@ -63,6 +63,8 @@ pub struct SweepReport {
     pub tus_sessions_swept: u64,
     /// Abandoned S3 multipart sessions discarded with their parts.
     pub multipart_swept: u64,
+    /// Tenant usage counters recomputed from their files.
+    pub usage_reconciled: u64,
     pub staging_removed: u64,
     pub blobs_marked: u64,
     pub blobs_collected: u64,
@@ -110,6 +112,23 @@ pub async fn run_pass<B: BlobStore>(
     {
         Ok(removed) => report.staging_removed = removed,
         Err(err) => tracing::warn!(error = %err, "staging sweep failed"),
+    }
+
+    // The usage counter is a cache; this recount is what keeps a
+    // crashed upload or a missed release from drifting it forever.
+    match copal_store::repo::tenant::tenants_with_usage(store, 500).await {
+        Ok(tenants) => {
+            for raw in tenants {
+                let Ok(tenant) = copal_core::TenantId::parse(&raw) else {
+                    continue;
+                };
+                match copal_store::repo::tenant::reconcile_usage(store, &tenant).await {
+                    Ok(_) => report.usage_reconciled += 1,
+                    Err(err) => tracing::warn!(error = %err, "usage reconcile failed"),
+                }
+            }
+        }
+        Err(err) => tracing::warn!(error = %err, "usage sweep failed"),
     }
 
     match gc_pass(store, residencies, config, &mut report).await {

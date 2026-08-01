@@ -8,6 +8,7 @@ use serde_json::{json, Value};
 
 use surql::query::builder::Query;
 use surql::query::crud::{create_record, query_records};
+use surql::query::expressions::raw;
 use surql::types::operators::eq;
 use surql::types::RecordID;
 
@@ -219,4 +220,163 @@ pub async fn clear_quota(store: &Store, tenant: &TenantId) -> copal_core::Result
         .await
         .map_err(|e| map_store_err("clear_quota", e))?;
     Ok(true)
+}
+
+const USAGE_TABLE: &str = "tenant_usage";
+
+/// The cached usage counter, or `None` when no row exists yet.
+pub async fn cached_usage(
+    store: &Store,
+    tenant: &TenantId,
+) -> copal_core::Result<Option<(i64, i64)>> {
+    let query = Query::new()
+        .select(Some(vec!["bytes".to_owned(), "files".to_owned()]))
+        .from_table(USAGE_TABLE)
+        .map_err(|e| map_store_err("cached_usage", e))?
+        .where_(eq("tenant_id", tenant.as_str()))
+        .limit(1)
+        .map_err(|e| map_store_err("cached_usage", e))?;
+    let rows: Vec<Value> = query_records(store.client(), &query)
+        .await
+        .map_err(|e| map_store_err("cached_usage", e))?;
+    Ok(rows.first().map(|row| {
+        (
+            row.get("bytes").and_then(Value::as_i64).unwrap_or(0),
+            row.get("files").and_then(Value::as_i64).unwrap_or(0),
+        )
+    }))
+}
+
+/// Write the counter to a known figure, creating the row if needed.
+/// Reconciliation and lazy initialization both land here.
+pub async fn set_usage(
+    store: &Store,
+    tenant: &TenantId,
+    bytes: i64,
+    files: i64,
+) -> copal_core::Result<()> {
+    let update = Query::new()
+        .update_set(USAGE_TABLE)
+        .map_err(|e| map_store_err("set_usage", e))?
+        .set("bytes", Value::from(bytes))
+        .map_err(|e| map_store_err("set_usage", e))?
+        .set("files", Value::from(files))
+        .map_err(|e| map_store_err("set_usage", e))?
+        .where_(eq("tenant_id", tenant.as_str()))
+        .return_after();
+    let rows: Vec<Value> = query_records(store.client(), &update)
+        .await
+        .map_err(|e| map_store_err("set_usage", e))?;
+    if !rows.is_empty() {
+        return Ok(());
+    }
+    let id = ulid::Ulid::new().to_string().to_ascii_lowercase();
+    let rid =
+        RecordID::<()>::new(USAGE_TABLE, id.as_str()).map_err(|e| map_store_err("set_usage", e))?;
+    let payload = json!({
+        "tenant_id": tenant.as_str(),
+        "bytes": bytes,
+        "files": files,
+    });
+    match create_record(store.client(), &rid.to_string(), payload).await {
+        Ok(_) => Ok(()),
+        Err(err) => {
+            let mapped = map_store_err("set_usage", err);
+            // A racing initializer won; its figure is as good as ours.
+            if matches!(mapped, CopalError::Conflict(_)) {
+                Ok(())
+            } else {
+                Err(mapped)
+            }
+        }
+    }
+}
+
+/// Reserve bytes against the ceiling, atomically.
+///
+/// The guard and the increment are ONE statement, so concurrent
+/// uploads cannot each read the same headroom and collectively
+/// overshoot: the second one's WHERE no longer holds. Returns whether
+/// the reservation succeeded. A quota of `None` still counts the
+/// bytes; only the refusal is skipped.
+pub async fn reserve_usage(
+    store: &Store,
+    tenant: &TenantId,
+    bytes: i64,
+    quota: Option<i64>,
+) -> copal_core::Result<bool> {
+    let mut update = Query::new()
+        .update_set(USAGE_TABLE)
+        .map_err(|e| map_store_err("reserve_usage", e))?
+        .set_expr("bytes", raw(format!("bytes + {bytes}")))
+        .map_err(|e| map_store_err("reserve_usage", e))?
+        .where_(eq("tenant_id", tenant.as_str()));
+    if let Some(quota) = quota {
+        update = update.where_str(format!("bytes + {bytes} <= {quota}"));
+    }
+    let rows: Vec<Value> = query_records(store.client(), &update.return_after())
+        .await
+        .map_err(|e| map_store_err("reserve_usage", e))?;
+    Ok(!rows.is_empty())
+}
+
+/// Give reserved bytes back (a failed or smaller-than-declared
+/// upload). Never drops below zero; the sweep's recount is the
+/// backstop for any drift this cannot see.
+pub async fn release_usage(store: &Store, tenant: &TenantId, bytes: i64) -> copal_core::Result<()> {
+    if bytes == 0 {
+        return Ok(());
+    }
+    let update = Query::new()
+        .update_set(USAGE_TABLE)
+        .map_err(|e| map_store_err("release_usage", e))?
+        .set_expr("bytes", raw(format!("math::max([bytes - {bytes}, 0])")))
+        .map_err(|e| map_store_err("release_usage", e))?
+        .where_(eq("tenant_id", tenant.as_str()))
+        .return_after();
+    query_records::<Value>(store.client(), &update)
+        .await
+        .map_err(|e| map_store_err("release_usage", e))?;
+    Ok(())
+}
+
+/// Adjust the file count alongside a completed or removed file.
+pub async fn bump_files(store: &Store, tenant: &TenantId, delta: i64) -> copal_core::Result<()> {
+    let update = Query::new()
+        .update_set(USAGE_TABLE)
+        .map_err(|e| map_store_err("bump_files", e))?
+        .set_expr("files", raw(format!("math::max([files + {delta}, 0])")))
+        .map_err(|e| map_store_err("bump_files", e))?
+        .where_(eq("tenant_id", tenant.as_str()))
+        .return_after();
+    query_records::<Value>(store.client(), &update)
+        .await
+        .map_err(|e| map_store_err("bump_files", e))?;
+    Ok(())
+}
+
+/// Recompute one tenant's counter from its files: the authoritative
+/// figure, written back over whatever the cache drifted to.
+pub async fn reconcile_usage(store: &Store, tenant: &TenantId) -> copal_core::Result<(i64, i64)> {
+    let (bytes, files) = usage(store, tenant).await?;
+    set_usage(store, tenant, bytes, files).await?;
+    Ok((bytes, files))
+}
+
+/// Tenants carrying a usage row, for the reconciliation sweep.
+pub async fn tenants_with_usage(store: &Store, limit: i64) -> copal_core::Result<Vec<String>> {
+    let query = Query::new()
+        .select(Some(vec!["tenant_id".to_owned()]))
+        .from_table(USAGE_TABLE)
+        .map_err(|e| map_store_err("tenants_with_usage", e))?
+        .limit(limit)
+        .map_err(|e| map_store_err("tenants_with_usage", e))?;
+    let rows: Vec<Value> = query_records(store.client(), &query)
+        .await
+        .map_err(|e| map_store_err("tenants_with_usage", e))?;
+    Ok(rows
+        .iter()
+        .filter_map(|row| row.get("tenant_id").and_then(|v| v.as_str()))
+        .map(str::to_owned)
+        .collect())
 }

@@ -66,10 +66,14 @@ if their existing tooling works, and today it does not.
 
 ## Stream 3: retrieval cost
 
-8. **F16 vectors and DiskANN.** The engine's 3.1 release added both.
-   Copal stores embeddings as F64, which is four times the memory a
-   1536-dimension embedding needs, and HNSW wants the whole index in
-   memory. DiskANN makes larger-than-memory corpora viable.
+8. **F16 vectors and DiskANN, blocked upstream.** The server's 3.1
+   release added both, and the newest published `surrealdb` crate
+   (3.2.3, which is also the embedded engine tests run on) parses
+   neither, along with the new distance metrics. Probed directly:
+   every form refuses. The available half shipped: the HNSW index
+   stores F32 instead of F64, since embedding models emit single
+   precision at best. Revisit when the crate catches up to the
+   server.
 
 ## Then
 

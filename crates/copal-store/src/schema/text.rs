@@ -111,7 +111,13 @@ pub fn vector_index(dimension: u32) -> IndexDefinition {
         // Cosine is the metric the common embedding models are
         // trained for; their vectors are direction, not magnitude.
         HnswDistanceType::Cosine,
-        MTreeVectorType::F64,
+        // F32: embedding models emit single precision at best, so F64
+        // doubles index memory for digits that never existed. F16 and
+        // DiskANN would halve it again and lift the in-memory bound;
+        // both were probed against surrealdb 3.2.3 (the newest
+        // published crate) and neither parses yet, so they wait
+        // upstream.
+        MTreeVectorType::F32,
         None,
         None,
     )

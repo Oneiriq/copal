@@ -20,6 +20,10 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 - **Retrieval over passages.** Documents split into overlapping passages, each
   embedded and indexed on its own, so a hit names the part that answers the
   question rather than the file that contains it.
+- **The vector index stores F32.** Embedding models emit single precision at
+  best, so F64 doubled index memory for digits that never existed. F16 and
+  DiskANN wait upstream: the newest published `surrealdb` crate parses
+  neither.
 - **Embeddings and hybrid retrieval.** Per-passage vectors from any service
   speaking the OpenAI embeddings shape, HNSW-indexed, fused with the lexical
   ranking by reciprocal rank fusion. A relevance floor lets a semantic query

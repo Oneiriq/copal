@@ -28,6 +28,19 @@ class FilePage:
   next_cursor: str | None = None
 
 @dataclass
+class Webhook:
+  id: str
+  target_url: str
+  events: str
+  active: bool
+  created_at: str
+
+@dataclass
+class WebhookPage:
+  items: list[Webhook] = field(default_factory=list)
+  next_cursor: str | None = None
+
+@dataclass
 class Event:
   id: str
   action: str
@@ -91,11 +104,33 @@ class Client:
   def issue_upload_url_file(self, id: str, body: dict[str, Any] | None = None) -> Any:
     return self._request('POST', f'/v1/files/{id}/upload-url', body or {})
 
+  def issue_edge_url_file(self, id: str, body: dict[str, Any] | None = None) -> Any:
+    return self._request('POST', f'/v1/files/{id}/edge-url', body or {})
+
   def request_rendition_file(self, id: str, body: dict[str, Any] | None = None) -> Any:
     return self._request('POST', f'/v1/files/{id}/renditions', body or {})
 
   def remove_file(self, id: str) -> None:
     return self._request('DELETE', f'/v1/files/{id}')
+
+  def list_webhooks(self, limit: int | None = None, cursor: str | None = None) -> WebhookPage:
+    query = {k: v for k, v in {'limit': limit, 'cursor': cursor}.items() if v is not None}
+    suffix = f'?{urllib.parse.urlencode(query)}' if query else ''
+    payload = self._request('GET', f'/v1/webhooks{suffix}')
+    return WebhookPage(
+      items=[Webhook(**{k: v for k, v in item.items() if k in Webhook.__dataclass_fields__}) for item in payload.get('items', [])],
+      next_cursor=payload.get('next_cursor'),
+    )
+
+  def get_webhook(self, id: str) -> Webhook:
+    item = self._request('GET', f'/v1/webhooks/{id}')
+    return Webhook(**{k: v for k, v in item.items() if k in Webhook.__dataclass_fields__})
+
+  def register_webhook(self, body: dict[str, Any] | None = None) -> Any:
+    return self._request('POST', f'/v1/webhooks', body or {})
+
+  def remove_webhook(self, id: str) -> None:
+    return self._request('DELETE', f'/v1/webhooks/{id}')
 
   def list_events(self, limit: int | None = None, cursor: str | None = None) -> EventPage:
     query = {k: v for k, v in {'limit': limit, 'cursor': cursor}.items() if v is not None}

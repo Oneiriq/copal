@@ -95,6 +95,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_auth(config.auth.clone())
         .with_residencies(residencies.named.clone())
         .with_scan_gate(config.clamav_addr.is_some())
+        .with_cipher(match &config.blob_encryption_key {
+            Some(key) => Some(copal_blob::crypto::BlobCipher::from_hex(key)?),
+            None => None,
+        })
         .with_embedding(
             config
                 .embedding_addr
@@ -124,56 +128,46 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // listener, so stock tooling needs only an endpoint URL. It exists
     // only with an encryption key: SigV4 verification reads the shared
     // secret back, and Copal stores such secrets sealed or not at all.
-    let s3_cipher = match &config.s3_bind {
-        Some(s3_bind) => {
-            let Some(key) = &config.blob_encryption_key else {
-                return Err(
-                    "COPAL_S3_BIND requires COPAL_BLOB_ENCRYPTION_KEY: gateway credentials \
-                     are stored sealed under it"
-                        .into(),
-                );
-            };
-            let cipher = copal_blob::crypto::BlobCipher::from_hex(key)?;
-            let gateway = copal_server::s3::s3_router(state.clone(), cipher.clone());
-            let listener = tokio::net::TcpListener::bind(s3_bind).await?;
-            tracing::info!(addr = %listener.local_addr()?, "s3 gateway listening");
-            tokio::spawn(async move {
-                if let Err(err) = axum::serve(listener, gateway).await {
-                    tracing::error!(error = %err, "s3 listener failed");
-                }
-            });
-            Some(cipher)
+    if state.cipher.is_none() {
+        tracing::info!("sealed-secret surfaces are disabled: COPAL_BLOB_ENCRYPTION_KEY is unset",);
+    }
+
+    // The S3 gateway serves bucket routes at the root of its own
+    // listener, so stock tooling needs only an endpoint URL. It exists
+    // only with an encryption key: SigV4 verification reads the shared
+    // secret back, and Copal stores such secrets sealed or not at all.
+    if let Some(s3_bind) = &config.s3_bind {
+        if state.cipher.is_none() {
+            return Err(
+                "COPAL_S3_BIND requires COPAL_BLOB_ENCRYPTION_KEY: gateway credentials \
+                 are stored sealed under it"
+                    .into(),
+            );
         }
-        None => None,
-    };
+        let gateway = copal_server::s3::s3_router(state.clone());
+        let listener = tokio::net::TcpListener::bind(s3_bind).await?;
+        tracing::info!(addr = %listener.local_addr()?, "s3 gateway listening");
+        tokio::spawn(async move {
+            if let Err(err) = axum::serve(listener, gateway).await {
+                tracing::error!(error = %err, "s3 listener failed");
+            }
+        });
+    }
     // Credential management joins the admin surface only when the
     // gateway is configured.
-    let admin_extras = s3_cipher
+    let admin_extras = config
+        .s3_bind
         .as_ref()
-        .map(|cipher| copal_server::s3::s3_admin_router(state.clone(), cipher.clone()));
+        .map(|_| copal_server::s3::s3_admin_router(state.clone()));
 
-    // Webhooks exist only with the blob master key: endpoint signing
-    // secrets are stored sealed under it, same custody rule as the S3
-    // credentials. The dispatcher wakes on the outbox live query.
-    let webhook_cipher = match &config.blob_encryption_key {
-        Some(key) => Some(copal_blob::crypto::BlobCipher::from_hex(key)?),
-        None => {
-            tracing::info!("webhooks disabled: COPAL_BLOB_ENCRYPTION_KEY is unset");
-            None
-        }
-    };
-    let webhook_routes = webhook_cipher
-        .as_ref()
-        .map(|cipher| copal_server::webhooks::webhook_router(state.clone(), cipher.clone()));
-    // cg2 edge tokens share the sealed-secret custody rule, so the
-    // surface exists under the same gate.
-    let edge_routes = webhook_cipher
-        .as_ref()
-        .map(|cipher| copal_server::edge::edge_router(state.clone(), cipher.clone()));
-    let edge_admin = webhook_cipher
-        .as_ref()
-        .map(|cipher| copal_server::edge::edge_admin_router(state.clone(), cipher.clone()));
-    if let Some(cipher) = webhook_cipher {
+    // Webhooks and cg2 edge tokens store secrets sealed under the
+    // master key, so their surfaces exist under the same gate.
+    let sealed_surfaces = state.cipher.is_some();
+    let webhook_routes =
+        sealed_surfaces.then(|| copal_server::webhooks::webhook_router(state.clone()));
+    let edge_routes = sealed_surfaces.then(|| copal_server::edge::edge_router(state.clone()));
+    let edge_admin = sealed_surfaces.then(|| copal_server::edge::edge_admin_router(state.clone()));
+    if let Some(cipher) = state.cipher.clone() {
         tokio::spawn(copal_server::webhooks::run_forever(
             store.clone(),
             cipher,

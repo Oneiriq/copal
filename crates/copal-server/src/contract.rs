@@ -91,6 +91,28 @@ pub fn contract() -> Contract {
                         graphql_field: None,
                     },
                     Action {
+                        name: "issue_edge_url".into(),
+                        method: "POST".into(),
+                        path: "/{id}/edge-url".into(),
+                        input: vec![ActionField {
+                            name: "ttl_secs".into(),
+                            kind: TypeRef::Int,
+                            required: false,
+                            description: Some(
+                                "Seconds until the token expires (default 900, max one day). \
+                                 Edge tokens cannot be revoked individually."
+                                    .into(),
+                            ),
+                        }],
+                        output: ActionOutput::Json,
+                        description: Some(
+                            "Issue a cg2 token a CDN can verify itself, without a database \
+                             hop."
+                                .into(),
+                        ),
+                        graphql_field: None,
+                    },
+                    Action {
                         name: "request_rendition".into(),
                         method: "POST".into(),
                         path: "/{id}/renditions".into(),
@@ -146,6 +168,62 @@ pub fn contract() -> Contract {
                             "Soft-delete: tombstone the record and free its live path; bytes are \
                          reclaimed by garbage collection once nothing references them."
                                 .into(),
+                        ),
+                        graphql_field: None,
+                    },
+                ],
+            },
+            Resource {
+                name: "webhooks".into(),
+                table: "webhook_endpoint".into(),
+                fields: vec![
+                    FieldExposure::column("target_url"),
+                    FieldExposure::column("events"),
+                    FieldExposure::column("active"),
+                    FieldExposure::column("created_at"),
+                ],
+                pinned: vec!["tenant_id".into()],
+                filterable: vec![],
+                sortable: vec!["created_at".into()],
+                max_page_size: 100,
+                graphql: None,
+                actions: vec![
+                    Action {
+                        name: "register".into(),
+                        method: "POST".into(),
+                        path: String::new(),
+                        input: vec![
+                            ActionField {
+                                name: "url".into(),
+                                kind: TypeRef::String,
+                                required: true,
+                                description: Some(
+                                    "Destination, which must resolve to a public address.".into(),
+                                ),
+                            },
+                            ActionField {
+                                name: "events".into(),
+                                kind: TypeRef::Json,
+                                required: false,
+                                description: Some(
+                                    "Dotted actions to deliver; empty means every event.".into(),
+                                ),
+                            },
+                        ],
+                        output: ActionOutput::Json,
+                        description: Some(
+                            "Register an endpoint. The signing secret appears once, here.".into(),
+                        ),
+                        graphql_field: None,
+                    },
+                    Action {
+                        name: "remove".into(),
+                        method: "DELETE".into(),
+                        path: "/{id}".into(),
+                        input: vec![],
+                        output: ActionOutput::None,
+                        description: Some(
+                            "Deactivate an endpoint; pending deliveries settle as failed.".into(),
                         ),
                         graphql_field: None,
                     },

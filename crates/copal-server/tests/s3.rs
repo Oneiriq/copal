@@ -24,13 +24,15 @@ async fn stack() -> (axum::Router, axum::Router, tempfile::TempDir) {
     let store = Store::connect(StoreConfig::memory()).await.unwrap();
     let dir = tempfile::tempdir().unwrap();
     let blobs = ObjectStore::open(dir.path().to_str().unwrap()).unwrap();
-    let state = AppState::new(store, blobs).with_auth(AuthConfig {
-        admin_token: Some("root".to_owned()),
-        ..AuthConfig::default()
-    });
     let cipher = BlobCipher::from_hex(MASTER_KEY).unwrap();
-    let gateway = s3_router(state.clone(), cipher.clone());
-    let admin = s3_admin_router(state, cipher);
+    let state = AppState::new(store, blobs)
+        .with_auth(AuthConfig {
+            admin_token: Some("root".to_owned()),
+            ..AuthConfig::default()
+        })
+        .with_cipher(Some(cipher));
+    let gateway = s3_router(state.clone());
+    let admin = s3_admin_router(state);
     (gateway, admin, dir)
 }
 

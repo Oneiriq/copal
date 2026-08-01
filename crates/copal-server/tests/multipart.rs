@@ -35,18 +35,19 @@ async fn stack_with_floor(floor: i64) -> Stack {
     let store = Store::connect(StoreConfig::memory()).await.unwrap();
     let dir = tempfile::tempdir().unwrap();
     let blobs = ObjectStore::open(dir.path().to_str().unwrap()).unwrap();
-    let mut state = AppState::new(store.clone(), blobs.clone()).with_auth(AuthConfig {
-        admin_token: Some("root".to_owned()),
-        ..AuthConfig::default()
-    });
+    let mut state = AppState::new(store.clone(), blobs.clone())
+        .with_auth(AuthConfig {
+            admin_token: Some("root".to_owned()),
+            ..AuthConfig::default()
+        })
+        .with_cipher(Some(BlobCipher::from_hex(MASTER_KEY).unwrap()));
     // These tests exercise assembly and lifecycle, not part sizing;
     // pushing 5 MiB per part to satisfy the default floor would buy
     // nothing. The floor has its own test below.
     state.limits.min_multipart_part_bytes = floor;
-    let cipher = BlobCipher::from_hex(MASTER_KEY).unwrap();
     Stack {
-        gateway: s3_router(state.clone(), cipher.clone()),
-        admin: s3_admin_router(state, cipher),
+        gateway: s3_router(state.clone()),
+        admin: s3_admin_router(state),
         store,
         residencies: Residencies::local_only(blobs),
         dir,

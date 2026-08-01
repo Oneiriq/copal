@@ -19,6 +19,19 @@ export interface FilePage {
   next_cursor?: string | null
 }
 
+export interface Webhook {
+  id: string
+  targetUrl: string
+  events: string
+  active: boolean
+  createdAt: string
+}
+
+export interface WebhookPage {
+  items: Webhook[]
+  next_cursor?: string | null
+}
+
 export interface Event {
   id: string
   action: string
@@ -83,12 +96,36 @@ export class Client {
     return this.request('POST', `/v1/files/${id}/upload-url`, input)
   }
 
+  issueEdgeUrlFile(id: string, input: Record<string, unknown>): Promise<Record<string, unknown>> {
+    return this.request('POST', `/v1/files/${id}/edge-url`, input)
+  }
+
   requestRenditionFile(id: string, input: Record<string, unknown>): Promise<Record<string, unknown>> {
     return this.request('POST', `/v1/files/${id}/renditions`, input)
   }
 
   removeFile(id: string): Promise<void> {
     return this.request('DELETE', `/v1/files/${id}`)
+  }
+
+  listWebhooks(limit?: number, cursor?: string): Promise<WebhookPage> {
+    const query = new URLSearchParams()
+    if (limit !== undefined) query.set('limit', String(limit))
+    if (cursor !== undefined) query.set('cursor', cursor)
+    const suffix = query.size > 0 ? `?${query}` : ''
+    return this.request('GET', `/v1/webhooks${suffix}`)
+  }
+
+  getWebhook(id: string): Promise<Webhook> {
+    return this.request('GET', `/v1/webhooks/${id}`)
+  }
+
+  registerWebhook(input: Record<string, unknown>): Promise<Record<string, unknown>> {
+    return this.request('POST', `/v1/webhooks`, input)
+  }
+
+  removeWebhook(id: string): Promise<void> {
+    return this.request('DELETE', `/v1/webhooks/${id}`)
   }
 
   listEvents(limit?: number, cursor?: string): Promise<EventPage> {

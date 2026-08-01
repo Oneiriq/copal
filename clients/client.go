@@ -29,6 +29,19 @@ type FilePage struct {
 	NextCursor *string `json:"next_cursor"`
 }
 
+type Webhook struct {
+	ID string `json:"id"`
+	TargetUrl string `json:"target_url"`
+	Events string `json:"events"`
+	Active bool `json:"active"`
+	CreatedAt string `json:"created_at"`
+}
+
+type WebhookPage struct {
+	Items []Webhook `json:"items"`
+	NextCursor *string `json:"next_cursor"`
+}
+
 type Event struct {
 	ID string `json:"id"`
 	Action string `json:"action"`
@@ -142,6 +155,14 @@ func (c *Client) IssueUploadUrlFile(id string, input map[string]any) (map[string
 	return out, nil
 }
 
+func (c *Client) IssueEdgeUrlFile(id string, input map[string]any) (map[string]any, error) {
+	out := map[string]any{}
+	if err := c.request("POST", "/v1/files" + "/" + id + "/edge-url", input, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *Client) RequestRenditionFile(id string, input map[string]any) (map[string]any, error) {
 	out := map[string]any{}
 	if err := c.request("POST", "/v1/files" + "/" + id + "/renditions", input, &out); err != nil {
@@ -152,6 +173,45 @@ func (c *Client) RequestRenditionFile(id string, input map[string]any) (map[stri
 
 func (c *Client) RemoveFile(id string) error {
 	return c.request("DELETE", "/v1/files" + "/" + id, nil, nil)
+}
+
+func (c *Client) ListWebhooks(limit int, cursor string) (*WebhookPage, error) {
+	query := url.Values{}
+	if limit > 0 {
+		query.Set("limit", fmt.Sprint(limit))
+	}
+	if cursor != "" {
+		query.Set("cursor", cursor)
+	}
+	path := "/v1/webhooks"
+	if encoded := query.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+	var page WebhookPage
+	if err := c.request("GET", path, nil, &page); err != nil {
+		return nil, err
+	}
+	return &page, nil
+}
+
+func (c *Client) GetWebhook(id string) (*Webhook, error) {
+	var out Webhook
+	if err := c.request("GET", "/v1/webhooks/"+id, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) RegisterWebhook(input map[string]any) (map[string]any, error) {
+	out := map[string]any{}
+	if err := c.request("POST", "/v1/webhooks", input, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) RemoveWebhook(id string) error {
+	return c.request("DELETE", "/v1/webhooks" + "/" + id, nil, nil)
 }
 
 func (c *Client) ListEvents(limit int, cursor string) (*EventPage, error) {

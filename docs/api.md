@@ -405,9 +405,14 @@ The schema is built at startup from the contract, so it matches
 
 Queries follow the contract vocabulary: `files(limit, cursor, state, sort)`,
 `file(id)`, `events(limit, cursor, sort)`, `event(id)`,
+`webhooks(limit, cursor, sort)`, `webhook(id)`,
 `runs(limit, cursor, status, sort)`, `run(id)`. Mutations map the
 contract actions: `fileIssueUrl`, `fileIssueUploadUrl`,
-`fileRequestRendition`, `fileRemove`, `runStart`, `runRetry`.
+`fileIssueEdgeUrl`, `fileRequestRendition`, `fileRemove`,
+`webhookRegister`, `webhookRemove`, `runStart`, `runRetry`.
+
+Usage and quotas stay REST-only: they report a number rather than a
+collection of rows, which is not a shape this contract expresses.
 
 Field names stay as the contract declares them (`created_at`, not
 `createdAt`), because the generated SDL, the OpenAPI document, and

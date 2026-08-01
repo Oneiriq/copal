@@ -26,7 +26,6 @@ use axum::Router;
 use base64::Engine as _;
 use futures::StreamExt as _;
 
-use copal_blob::crypto::BlobCipher;
 use copal_blob::{BlobStore, StoredBlob};
 use copal_core::{AccessLevel, CopalError, FileSpec, FileState, TenantId};
 use copal_store::repo::{file as file_repo, s3 as s3_repo};
@@ -39,12 +38,11 @@ use crate::serve::{serve_blob, CacheClass, ServeSpec};
 #[derive(Clone)]
 pub struct S3Gateway<B: BlobStore> {
     pub app: AppState<B>,
-    pub cipher: BlobCipher,
 }
 
 /// The gateway router, mounted at the root of its own listener.
-pub fn s3_router<B: BlobStore + 'static>(app: AppState<B>, cipher: BlobCipher) -> Router {
-    let gateway = S3Gateway { app, cipher };
+pub fn s3_router<B: BlobStore + 'static>(app: AppState<B>) -> Router {
+    let gateway = S3Gateway { app };
     Router::new()
         .route("/", get(list_buckets::<B>))
         .route("/{bucket}", get(list_objects::<B>).head(head_bucket::<B>))
@@ -62,8 +60,8 @@ pub fn s3_router<B: BlobStore + 'static>(app: AppState<B>, cipher: BlobCipher) -
 /// Credential management for the admin surface. Merged into the admin
 /// listener only when the gateway is configured, because minting needs
 /// the cipher.
-pub fn s3_admin_router<B: BlobStore + 'static>(app: AppState<B>, cipher: BlobCipher) -> Router {
-    let gateway = S3Gateway { app, cipher };
+pub fn s3_admin_router<B: BlobStore + 'static>(app: AppState<B>) -> Router {
+    let gateway = S3Gateway { app };
     Router::new()
         .route(
             "/v1/admin/tenants/{tenant}/s3-credentials",
@@ -204,7 +202,11 @@ async fn authenticate<B: BlobStore>(
                 "credential storage corrupt",
             )
         })?;
-    let secret_bytes = gateway.cipher.open(&sealed).map_err(|_| {
+    let cipher = match gateway.app.require_cipher() {
+        Ok(cipher) => cipher,
+        Err(err) => return Err(copal_to_s3(err.0)),
+    };
+    let secret_bytes = cipher.open(&sealed).map_err(|_| {
         xml_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "InternalError",
@@ -888,7 +890,10 @@ async fn mint_credential<B: BlobStore>(
     crate::auth::require_admin(&gateway.app, &headers)?;
     let tenant = TenantId::parse(&tenant)?;
     let token = copal_sign::ApiKeyToken::mint();
-    let sealed = gateway.cipher.seal(token.secret.as_bytes())?;
+    let sealed = gateway
+        .app
+        .require_cipher()?
+        .seal(token.secret.as_bytes())?;
     let sealed_b64 = base64::engine::general_purpose::STANDARD.encode(sealed);
     let row =
         s3_repo::create_credential(&gateway.app.store, &tenant, &token.key_id, &sealed_b64).await?;

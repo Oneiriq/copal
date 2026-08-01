@@ -85,10 +85,10 @@ From the July 2026 audit, in the order they matter:
 4. Per-residency encryption keys shipped: a residency seals with its
    own key, so a tenant needing key separation takes its own
    residency (which already scopes dedupe and backends).
-5. GraphQL parity: upload URLs, renditions, and the event outbox
-   joined the contract, so both faces and all four generated clients
-   carry them. Remaining: webhooks, usage, and edge tokens (each
-   needs a resource shape the contract can express), then
+5. GraphQL parity (shipped): upload URLs, renditions, the event
+   outbox, webhooks, and edge tokens all joined the contract, so both
+   faces and all four generated clients carry them. Usage stays
+   REST-only, reporting a number rather than rows. Remaining:
    subscriptions over the outbox via the Janus runtime seam.
 6. Metrics shipped: a guarded Prometheus endpoint over process
    counters. Cached usage counters shipped with them, which also

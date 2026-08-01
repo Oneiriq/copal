@@ -40,12 +40,11 @@ const DEFAULT_TTL_SECS: i64 = 300;
 #[derive(Clone)]
 pub struct EdgeState<B: BlobStore> {
     pub app: AppState<B>,
-    pub cipher: BlobCipher,
 }
 
 /// Tenant issuance plus anonymous redemption.
-pub fn edge_router<B: BlobStore + 'static>(app: AppState<B>, cipher: BlobCipher) -> Router {
-    let state = EdgeState { app, cipher };
+pub fn edge_router<B: BlobStore + 'static>(app: AppState<B>) -> Router {
+    let state = EdgeState { app };
     Router::new()
         .route(
             "/v1/files/{id}/edge-url",
@@ -56,8 +55,8 @@ pub fn edge_router<B: BlobStore + 'static>(app: AppState<B>, cipher: BlobCipher)
 }
 
 /// Edge key custody for the admin surface.
-pub fn edge_admin_router<B: BlobStore + 'static>(app: AppState<B>, cipher: BlobCipher) -> Router {
-    let state = EdgeState { app, cipher };
+pub fn edge_admin_router<B: BlobStore + 'static>(app: AppState<B>) -> Router {
+    let state = EdgeState { app };
     Router::new()
         .route(
             "/v1/admin/tenants/{tenant}/edge-keys",
@@ -102,7 +101,26 @@ async fn issue_edge_url<B: BlobStore>(
 ) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
     let tenant = crate::auth::authenticate(&state.app, &headers).await?;
     let id = FileId::parse(&id)?;
-    let ttl = request.ttl_secs.unwrap_or(DEFAULT_TTL_SECS);
+    let body = issue_edge_url_core(
+        &state.app,
+        &tenant,
+        &id,
+        request.ttl_secs.unwrap_or(DEFAULT_TTL_SECS),
+        forwarded_origin(&headers).as_deref(),
+    )
+    .await?;
+    Ok((StatusCode::CREATED, Json(body)))
+}
+
+/// Mint a cg2 token, the shared core behind the REST handler and the
+/// GraphQL action resolver.
+pub(crate) async fn issue_edge_url_core<B: BlobStore>(
+    app: &AppState<B>,
+    tenant: &copal_core::TenantId,
+    id: &FileId,
+    ttl: i64,
+    origin: Option<&str>,
+) -> Result<serde_json::Value, ApiError> {
     if !(1..=MAX_TTL_SECS).contains(&ttl) {
         return Err(CopalError::validation(format!(
             "ttl_secs must be within 1..={MAX_TTL_SECS}: edge tokens cannot be revoked \
@@ -110,7 +128,7 @@ async fn issue_edge_url<B: BlobStore>(
         ))
         .into());
     }
-    let record = file_repo::get_file(&state.app.store, &tenant, &id)
+    let record = file_repo::get_file(&app.store, tenant, id)
         .await?
         .ok_or_else(|| CopalError::not_found(format!("file {id}")))?;
     if !record.servable_content() {
@@ -119,7 +137,7 @@ async fn issue_edge_url<B: BlobStore>(
 
     // The newest active key signs; rotation reads as mint new, revoke
     // old once edge configs have moved.
-    let keys = edge_repo::list_keys(&state.app.store, &tenant).await?;
+    let keys = edge_repo::list_keys(&app.store, tenant).await?;
     let signing_key_id = keys
         .iter()
         .rev()
@@ -127,10 +145,11 @@ async fn issue_edge_url<B: BlobStore>(
         .and_then(|row| row.get("id").and_then(|v| v.as_str()))
         .map(str::to_owned)
         .ok_or_else(|| CopalError::conflict("no active edge key; mint one on the admin surface"))?;
-    let key_row = edge_repo::fetch_key(&state.app.store, &signing_key_id)
+    let key_row = edge_repo::fetch_key(&app.store, &signing_key_id)
         .await?
         .ok_or_else(|| CopalError::Store("edge key vanished".into()))?;
-    let secret = open_secret(&state.cipher, &key_row.secret_sealed).ok_or_else(|| {
+    let cipher = app.require_cipher()?;
+    let secret = open_secret(cipher, &key_row.secret_sealed).ok_or_else(|| {
         CopalError::Store("edge key does not open under the configured key".into())
     })?;
 
@@ -142,23 +161,20 @@ async fn issue_edge_url<B: BlobStore>(
     };
     let token = copal_sign::EdgeToken::sign(&claims, &secret)?;
     copal_store::repo::auth::record_audit(
-        &state.app.store,
-        &tenant,
+        &app.store,
+        tenant,
         tenant.as_str(),
         "edge.issued",
         id.as_str(),
-        forwarded_origin(&headers).as_deref(),
+        origin,
         Some(json!({ "key": claims.key, "exp": claims.exp })),
     )
     .await?;
-    Ok((
-        StatusCode::CREATED,
-        Json(json!({
-            "token": token,
-            "url": format!("/v1/edge/{token}"),
-            "expires_at": claims.exp,
-        })),
-    ))
+    Ok(json!({
+        "token": token,
+        "url": format!("/v1/edge/{token}"),
+        "expires_at": claims.exp,
+    }))
 }
 
 /// Redeem a cg2 token: the origin-side verification of the edge
@@ -177,7 +193,8 @@ async fn redeem_edge<B: BlobStore>(
     if key_row.revoked_at.is_some() || key_row.tenant_id != parsed.claims.tenant {
         return Err(refused().into());
     }
-    let secret = open_secret(&state.cipher, &key_row.secret_sealed).ok_or_else(refused)?;
+    let cipher = state.app.require_cipher().map_err(|_| refused())?;
+    let secret = open_secret(cipher, &key_row.secret_sealed).ok_or_else(refused)?;
     if !parsed.verify(&secret, now_unix()) {
         return Err(refused().into());
     }
@@ -215,7 +232,7 @@ async fn mint_edge_key<B: BlobStore>(
     crate::auth::require_admin(&state.app, &headers)?;
     let tenant = TenantId::parse(&tenant)?;
     let token = copal_sign::ApiKeyToken::mint();
-    let sealed = state.cipher.seal(token.secret.as_bytes())?;
+    let sealed = state.app.require_cipher()?.seal(token.secret.as_bytes())?;
     let sealed_b64 = base64::engine::general_purpose::STANDARD.encode(sealed);
     let row = edge_repo::create_key(&state.app.store, &tenant, &token.key_id, &sealed_b64).await?;
     copal_store::repo::auth::record_audit(

@@ -133,6 +133,10 @@ pub struct AppState<B: BlobStore> {
     /// Embedding service address and model, when semantic retrieval
     /// is configured.
     pub embedding: Option<(String, String)>,
+    /// The master cipher, when one is configured. Sealed secrets (S3
+    /// credentials, webhook signing keys, edge keys) open under it,
+    /// and the surfaces that mint them exist only when it does.
+    pub cipher: Option<copal_blob::crypto::BlobCipher>,
 }
 
 impl<B: BlobStore> AppState<B> {
@@ -149,7 +153,26 @@ impl<B: BlobStore> AppState<B> {
             auth: crate::auth::AuthConfig::default(),
             scan_gates_serving: false,
             embedding: None,
+            cipher: None,
         }
+    }
+
+    /// Install the master cipher.
+    pub fn with_cipher(mut self, cipher: Option<copal_blob::crypto::BlobCipher>) -> Self {
+        self.cipher = cipher;
+        self
+    }
+
+    /// The cipher, or the refusal every sealed-secret surface gives
+    /// when a deployment has not configured one.
+    pub(crate) fn require_cipher(&self) -> Result<&copal_blob::crypto::BlobCipher, ApiError> {
+        self.cipher.as_ref().ok_or_else(|| {
+            CopalError::conflict(
+                "this surface stores secrets sealed under COPAL_BLOB_ENCRYPTION_KEY, which is \
+                 not configured",
+            )
+            .into()
+        })
     }
 
     /// Install the embedding service semantic search asks.

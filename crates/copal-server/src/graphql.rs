@@ -107,6 +107,11 @@ fn dispatcher<B: BlobStore + 'static>(
     let url_state = state.clone();
     let upload_url_state = state.clone();
     let rendition_state = state.clone();
+    let edge_url_state = state.clone();
+    let hooks_list_state = state.clone();
+    let hooks_get_state = state.clone();
+    let hooks_register_state = state.clone();
+    let hooks_remove_state = state.clone();
     let remove_state = state.clone();
     let events_list_state = state.clone();
     let events_get_state = state.clone();
@@ -220,6 +225,23 @@ fn dispatcher<B: BlobStore + 'static>(
                 .map_err(|e| to_janus_error(e.0))
             }
         })
+        .action("files", "issue_edge_url", move |ctx, args| {
+            let state = edge_url_state.clone();
+            async move {
+                let tenant = tenant_of(&ctx)?;
+                let id = parse_file_id(args.id.as_deref().unwrap_or_default())?;
+                let ttl_secs = args
+                    .input
+                    .get("ttl_secs")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(900);
+                let origin = ctx.get::<RequestOrigin>().map(|o| o.0.clone());
+                crate::edge::issue_edge_url_core(&state, &tenant, &id, ttl_secs, origin.as_deref())
+                    .await
+                    .map(Some)
+                    .map_err(|e| to_janus_error(e.0))
+            }
+        })
         .action("files", "request_rendition", move |ctx, args| {
             let state = rendition_state.clone();
             async move {
@@ -264,6 +286,71 @@ fn dispatcher<B: BlobStore + 'static>(
                 let id = parse_file_id(args.id.as_deref().unwrap_or_default())?;
                 let origin = ctx.get::<RequestOrigin>().map(|o| o.0.clone());
                 crate::app::remove_file_core(&state, &tenant, &id, origin.as_deref())
+                    .await
+                    .map_err(|e| to_janus_error(e.0))?;
+                Ok(None)
+            }
+        })
+        .list("webhooks", move |ctx, _args| {
+            let state = hooks_list_state.clone();
+            async move {
+                let tenant = tenant_of(&ctx)?;
+                let items = copal_store::repo::eventing::list_endpoints(&state.store, &tenant)
+                    .await
+                    .map_err(to_janus_error)?;
+                Ok(ListOutput {
+                    items,
+                    // Endpoints are few by nature; the page is the set.
+                    next_cursor: None,
+                })
+            }
+        })
+        .get("webhooks", move |ctx, args| {
+            let state = hooks_get_state.clone();
+            async move {
+                let tenant = tenant_of(&ctx)?;
+                let found = copal_store::repo::eventing::list_endpoints(&state.store, &tenant)
+                    .await
+                    .map_err(to_janus_error)?
+                    .into_iter()
+                    .find(|row| row.get("id").and_then(|v| v.as_str()) == Some(args.id.as_str()));
+                Ok(found)
+            }
+        })
+        .action("webhooks", "register", move |ctx, args| {
+            let state = hooks_register_state.clone();
+            async move {
+                let tenant = tenant_of(&ctx)?;
+                let url = args
+                    .input
+                    .get("url")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| JanusError::BadRequest("url is required".into()))?
+                    .to_owned();
+                let events = args
+                    .input
+                    .get("events")
+                    .and_then(|v| v.as_array())
+                    .map(|list| {
+                        list.iter()
+                            .filter_map(|v| v.as_str().map(str::to_owned))
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                let origin = ctx.get::<RequestOrigin>().map(|o| o.0.clone());
+                crate::webhooks::register_core(&state, &tenant, &url, &events, origin.as_deref())
+                    .await
+                    .map(Some)
+                    .map_err(|e| to_janus_error(e.0))
+            }
+        })
+        .action("webhooks", "remove", move |ctx, args| {
+            let state = hooks_remove_state.clone();
+            async move {
+                let tenant = tenant_of(&ctx)?;
+                let id = args.id.clone().unwrap_or_default();
+                let origin = ctx.get::<RequestOrigin>().map(|o| o.0.clone());
+                crate::webhooks::remove_core(&state, &tenant, &id, origin.as_deref())
                     .await
                     .map_err(|e| to_janus_error(e.0))?;
                 Ok(None)

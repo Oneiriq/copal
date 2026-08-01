@@ -33,14 +33,15 @@ async fn stack() -> (
     let store = Store::connect(StoreConfig::memory()).await.unwrap();
     let dir = tempfile::tempdir().unwrap();
     let blobs = ObjectStore::open(dir.path().to_str().unwrap()).unwrap();
-    let mut state = AppState::new(store.clone(), blobs);
+    let mut state = AppState::new(store.clone(), blobs)
+        .with_cipher(Some(BlobCipher::from_hex(MASTER_KEY).unwrap()));
     // The fixture's receiver is a loopback listener, which the
     // outbound guard refuses by default; this is the same opt-in a
     // deployment with internal receivers uses.
     state.limits.allow_private_webhook_targets = true;
     let cipher = BlobCipher::from_hex(MASTER_KEY).unwrap();
     let api = build_router(state.clone());
-    let hooks = webhook_router(state, cipher.clone());
+    let hooks = webhook_router(state);
     (api, hooks, store, cipher, dir)
 }
 
@@ -119,9 +120,9 @@ async fn private_targets_refuse_without_the_opt_in() {
     let dir = tempfile::tempdir().unwrap();
     let blobs = ObjectStore::open(dir.path().to_str().unwrap()).unwrap();
     // Default limits: the guard is armed.
-    let state = AppState::new(store, blobs);
     let cipher = BlobCipher::from_hex(MASTER_KEY).unwrap();
-    let hooks = webhook_router(state, cipher);
+    let state = AppState::new(store, blobs).with_cipher(Some(cipher));
+    let hooks = webhook_router(state);
 
     for url in [
         "http://127.0.0.1:9000/hook",

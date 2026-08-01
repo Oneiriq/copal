@@ -19,7 +19,18 @@ async fn test_router() -> (axum::Router, tempfile::TempDir) {
     let store = Store::connect(StoreConfig::memory()).await.unwrap();
     let dir = tempfile::tempdir().unwrap();
     let blobs = ObjectStore::open(dir.path().to_str().unwrap()).unwrap();
-    (build_router(AppState::new(store, blobs)), dir)
+    // A master key, because webhooks and edge tokens seal secrets
+    // under one and refuse without it.
+    let cipher = copal_blob::crypto::BlobCipher::from_hex(
+        "5f4e3d2c1b0a99887766554433221100ffeeddccbbaa99887766554433221100",
+    )
+    .unwrap();
+    let state = AppState::new(store, blobs).with_cipher(Some(cipher));
+    // Local receivers are private addresses; a webhook test that
+    // registers one opts in the way an internal deployment does.
+    let mut state = state;
+    state.limits.allow_private_webhook_targets = true;
+    (build_router(state), dir)
 }
 
 async fn json_body(response: axum::response::Response) -> Value {
@@ -514,4 +525,104 @@ async fn upload_urls_and_events_serve_on_the_graphql_face() {
     .await;
     assert_eq!(body["errors"], Value::Null, "{body}");
     assert_eq!(body["data"]["event"]["id"], first.as_str());
+}
+
+#[tokio::test]
+async fn webhooks_and_edge_tokens_serve_on_the_graphql_face() {
+    let (router, _dir) = test_router().await;
+    let id = seed_file(&router, "graphql/edged.txt", b"cdn bytes").await;
+
+    // Registering over GraphQL returns the signing secret once, and
+    // the endpoint is then listable on the same face.
+    let body = json_body(
+        router
+            .clone()
+            .oneshot(graphql(
+                "mutation { webhookRegister(url: \"https://example.com/hook\", events: [\"file.ready\"]) }",
+                json!({}),
+                Some("acme"),
+            ))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(body["errors"], Value::Null, "{body}");
+    let registered = &body["data"]["webhookRegister"];
+    assert!(registered["secret"].is_string(), "{body}");
+    let hook_id = registered["id"].as_str().unwrap().to_owned();
+
+    let body = json_body(
+        router
+            .clone()
+            .oneshot(graphql(
+                "{ webhooks(limit: 10) { items { id target_url events active } } }",
+                json!({}),
+                Some("acme"),
+            ))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(body["errors"], Value::Null, "{body}");
+    let items = body["data"]["webhooks"]["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1, "{body}");
+    assert_eq!(items[0]["target_url"], "https://example.com/hook");
+    // Listings never carry secret material, whichever face asks.
+    assert!(items[0].get("secret").is_none());
+    assert!(items[0].get("secret_sealed").is_none());
+
+    // An edge token minted over GraphQL redeems over REST, the same
+    // capability on both protocols.
+    let body = json_body(
+        router
+            .clone()
+            .oneshot(graphql(
+                "mutation($id: ID!) { fileIssueEdgeUrl(id: $id, ttlSecs: 300) }",
+                json!({ "id": id }),
+                Some("acme"),
+            ))
+            .await
+            .unwrap(),
+    )
+    .await;
+    // No edge key is minted yet, so issuance names the fix rather
+    // than inventing one.
+    assert!(
+        body["errors"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("edge key"),
+        "{body}",
+    );
+
+    // Removing the endpoint over GraphQL takes effect for both faces.
+    let body = json_body(
+        router
+            .clone()
+            .oneshot(graphql(
+                "mutation($id: ID!) { webhookRemove(id: $id) }",
+                json!({ "id": hook_id }),
+                Some("acme"),
+            ))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(body["errors"], Value::Null, "{body}");
+    let body = json_body(
+        router
+            .clone()
+            .oneshot(graphql(
+                "{ webhooks(limit: 10) { items { active } } }",
+                json!({}),
+                Some("acme"),
+            ))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(
+        body["data"]["webhooks"]["items"][0]["active"], false,
+        "removal deactivates rather than deleting: {body}",
+    );
 }

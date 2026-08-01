@@ -45,13 +45,12 @@ const PASS_BATCH: i64 = 100;
 #[derive(Clone)]
 pub struct WebhookState<B: BlobStore> {
     pub app: AppState<B>,
-    pub cipher: BlobCipher,
 }
 
 /// Tenant-facing webhook routes. Built only when the blob master key
 /// exists, because registration seals the signing secret under it.
-pub fn webhook_router<B: BlobStore + 'static>(app: AppState<B>, cipher: BlobCipher) -> Router {
-    let state = WebhookState { app, cipher };
+pub fn webhook_router<B: BlobStore + 'static>(app: AppState<B>) -> Router {
+    let state = WebhookState { app };
     Router::new()
         .route(
             "/v1/webhooks",
@@ -82,42 +81,52 @@ async fn register_endpoint<B: BlobStore>(
     Json(request): Json<RegisterRequest>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
     let tenant = crate::auth::authenticate(&state.app, &headers).await?;
-    // Refuse destinations inside the deployment before a row exists.
-    if !state.app.limits.allow_private_webhook_targets {
-        crate::netguard::check_outbound_url(&request.url)?;
-    }
-    let secret = copal_sign::ApiKeyToken::mint().secret;
-    let sealed = state.cipher.seal(secret.as_bytes())?;
-    let sealed_b64 = base64::engine::general_purpose::STANDARD.encode(sealed);
-    let events = request.events.join(",");
-    let row = eventing::create_endpoint(
-        &state.app.store,
+    let body = register_core(
+        &state.app,
         &tenant,
         &request.url,
-        &events,
-        &sealed_b64,
+        &request.events,
+        forwarded_origin(&headers).as_deref(),
     )
     .await?;
+    Ok((StatusCode::CREATED, Json(body)))
+}
+
+/// Register an endpoint, the shared core behind the REST handler and
+/// the GraphQL action resolver.
+pub(crate) async fn register_core<B: BlobStore>(
+    app: &AppState<B>,
+    tenant: &copal_core::TenantId,
+    url: &str,
+    events: &[String],
+    origin: Option<&str>,
+) -> Result<serde_json::Value, ApiError> {
+    // Refuse destinations inside the deployment before a row exists.
+    if !app.limits.allow_private_webhook_targets {
+        crate::netguard::check_outbound_url(url)?;
+    }
+    let secret = copal_sign::ApiKeyToken::mint().secret;
+    let sealed = app.require_cipher()?.seal(secret.as_bytes())?;
+    let sealed_b64 = base64::engine::general_purpose::STANDARD.encode(sealed);
+    let events = events.join(",");
+    let row = eventing::create_endpoint(&app.store, tenant, url, &events, &sealed_b64).await?;
     copal_store::repo::auth::record_audit(
-        &state.app.store,
-        &tenant,
+        &app.store,
+        tenant,
         tenant.as_str(),
         "webhook.registered",
         &row.endpoint_id(),
-        forwarded_origin(&headers).as_deref(),
+        origin,
         Some(json!({ "url": row.target_url })),
     )
     .await?;
-    Ok((
-        StatusCode::CREATED,
-        Json(json!({
-            "id": row.endpoint_id(),
-            "url": row.target_url,
-            "events": row.events,
-            "secret": secret,
-            "created_at": row.created_at,
-        })),
-    ))
+    Ok(json!({
+        "id": row.endpoint_id(),
+        "url": row.target_url,
+        "events": row.events,
+        "secret": secret,
+        "created_at": row.created_at,
+    }))
 }
 
 /// List a tenant's endpoints (never their secrets).
@@ -137,20 +146,37 @@ async fn remove_endpoint<B: BlobStore>(
     Path(id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
     let tenant = crate::auth::authenticate(&state.app, &headers).await?;
-    if !eventing::deactivate_endpoint(&state.app.store, &tenant, &id).await? {
-        return Err(CopalError::not_found(format!("webhook {id}")).into());
-    }
-    copal_store::repo::auth::record_audit(
-        &state.app.store,
+    remove_core(
+        &state.app,
         &tenant,
-        tenant.as_str(),
-        "webhook.removed",
         &id,
         forwarded_origin(&headers).as_deref(),
-        None,
     )
     .await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Deactivate an endpoint, shared by both faces.
+pub(crate) async fn remove_core<B: BlobStore>(
+    app: &AppState<B>,
+    tenant: &copal_core::TenantId,
+    id: &str,
+    origin: Option<&str>,
+) -> Result<(), ApiError> {
+    if !eventing::deactivate_endpoint(&app.store, tenant, id).await? {
+        return Err(CopalError::not_found(format!("webhook {id}")).into());
+    }
+    copal_store::repo::auth::record_audit(
+        &app.store,
+        tenant,
+        tenant.as_str(),
+        "webhook.removed",
+        id,
+        origin,
+        None,
+    )
+    .await?;
+    Ok(())
 }
 
 /// Bounded-listing query.

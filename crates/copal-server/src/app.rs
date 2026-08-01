@@ -40,6 +40,11 @@ pub struct Limits {
     /// How long a resumable-upload session may live between appends
     /// before the sweep discards it.
     pub tus_session_ttl_secs: u32,
+    /// How far a passage may be from a query and still count as a
+    /// match, in cosine distance: 0 is identical, 1 is unrelated.
+    /// Without a floor, nearest-neighbour search returns its nearest
+    /// results however far away they are, so no query ever misses.
+    pub max_semantic_distance: f64,
     /// Smallest acceptable multipart part, last part exempt. S3's
     /// own floor by default, because clients written against S3 rely
     /// on the rejection; deployments with different needs can lower
@@ -60,6 +65,7 @@ impl Default for Limits {
             request_timeout_secs: 30,
             transfer_timeout_secs: 3_600,
             tus_session_ttl_secs: 86_400,
+            max_semantic_distance: 0.65,
             min_multipart_part_bytes: 5 * 1024 * 1024,
             allow_private_webhook_targets: false,
         }
@@ -601,7 +607,14 @@ async fn search_text<B: BlobStore>(
     } else {
         let (addr, model) = state.embedding.clone().expect("checked above");
         let vector = crate::embed::embed(&addr, &model, &params.q).await?;
-        copal_store::repo::text::semantic_search(&state.store, &tenant, &vector, limit).await?
+        copal_store::repo::text::semantic_search(
+            &state.store,
+            &tenant,
+            &vector,
+            limit,
+            state.limits.max_semantic_distance,
+        )
+        .await?
     };
 
     // Fuse by rank, then render from whichever list carried the hit.

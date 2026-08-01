@@ -293,22 +293,47 @@ pub async fn put_embedding(
     Ok(!rows.is_empty())
 }
 
-/// Nearest documents to a query vector, tenant-scoped.
+/// How hard the index searches. Higher explores more of the graph
+/// for better recall at more work; this is the server's own default
+/// range and needs no tuning until a corpus is large.
+const HNSW_EF: i64 = 64;
+
+/// Nearest passages to a query vector, tenant-scoped, no further away
+/// than `max_distance` in cosine distance (0 is identical, 1 is
+/// unrelated, 2 is opposite).
 ///
-/// The `k` nearest come from the index; the tenant equality is a
-/// residual filter, so a tenant with few documents in a large corpus
-/// can see fewer than `k` results. Over-fetching and trimming keeps
-/// that from reading as "no matches".
+/// The floor is what lets a semantic query say "nothing matches".
+/// Nearest-neighbour search otherwise returns its k nearest however
+/// far away they are, so in a small corpus every passage is
+/// somebody's neighbour.
+///
+/// The KNN predicate is written by hand rather than through
+/// `Query::vector_search`, which renders `<|k,METRIC|>`. On
+/// SurrealDB 3.x that form is a brute-force scan of the whole table
+/// (EXPLAIN: KnnTopK over TableScan); the HNSW index is used only by
+/// `<|k,EF|>` with an integer exploration factor (EXPLAIN: KnnScan).
 pub async fn semantic_search(
     store: &Store,
     tenant: &TenantId,
     embedding: &[f64],
     limit: i64,
+    max_distance: f64,
 ) -> copal_core::Result<Vec<SearchHit>> {
     if embedding.is_empty() {
         return Err(CopalError::validation("query embedding must not be empty"));
     }
+    // The tenant equality is a residual filter over the index's k
+    // nearest, so a tenant with few passages in a large corpus would
+    // see fewer than `limit`; over-fetch and let the limit trim.
     let over_fetch = (limit * 10).clamp(limit, 500);
+    let rendered = format!(
+        "[{}]",
+        embedding
+            .iter()
+            .map(|v| v.to_string())
+            .collect::<Vec<_>>()
+            .join(", "),
+    );
     let query = Query::new()
         .select(Some(vec![
             "file".to_owned(),
@@ -317,15 +342,9 @@ pub async fn semantic_search(
         ]))
         .from_table(CHUNK_TABLE)
         .map_err(|e| map_store_err("semantic_search", e))?
-        .vector_search(
-            "embedding",
-            embedding.to_vec(),
-            over_fetch,
-            surql::query::helpers::VectorDistanceType::Cosine,
-            None,
-        )
-        .map_err(|e| map_store_err("semantic_search", e))?
         .where_(eq("tenant_id", tenant.as_str()))
+        .where_str(format!("embedding <|{over_fetch},{HNSW_EF}|> {rendered}"))
+        .where_str(format!("vector::distance::knn() <= {max_distance}"))
         .limit(limit)
         .map_err(|e| map_store_err("semantic_search", e))?;
     query_records(store.client(), &query)

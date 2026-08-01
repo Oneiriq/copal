@@ -111,9 +111,9 @@ stack still glues object storage to a separate vector database.
 3. Embeddings (shipped): per-document vectors from any service
    speaking the OpenAI embeddings shape, HNSW-indexed, with hybrid
    retrieval fusing lexical and semantic rankings, over overlapping
-   passages so a hit names the part that answers the question.
-   Remaining: a relevance floor, since nearest-neighbour search
-   returns its k nearest however far away they are.
+   passages so a hit names the part that answers the question, with
+   a relevance floor so a query about nothing stored returns
+   nothing.
 4. Correctness cleanup (shipped): reservations released on every
    path that ends an upload, S3's minimum part size enforced, and
    ListMultipartUploads.

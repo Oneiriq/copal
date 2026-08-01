@@ -501,3 +501,33 @@ async fn passages_are_embedded_individually_and_replaced_together() {
     let now = search_mode(&router, "machines", "lexical").await;
     assert_eq!(now["items"].as_array().unwrap().len(), 1, "{now}");
 }
+
+#[tokio::test]
+async fn a_semantic_query_about_nothing_stored_returns_nothing() {
+    // Without a relevance floor, nearest-neighbour search answers
+    // every query with its nearest results however far away they
+    // are, so no semantic search ever misses and "no matches" cannot
+    // be expressed. The floor is what makes absence reportable.
+    let (router, engine, _dir) = semantic_stack().await;
+    upload(
+        &router,
+        "docs/finance.txt",
+        "text/plain",
+        b"quarterly revenue and profit",
+    )
+    .await;
+    assert!(engine.tick("w").await.unwrap());
+
+    // The fake embedder puts finance on one axis and machinery on
+    // another; a machinery query is orthogonal to the only document.
+    let body = search_mode(&router, "turbine", "semantic").await;
+    assert!(
+        body["items"].as_array().unwrap().is_empty(),
+        "an unrelated query matches nothing: {body}",
+    );
+
+    // A related query still finds it, so the floor did not simply
+    // switch retrieval off.
+    let body = search_mode(&router, "earnings", "semantic").await;
+    assert_eq!(body["items"].as_array().unwrap().len(), 1, "{body}");
+}

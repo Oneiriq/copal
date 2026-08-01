@@ -225,11 +225,12 @@ matched, and its excerpt is the window around the matching words
 rather than the opening of a long document. `GET /v1/files/{id}/text`
 still returns the whole text in one piece.
 
-Semantic retrieval returns the nearest passages however far away they
-are, which is what nearest-neighbour search means: in a small corpus
-every passage is somebody's neighbour, so a semantic query cannot
-express "nothing matches". Lexical retrieval can, and hybrid inherits
-the semantic side's behavior. A relevance floor is future work.
+Semantic retrieval applies a relevance floor, so a query about
+something nobody stored returns nothing rather than the least-distant
+passage in the corpus. The floor is a cosine distance
+(`COPAL_MAX_SEMANTIC_DISTANCE`, default 0.65, where 0 is identical
+and 1 is unrelated); raise it for looser recall, lower it for
+stricter.
 
 Hybrid fuses the two rankings by reciprocal rank rather than by
 score. Lexical and semantic relevance are not on a comparable scale,

@@ -367,3 +367,55 @@ async fn guarded_fields_redact_identically_on_both_faces() {
         "{body:#?}",
     );
 }
+
+#[tokio::test]
+async fn a_fleet_shares_one_budget_through_the_store_ledger() {
+    // Two replicas: separate AppStates, separate routers, ONE store,
+    // both on the shared ledger.
+    let store = Store::connect(StoreConfig::memory()).await.unwrap();
+    let dir_a = tempfile::tempdir().unwrap();
+    let dir_b = tempfile::tempdir().unwrap();
+    let auth = AuthConfig {
+        mode: AuthMode::ApiKeys,
+        admin_token: Some(ADMIN.into()),
+        admin_token_previous: None,
+    };
+    let mut replica_a = AppState::new(
+        store.clone(),
+        ObjectStore::open(dir_a.path().to_str().unwrap()).unwrap(),
+    )
+    .with_auth(auth.clone());
+    replica_a.rate_store =
+        std::sync::Arc::new(copal_server::rate::SurrealRateStore::new(store.clone()));
+    let mut replica_b = AppState::new(
+        store.clone(),
+        ObjectStore::open(dir_b.path().to_str().unwrap()).unwrap(),
+    )
+    .with_auth(auth);
+    replica_b.rate_store =
+        std::sync::Arc::new(copal_server::rate::SurrealRateStore::new(store.clone()));
+    let router_a = build_router(replica_a);
+    let router_b = build_router(replica_b);
+
+    let token = mint(&router_a, &["read"]).await;
+
+    // Spend the whole reads budget through replica A.
+    for i in 0..60 {
+        let response = router_a
+            .clone()
+            .oneshot(rest("GET", "/v1/files?limit=100", &token, None))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "request {i}");
+    }
+
+    // Replica B refuses the same key: one fleet, one budget. The
+    // in-memory ledger would have admitted a fresh 6000 here, which
+    // is exactly the multiplication this ledger exists to end.
+    let response = router_b
+        .clone()
+        .oneshot(rest("GET", "/v1/files?limit=100", &token, None))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+}

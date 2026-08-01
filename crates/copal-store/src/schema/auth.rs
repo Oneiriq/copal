@@ -7,14 +7,15 @@
 //! anywhere.
 
 use surql::schema::{
-    datetime_field, event, index, object_field, string_field, table_schema, unique_index,
-    FieldDefinition, TableDefinition, TableMode,
+    datetime_field, event, index, int_field, object_field, string_field, table_schema,
+    unique_index, FieldDefinition, TableDefinition, TableMode,
 };
 
 /// All tables in this cluster.
 pub fn tables() -> Vec<TableDefinition> {
     vec![
         api_key_table(),
+        rate_window_table(),
         s3_credential_table(),
         edge_key_table(),
         audit_event_table(),
@@ -101,6 +102,19 @@ fn built(builder: surql::schema::FieldBuilder) -> FieldDefinition {
     builder
         .build_unchecked()
         .expect("static schema field definitions are valid by construction")
+}
+
+/// One minute of one caller's consumption, shared by every replica.
+/// The record id is `bucket|minute`, so the check-and-increment is a
+/// single guarded statement on one row.
+fn rate_window_table() -> TableDefinition {
+    table_schema("rate_window")
+        .with_mode(TableMode::Schemafull)
+        .with_fields([
+            built(int_field("used").default("0")),
+            built(int_field("minute")),
+        ])
+        .with_indexes([index("idx_rate_minute", ["minute"])])
 }
 
 fn api_key_table() -> TableDefinition {

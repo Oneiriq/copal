@@ -96,6 +96,19 @@ pub async fn run_pass<B: BlobStore>(
         Err(err) => tracing::warn!(error = %err, "stale scan sweep failed"),
     }
 
+    // Rate windows only ever read the current minute; anything two
+    // minutes back is done counting whichever ledger is configured,
+    // and a deployment on the in-memory ledger simply has no rows.
+    let current_minute = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() / 60)
+        .unwrap_or(0);
+    if let Err(err) =
+        copal_store::repo::rate::cleanup_windows(store, current_minute.saturating_sub(2)).await
+    {
+        tracing::warn!(error = %err, "rate window sweep failed");
+    }
+
     match crate::s3::multipart::sweep_expired(store, blobs, config.tus_session_ttl_secs).await {
         Ok(swept) => report.multipart_swept = swept,
         Err(err) => tracing::warn!(error = %err, "multipart sweep failed"),

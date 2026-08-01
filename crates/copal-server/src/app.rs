@@ -133,10 +133,10 @@ pub struct AppState<B: BlobStore> {
     /// How requests prove their tenant, plus the admin gate.
     pub auth: crate::auth::AuthConfig,
     /// The consumption ledger BOTH faces charge, so a caller cannot
-    /// dodge a budget by switching protocols. In-memory: one process,
-    /// one ledger; a multi-node deployment brings a shared
-    /// implementation later.
-    pub rate_store: std::sync::Arc<janus::runtime::MemoryRateStore>,
+    /// dodge a budget by switching protocols. In-memory by default;
+    /// COPAL_RATE_LEDGER=store swaps in the shared implementation so
+    /// a fleet holds ONE budget instead of one per replica.
+    pub rate_store: std::sync::Arc<dyn janus::runtime::RateStore>,
     /// Whether a pending scan withholds content. Set with malware
     /// scanning: serving bytes that no scanner has cleared would make
     /// the scanner decorative.

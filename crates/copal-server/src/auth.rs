@@ -229,7 +229,6 @@ pub async fn authenticate_scoped_with_identity<B: BlobStore>(
         .map(|c| c.units_per_minute)
         .unwrap_or(u64::MAX);
     let bucket = format!("{class}:{subject}");
-    use janus::runtime::RateStore as _;
     let admitted = state
         .rate_store
         .charge(&bucket, units, budget)

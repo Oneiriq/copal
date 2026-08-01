@@ -36,18 +36,13 @@ one ledger. What remains of the stream:
 
 The first guard shipped end to end: version attribution is visible to
 admin-scoped keys and redacts identically on both faces through the
-shared projection API. Remaining:
-
-Stream lifetimes and watch ceilings shipped: subscriptions end at a
-configured lifetime and re-open through full authentication, and one
-caller holds a declared maximum of concurrent watches. Remaining:
+shared projection API. Stream lifetimes, watch ceilings, and the
+fleet-shared consumption ledger shipped as well. Remaining:
 
 2. **Persisted operations and PERMISSIONS pushdown**: an allowlist of
    known GraphQL documents, and the declared policies compiled into
    SurrealDB `PERMISSIONS` as a second, independent refusal layer.
-3. **A shared rate store** over SurrealDB for multi-node deployments;
-   the in-memory ledger covers one process.
-4. **More guards as the data model earns them.** Per-field policy is
+3. **More guards as the data model earns them.** Per-field policy is
    in place; principals within tenants are what will make richer
    guards meaningful.
 

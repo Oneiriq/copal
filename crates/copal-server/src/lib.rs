@@ -16,6 +16,7 @@ pub mod graphql;
 pub mod metrics;
 pub mod netguard;
 pub mod pipeline;
+pub mod rate;
 pub mod s3;
 pub mod serve;
 pub mod sweeps;

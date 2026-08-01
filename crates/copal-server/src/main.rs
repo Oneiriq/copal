@@ -121,6 +121,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "webhook targets on private addresses are ALLOWED              (COPAL_WEBHOOK_ALLOW_PRIVATE_TARGETS): tenant-supplied URLs can reach              services inside this deployment",
         );
     }
+    match config.rate_ledger.as_str() {
+        "memory" => {}
+        "store" => {
+            // One budget for the whole fleet, kept where every
+            // replica already looks.
+            state.rate_store =
+                std::sync::Arc::new(copal_server::rate::SurrealRateStore::new(store.clone()));
+            tracing::info!("consumption ledger: shared store");
+        }
+        other => {
+            return Err(
+                format!("COPAL_RATE_LEDGER must be memory or store, not {other:?}",).into(),
+            );
+        }
+    }
     tracing::info!(instance = %state.instance_id, "upload-claim owner id");
     let instance_id = state.instance_id.clone();
     let cors = config.cors_origins.as_deref();

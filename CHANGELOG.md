@@ -144,9 +144,12 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
   The helper-based handlers (grants, webhooks, edge) and every
   GraphQL resolver followed: the execute path seeds the caller
   session into the typed context, resolvers read it back, and
-  subscriptions carry the session for their whole lifetime, with the
-  access method's session duration raised to an hour so re-auth,
-  never session expiry, is what ends a stream.
+  subscriptions carry the session for their whole lifetime, and the
+  access method declares no session expiry at all: a session's
+  lifetime is its work's lifetime, ended by drop, with Copal's token
+  TTL, request scope, and stream ceilings as the lifetime authority.
+  An engine expiry clock beside those had nothing to add and raced
+  the stream ceiling, killing live queries silently.
 
 - **The engine is now a second enforcement layer.** Every table
   carries `PERMISSIONS` by a mechanical rule: tables with a

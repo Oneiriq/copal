@@ -82,11 +82,14 @@ pub fn access_statements(key: &str) -> copal_core::Result<Vec<String>> {
         "caller",
         RecordAccessConfig::new().with_jwt(JwtConfig::hs256(key)),
     )
-    // Sessions outlive the longest subscription (900s by
-    // default) with slack: a live query dies silently with its
-    // session, and the re-auth cycle must be the thing that ends a
-    // stream, never session expiry racing it.
-    .with_session("1h")
+    // No engine-side session expiry: a session's lifetime IS its
+    // work's lifetime, ended by drop. Copal already bounds every
+    // session it mints: tokens expire in seconds and gate opening,
+    // request sessions drop with their request, and streams end on
+    // their ceilings. An engine clock beside those is a second clock
+    // whose only contribution was racing the first, killing live
+    // queries silently near the subscription ceiling.
+    .with_session("NONE")
     .to_surql()
     .map_err(|e| copal_core::CopalError::Store(format!("access ddl: {e}")))?;
     Ok(vec![

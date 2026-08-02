@@ -51,10 +51,14 @@ from one contract. What remains:
    content uploads link blob rows, and blobs are deduplicated across
    tenants, so the blob table cannot be tenant-scoped; the public
    download path reads unscoped before it can know a tenant; and the
-   flow engine holds its own store handle. What remains here: the
-   helper-based handlers (grants, webhooks, edge) with the GraphQL
-   resolvers and the S3 gateway, and a session cache once a
-   deployment has watched the per-request cost. Facts that
+   flow engine holds its own store handle. The helper-based handlers
+   (grants, webhooks, edge) and every GraphQL resolver followed: the
+   execute path seeds the caller session into the typed context, the
+   resolvers read it back, and subscriptions carry the session for
+   their whole lifetime, with the access method's session duration
+   raised above the longest subscription so re-auth, never expiry,
+   ends a stream. What remains here: the S3 gateway, and a session
+   cache once a deployment has watched the per-request cost. Facts that
    bound the design:
    enforcement follows the actor, so record sessions are filtered
    even on a credential-less engine, whose exposure is the anonymous

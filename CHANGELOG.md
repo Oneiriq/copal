@@ -141,6 +141,12 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
   run listings, version downloads, and the tus trio. Content
   uploads, the public download path, and the flow engine stay on the
   service store by architecture, with the reasons on the roadmap.
+  The helper-based handlers (grants, webhooks, edge) and every
+  GraphQL resolver followed: the execute path seeds the caller
+  session into the typed context, resolvers read it back, and
+  subscriptions carry the session for their whole lifetime, with the
+  access method's session duration raised to an hour so re-auth,
+  never session expiry, is what ends a stream.
 
 - **The engine is now a second enforcement layer.** Every table
   carries `PERMISSIONS` by a mechanical rule: tables with a

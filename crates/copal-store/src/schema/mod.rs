@@ -82,7 +82,11 @@ pub fn access_statements(key: &str) -> copal_core::Result<Vec<String>> {
         "caller",
         RecordAccessConfig::new().with_jwt(JwtConfig::hs256(key)),
     )
-    .with_session("15m")
+    // Sessions outlive the longest subscription (900s by
+    // default) with slack: a live query dies silently with its
+    // session, and the re-auth cycle must be the thing that ends a
+    // stream, never session expiry racing it.
+    .with_session("1h")
     .to_surql()
     .map_err(|e| copal_core::CopalError::Store(format!("access ddl: {e}")))?;
     Ok(vec![

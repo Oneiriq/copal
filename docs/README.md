@@ -39,3 +39,4 @@ capabilities: rows holding secret hashes, revocable with one call, with no
 signing key anywhere.
 - [retention.md](retention.md): retention, legal hold, and WORM, designed ahead of the code.
 - [backup.md](backup.md): what to back up, in what order, and how to prove a restore worked.
+- [../bench/README.md](../bench/README.md): the performance envelope, how it is measured, and what the numbers do not claim.

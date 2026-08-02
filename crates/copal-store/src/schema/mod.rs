@@ -73,12 +73,8 @@ fn with_engine_permissions(mut table: TableDefinition) -> TableDefinition {
 }
 
 /// The record access method caller tokens authenticate against.
-///
-/// Applied as remove-then-define so rotating the key replaces the
-/// verifier instead of leaving the old key trusted behind an
-/// `IF NOT EXISTS`.
-pub fn access_statements(key: &str) -> copal_core::Result<Vec<String>> {
-    let access = AccessDefinition::record(
+fn caller_access(key: &str) -> AccessDefinition {
+    AccessDefinition::record(
         "caller",
         RecordAccessConfig::new().with_jwt(JwtConfig::hs256(key)),
     )
@@ -90,12 +86,40 @@ pub fn access_statements(key: &str) -> copal_core::Result<Vec<String>> {
     // whose only contribution was racing the first, killing live
     // queries silently near the subscription ceiling.
     .with_session("NONE")
-    .to_surql()
-    .map_err(|e| copal_core::CopalError::Store(format!("access ddl: {e}")))?;
-    Ok(vec![
-        "REMOVE ACCESS IF EXISTS caller ON DATABASE;".to_owned(),
-        access,
-    ])
+}
+
+/// The code side of the schema diff: every table (with the vector
+/// index folded in when a dimension is configured) and the analyzer.
+///
+/// The database side comes from live introspection, so the
+/// comparison is against what the engine actually holds rather than
+/// any record of what was once applied.
+pub fn code_snapshot(embedding_dimension: Option<u32>) -> surql::migration::diff::SchemaSnapshot {
+    let mut tables = tables();
+    if let Some(dimension) = embedding_dimension {
+        for table in &mut tables {
+            if table.name == "text_chunk" {
+                table.indexes.push(text::vector_index(dimension));
+            }
+        }
+    }
+    surql::migration::diff::SchemaSnapshot {
+        tables,
+        edges: Vec::new(),
+        buckets: Vec::new(),
+        analyzers: text::analyzers(),
+    }
+}
+
+/// The caller access method's `OVERWRITE` form. Applied whenever the
+/// key is configured rather than diffed: the engine redacts keys in
+/// its echo, so an access definition can never compare equal, and
+/// one idempotent statement per boot costs less than pretending it
+/// could.
+pub fn access_overwrite(key: &str) -> copal_core::Result<String> {
+    caller_access(key)
+        .to_surql_overwrite()
+        .map_err(|e| copal_core::CopalError::Store(format!("access ddl: {e}")))
 }
 
 /// Render the idempotent DDL statements for the full schema, in order.
@@ -186,10 +210,32 @@ mod tests {
     }
 
     #[test]
-    fn access_ddl_rotates_by_replacement() {
-        let statements = access_statements("k1").unwrap();
-        assert!(statements[0].starts_with("REMOVE ACCESS IF EXISTS caller"));
-        assert!(statements[1].contains("TYPE RECORD WITH JWT ALGORITHM HS256 KEY 'k1'"));
+    fn code_snapshot_carries_the_whole_schema() {
+        let snapshot = code_snapshot(None);
+        assert_eq!(snapshot.tables.len(), tables().len());
+        assert_eq!(snapshot.analyzers.len(), 1);
+        assert!(snapshot.tables.iter().all(|t| t.permissions.is_some()));
+    }
+
+    #[test]
+    fn code_snapshot_folds_the_vector_index_at_a_width() {
+        let without = code_snapshot(None);
+        let with = code_snapshot(Some(384));
+        let count = |s: &surql::migration::diff::SchemaSnapshot| {
+            s.tables
+                .iter()
+                .find(|t| t.name == "text_chunk")
+                .map(|t| t.indexes.len())
+                .unwrap_or_default()
+        };
+        assert_eq!(count(&with), count(&without) + 1);
+    }
+
+    #[test]
+    fn access_renders_one_replacing_statement() {
+        let statement = access_overwrite("k1").unwrap();
+        assert!(statement.starts_with("DEFINE ACCESS OVERWRITE caller "));
+        assert!(statement.contains("FOR SESSION NONE"));
     }
 
     #[test]

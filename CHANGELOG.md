@@ -73,6 +73,26 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ### Storage and tenancy
 
+- **Schema evolution: boot reconciles the database against the
+  code.** `IF NOT EXISTS` created and then never updated, so a
+  database from an older release silently lacked every later
+  definition, engine `PERMISSIONS` included, exactly where an
+  operator turning caller sessions on needed them. The store now
+  introspects the live database at both `INFO` levels, diffs it
+  against the release's schema through the surql-rs diff engine, and
+  applies only the differences as `OVERWRITE` forms, engine-pinned to
+  create absent objects and replace present definitions without
+  touching rows. A matching database runs no DDL; an older one heals
+  on first boot, proven by a test that rebuilds the pre-permissions
+  shape, seeds rows, applies, and diffs to zero with the rows intact.
+  Removals are reported, never executed. Getting the diff to zero
+  fixed six surql-rs defects (grouped-permission equality, the
+  engine's `none | T` echo for optional fields, a `$value`/`VALUE`
+  keyword collision, field names ending in `type` breaking the type
+  parser, synthetic `field.*` children read as removals, and
+  add-table diffs that re-defined their own table), each carrying
+  the engine echo that exposed it as a test fixture.
+
 - **Per-tenant storage residencies**: named OpenDAL backends with per-row
   backend resolution, so reassignment never strands content.
 - **Encryption at rest** with chunked AEAD and plaintext digests, then

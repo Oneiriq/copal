@@ -4,9 +4,15 @@ What is left, ordered by what it blocks. Shipped work lives in
 [CHANGELOG.md](../CHANGELOG.md); this file carries only open items, so
 an item disappearing from it means the item is done.
 
-1. **Retention, legal hold, and WORM.** The compliance tier the
-   enterprise buyers ask for. Retention interacts with the GC grace
-   period and soft delete, so it needs design before code.
+1. **Retention, legal hold, and WORM, designed.**
+   [retention.md](retention.md) carries the design: retention and
+   holds attach to versions, one `erasable` predicate gates the three
+   places that erase, and `compliance` mode is the whole of WORM
+   because the difference from `governance` is authority rather than
+   mechanism. The build order is in the document; the first slice
+   (two columns, the hold flag, and the predicate consulted by the
+   GC) makes retention real, because the GC is the only thing that
+   erases today.
 
 2. **The pushdown tail.** The S3 gateway still runs on the service
    session; adoption mirrors the REST and GraphQL faces. After it, a

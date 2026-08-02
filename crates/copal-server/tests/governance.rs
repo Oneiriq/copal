@@ -420,38 +420,47 @@ async fn a_fleet_shares_one_budget_through_the_store_ledger() {
     assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
 }
 
-/// The two enforcement layers read from one declaration set: every
-/// contract field guarded admin_only maps to an engine-guarded
-/// column, and every engine-guarded column maps back. A field added
-/// to either side alone fails here instead of drifting.
+/// The engine policy is GENERATED from the contract, so the layers
+/// cannot drift: every guarded field lands as an engine redaction,
+/// read scopes land as select conjuncts on the resource's table and
+/// its sub-resource tables, and the rendered DDL carries both.
 #[test]
-fn engine_guards_match_contract_guards() {
-    let contract = copal_server::contract::contract();
-    let mut declared: Vec<(String, String)> = Vec::new();
-    for resource in &contract.resources {
-        for field in &resource.fields {
-            if field.guard.is_some() {
-                declared.push((resource.table.clone(), field.column.clone()));
-            }
-        }
-        for sub in &resource.sub_resources {
-            for field in &sub.fields {
-                if field.guard.is_some() {
-                    declared.push((sub.table.clone(), field.column.clone()));
-                }
-            }
-        }
-    }
-    declared.sort();
-    let mut engine: Vec<(String, String)> = copal_store::schema::ADMIN_GUARDED_COLUMNS
+fn engine_policy_derives_from_the_contract() {
+    let policy = copal_server::engine::engine_policy().expect("every guard has a clause");
+    assert!(policy.field_guards.contains(&(
+        "file_version".to_owned(),
+        "created_by".to_owned(),
+        "$token.adm = true".to_owned(),
+    )));
+    assert!(policy
+        .select_conjuncts
         .iter()
-        .map(|(t, c)| (t.to_string(), c.to_string()))
-        .collect();
-    engine.sort();
+        .any(|(table, clause)| table == "file" && clause.contains("$token.sc CONTAINS 'read'")));
+    assert!(policy
+        .select_conjuncts
+        .iter()
+        .any(|(table, _)| table == "file_version"));
+
+    let tables = copal_store::schema::tables_with_policy(&policy);
+    let version_table = tables.iter().find(|t| t.name == "file_version").unwrap();
+    let guarded = version_table
+        .fields
+        .iter()
+        .find(|f| f.name == "created_by")
+        .unwrap();
     assert_eq!(
-        declared, engine,
-        "contract guards and engine guards diverged"
+        guarded.permissions.as_ref().unwrap().get("select").unwrap(),
+        "$token.adm = true"
     );
+    let file_table = tables.iter().find(|t| t.name == "file").unwrap();
+    let select = file_table
+        .permissions
+        .as_ref()
+        .unwrap()
+        .get("select")
+        .unwrap();
+    assert!(select.contains("tenant_id = $token.tn AND"), "{select}");
+    assert!(select.contains("$token.sc CONTAINS 'read'"), "{select}");
 }
 
 /// A minted caller token opens a session the engine filters, ULID
@@ -462,9 +471,9 @@ async fn minted_tokens_open_filtered_sessions() {
     use copal_core::TenantId;
     use copal_store::repo::file as file_repo;
 
-    let store = Store::connect(StoreConfig::memory_with_engine_access("mint-key"))
-        .await
-        .unwrap();
+    let mut config = StoreConfig::memory_with_engine_access("mint-key");
+    config.engine_policy = copal_server::engine::engine_policy().unwrap();
+    let store = Store::connect(config).await.unwrap();
     let acme = TenantId::parse("acme").unwrap();
     let rival = TenantId::parse("rival").unwrap();
     let spec = |path: &str| copal_core::FileSpec {
@@ -511,9 +520,9 @@ async fn minted_tokens_open_filtered_sessions() {
 /// service-session face.
 #[tokio::test]
 async fn engine_sessions_serve_the_files_face() {
-    let store = Store::connect(StoreConfig::memory_with_engine_access("gov-engine-key"))
-        .await
-        .unwrap();
+    let mut store_config = StoreConfig::memory_with_engine_access("gov-engine-key");
+    store_config.engine_policy = copal_server::engine::engine_policy().unwrap();
+    let store = Store::connect(store_config).await.unwrap();
     let dir = tempfile::tempdir().unwrap();
     let blobs = ObjectStore::open(dir.path().to_str().unwrap()).unwrap();
     let state = AppState::new(store, blobs)

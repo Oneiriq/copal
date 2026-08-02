@@ -30,6 +30,11 @@ pub struct StoreConfig {
     /// the vector index into the schema diff so a changed model
     /// rebuilds the index and an unchanged one leaves it alone.
     pub embedding_dimension: Option<u32>,
+    /// Engine policy derived from the contract: field guards and
+    /// read-scope conjuncts. The store contributes the mechanical
+    /// tenancy rule; the server derives the rest so the schema and
+    /// the application enforce one declaration set.
+    pub engine_policy: crate::schema::EnginePolicy,
 }
 
 impl StoreConfig {
@@ -43,6 +48,7 @@ impl StoreConfig {
             password: None,
             engine_access_key: None,
             embedding_dimension: None,
+            engine_policy: crate::schema::EnginePolicy::default(),
         }
     }
 
@@ -59,6 +65,7 @@ impl StoreConfig {
 #[derive(Clone)]
 pub struct Store {
     client: DatabaseClient,
+    engine_policy: std::sync::Arc<crate::schema::EnginePolicy>,
 }
 
 impl Store {
@@ -66,6 +73,7 @@ impl Store {
     pub async fn connect(cfg: StoreConfig) -> copal_core::Result<Self> {
         let engine_access_key = cfg.engine_access_key.clone();
         let embedding_dimension = cfg.embedding_dimension;
+        let engine_policy = std::sync::Arc::new(cfg.engine_policy.clone());
         let mut builder = ConnectionConfig::builder()
             .url(cfg.url)
             .namespace(cfg.namespace)
@@ -83,7 +91,10 @@ impl Store {
             .await
             .map_err(|e| CopalError::Store(format!("connect: {e}")))?;
 
-        let store = Self { client };
+        let store = Self {
+            client,
+            engine_policy,
+        };
         store
             .apply_schema(engine_access_key.as_deref(), embedding_dimension)
             .await?;
@@ -113,7 +124,7 @@ impl Store {
         embedding_dimension: Option<u32>,
     ) -> copal_core::Result<()> {
         let db = self.introspect().await?;
-        let code = schema::code_snapshot(embedding_dimension);
+        let code = schema::code_snapshot(embedding_dimension, &self.engine_policy);
         let diffs = surql::migration::diff::diff_schemas(&code, &db);
 
         // Analyzers first: a full-text index names one, so index
@@ -217,7 +228,10 @@ impl Store {
             .caller_session(token)
             .await
             .map_err(|e| CopalError::Store(format!("caller session: {e}")))?;
-        Ok(Store { client })
+        Ok(Store {
+            client,
+            engine_policy: self.engine_policy.clone(),
+        })
     }
 
     /// Apply the vector index at the configured width, through the
@@ -247,7 +261,10 @@ impl Store {
     /// [`Store::apply_schema`] is available when they want the
     /// reconciliation pass.
     pub fn from_connected(client: DatabaseClient) -> Self {
-        Self { client }
+        Self {
+            client,
+            engine_policy: std::sync::Arc::new(crate::schema::EnginePolicy::default()),
+        }
     }
 
     /// Borrow the underlying client (advanced usage: introspection,

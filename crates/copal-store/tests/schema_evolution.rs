@@ -55,7 +55,8 @@ async fn fresh_apply_diffs_to_zero() {
     let script = copal_store::schema::schema_statements().join("\n");
     client.query(&script).await.expect("schema applies");
 
-    let code = copal_store::schema::code_snapshot(None);
+    let code =
+        copal_store::schema::code_snapshot(None, &copal_store::schema::EnginePolicy::default());
     let db = db_snapshot(&client).await;
     let diffs = diff_schemas(&code, &db);
     assert!(diffs.is_empty(), "{diffs:#?}");
@@ -131,7 +132,10 @@ async fn apply_heals_older_databases_without_touching_rows() {
     assert_eq!(rows.len(), 1, "rows must survive healing");
     assert_eq!(rows[0].path, "kept.txt");
 
-    let diffs = diff_schemas(&copal_store::schema::code_snapshot(None), &healed);
+    let diffs = diff_schemas(
+        &copal_store::schema::code_snapshot(None, &copal_store::schema::EnginePolicy::default()),
+        &healed,
+    );
     assert!(diffs.is_empty(), "{diffs:#?}");
 }
 
@@ -144,6 +148,12 @@ async fn vector_index_joins_the_diff() {
     store.ensure_vector_index(384).await.unwrap();
     store.ensure_vector_index(384).await.unwrap();
     let db = db_snapshot(store.raw()).await;
-    let diffs = diff_schemas(&copal_store::schema::code_snapshot(Some(384)), &db);
+    let diffs = diff_schemas(
+        &copal_store::schema::code_snapshot(
+            Some(384),
+            &copal_store::schema::EnginePolicy::default(),
+        ),
+        &db,
+    );
     assert!(diffs.is_empty(), "{diffs:#?}");
 }

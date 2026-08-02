@@ -27,22 +27,37 @@ use surql::schema::{
 };
 use surql::types::reserved::check_reserved_word;
 
-/// Columns the engine redacts for caller sessions unless the token
-/// carries the admin claim. Hand-written today; a copal-server test
-/// holds this list equal to the contract's guarded fields, so the two
-/// enforcement layers cannot drift apart.
-pub const ADMIN_GUARDED_COLUMNS: &[(&str, &str)] = &[("file_version", "created_by")];
+/// Engine policy derived from the contract, threaded in by the
+/// server so the schema and the application enforce one declaration
+/// set. The store contributes only the mechanical tenancy rule; what
+/// is guarded and what reads require come from above.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EnginePolicy {
+    /// `(table, column, select clause)`: the engine redacts the
+    /// column for caller sessions the clause denies.
+    pub field_guards: Vec<(String, String, String)>,
+    /// `(table, conjunct)`: appended to the table's select clause,
+    /// for contract-backed tables whose reads require a scope.
+    pub select_conjuncts: Vec<(String, String)>,
+}
 
-/// Every table in the Copal control plane, in application order.
-///
-/// Each table leaves here carrying engine `PERMISSIONS`. The service
-/// session is system-level and bypasses them; they exist for caller
-/// sessions, where the engine becomes a second enforcement layer
-/// under the application checks. The rule is mechanical so a future
-/// table cannot dodge it: tables with a `tenant_id` column admit only
-/// rows whose tenant matches the token, and tables without one are
-/// closed to caller sessions entirely.
+/// Every table in the Copal control plane, in application order,
+/// carrying only the mechanical tenancy rule. [`tables_with_policy`]
+/// is what deployments apply; this form exists for tests and tools
+/// that reason about structure without contract input.
 pub fn tables() -> Vec<TableDefinition> {
+    tables_with_policy(&EnginePolicy::default())
+}
+
+/// Every table, carrying engine `PERMISSIONS`. The service session
+/// is system-level and bypasses them; they exist for caller
+/// sessions, where the engine becomes a second enforcement layer
+/// under the application checks. The tenancy rule is mechanical so a
+/// future table cannot dodge it: tables with a `tenant_id` column
+/// admit only rows whose tenant matches the token, and tables
+/// without one are closed to caller sessions entirely. Field guards
+/// and read-scope conjuncts arrive derived from the contract.
+pub fn tables_with_policy(policy: &EnginePolicy) -> Vec<TableDefinition> {
     let mut tables = core::tables();
     tables.extend(delivery::tables());
     tables.extend(flow::tables());
@@ -51,25 +66,45 @@ pub fn tables() -> Vec<TableDefinition> {
     tables.extend(eventing::tables());
     tables.extend(s3::tables());
     tables.extend(text::tables());
-    tables.into_iter().map(with_engine_permissions).collect()
+    tables
+        .into_iter()
+        .map(|table| with_engine_permissions(table, policy))
+        .collect()
 }
 
-fn with_engine_permissions(mut table: TableDefinition) -> TableDefinition {
+fn with_engine_permissions(mut table: TableDefinition, policy: &EnginePolicy) -> TableDefinition {
     let tenant_scoped = table.fields.iter().any(|field| field.name == "tenant_id");
-    let rule = if tenant_scoped {
+    let select_rule = if tenant_scoped {
+        let conjunct = policy
+            .select_conjuncts
+            .iter()
+            .find(|(name, _)| *name == table.name)
+            .map(|(_, clause)| clause.as_str());
+        match conjunct {
+            Some(clause) => format!("tenant_id = $token.tn AND {clause}"),
+            None => "tenant_id = $token.tn".to_owned(),
+        }
+    } else {
+        "false".to_owned()
+    };
+    let write_rule = if tenant_scoped {
         "tenant_id = $token.tn"
     } else {
         "false"
     };
     for field in &mut table.fields {
-        if ADMIN_GUARDED_COLUMNS.contains(&(table.name.as_str(), field.name.as_str())) {
-            field.permissions = Some(BTreeMap::from([(
-                "select".to_owned(),
-                "$token.adm = true".to_owned(),
-            )]));
+        let guard = policy
+            .field_guards
+            .iter()
+            .find(|(t, c, _)| *t == table.name && *c == field.name);
+        if let Some((_, _, clause)) = guard {
+            field.permissions = Some(BTreeMap::from([("select".to_owned(), clause.clone())]));
         }
     }
-    table.with_permissions([("select, create, update, delete", rule)])
+    table.with_permissions([
+        ("select", select_rule.as_str()),
+        ("create, update, delete", write_rule),
+    ])
 }
 
 /// The record access method caller tokens authenticate against.
@@ -94,8 +129,11 @@ fn caller_access(key: &str) -> AccessDefinition {
 /// The database side comes from live introspection, so the
 /// comparison is against what the engine actually holds rather than
 /// any record of what was once applied.
-pub fn code_snapshot(embedding_dimension: Option<u32>) -> surql::migration::diff::SchemaSnapshot {
-    let mut tables = tables();
+pub fn code_snapshot(
+    embedding_dimension: Option<u32>,
+    policy: &EnginePolicy,
+) -> surql::migration::diff::SchemaSnapshot {
+    let mut tables = tables_with_policy(policy);
     if let Some(dimension) = embedding_dimension {
         for table in &mut tables {
             if table.name == "text_chunk" {
@@ -193,25 +231,42 @@ mod tests {
     }
 
     #[test]
-    fn guarded_columns_exist_in_the_schema() {
-        for (table_name, column) in ADMIN_GUARDED_COLUMNS {
-            let table = tables()
-                .into_iter()
-                .find(|t| t.name == *table_name)
-                .unwrap_or_else(|| panic!("guarded table {table_name} missing"));
-            let field = table
-                .fields
-                .iter()
-                .find(|f| f.name == *column)
-                .unwrap_or_else(|| panic!("guarded column {table_name}.{column} missing"));
-            let permissions = field.permissions.as_ref().expect("guard applied");
-            assert_eq!(permissions.get("select").unwrap(), "$token.adm = true");
-        }
+    fn policy_input_lands_in_the_rendered_schema() {
+        let policy = EnginePolicy {
+            field_guards: vec![(
+                "file_version".to_owned(),
+                "created_by".to_owned(),
+                "$token.adm = true".to_owned(),
+            )],
+            select_conjuncts: vec![("file".to_owned(), "$token.sc CONTAINS 'read'".to_owned())],
+        };
+        let tables = tables_with_policy(&policy);
+        let version = tables.iter().find(|t| t.name == "file_version").unwrap();
+        let guarded = version
+            .fields
+            .iter()
+            .find(|f| f.name == "created_by")
+            .unwrap();
+        assert_eq!(
+            guarded.permissions.as_ref().unwrap().get("select").unwrap(),
+            "$token.adm = true"
+        );
+        let file = tables.iter().find(|t| t.name == "file").unwrap();
+        let select = file.permissions.as_ref().unwrap().get("select").unwrap();
+        assert!(select.contains("AND $token.sc CONTAINS 'read'"), "{select}");
+        // Writes never gain read conjuncts.
+        let writes = file
+            .permissions
+            .as_ref()
+            .unwrap()
+            .get("create, update, delete")
+            .unwrap();
+        assert_eq!(writes, "tenant_id = $token.tn");
     }
 
     #[test]
     fn code_snapshot_carries_the_whole_schema() {
-        let snapshot = code_snapshot(None);
+        let snapshot = code_snapshot(None, &EnginePolicy::default());
         assert_eq!(snapshot.tables.len(), tables().len());
         assert_eq!(snapshot.analyzers.len(), 1);
         assert!(snapshot.tables.iter().all(|t| t.permissions.is_some()));
@@ -219,8 +274,8 @@ mod tests {
 
     #[test]
     fn code_snapshot_folds_the_vector_index_at_a_width() {
-        let without = code_snapshot(None);
-        let with = code_snapshot(Some(384));
+        let without = code_snapshot(None, &EnginePolicy::default());
+        let with = code_snapshot(Some(384), &EnginePolicy::default());
         let count = |s: &surql::migration::diff::SchemaSnapshot| {
             s.tables
                 .iter()

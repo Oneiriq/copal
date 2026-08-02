@@ -24,6 +24,74 @@ pub struct EngineAccess {
     pub database: String,
 }
 
+/// Engine clauses for named contract guards.
+///
+/// A guard the contract declares without an entry here refuses the
+/// boot: shipping it would silently drop the engine layer for that
+/// column while the application layer kept enforcing, and the two
+/// layers exist to agree.
+fn guard_clause(guard: &str) -> Option<&'static str> {
+    match guard {
+        "admin_only" => Some("$token.adm = true"),
+        _ => None,
+    }
+}
+
+/// Derive the engine policy from the contract, so both enforcement
+/// layers read one declaration set. Field guards become engine
+/// column redactions; a resource's read scopes become a conjunct on
+/// its table's select clause, sub-resources included, mirroring how
+/// the dispatcher enforces reads.
+pub fn engine_policy() -> copal_core::Result<copal_store::schema::EnginePolicy> {
+    let contract = crate::contract::contract();
+    let mut policy = copal_store::schema::EnginePolicy::default();
+    let mut add_guards =
+        |table: &str, fields: &[janus::ir::FieldExposure]| -> copal_core::Result<()> {
+            for field in fields {
+                if let Some(guard) = &field.guard {
+                    let clause = guard_clause(guard).ok_or_else(|| {
+                        copal_core::CopalError::Store(format!(
+                            "contract guard {guard:?} has no engine clause; add one before \
+                         shipping the guard",
+                        ))
+                    })?;
+                    policy.field_guards.push((
+                        table.to_owned(),
+                        field.column.clone(),
+                        clause.to_owned(),
+                    ));
+                }
+            }
+            Ok(())
+        };
+    for resource in &contract.resources {
+        add_guards(&resource.table, &resource.fields)?;
+        for sub in &resource.sub_resources {
+            add_guards(&sub.table, &sub.fields)?;
+        }
+    }
+    for resource in &contract.resources {
+        if resource.reads_require.is_empty() {
+            continue;
+        }
+        let conjunct = resource
+            .reads_require
+            .iter()
+            .map(|scope| format!("$token.sc CONTAINS '{scope}'"))
+            .collect::<Vec<_>>()
+            .join(" AND ");
+        policy
+            .select_conjuncts
+            .push((resource.table.clone(), conjunct.clone()));
+        for sub in &resource.sub_resources {
+            policy
+                .select_conjuncts
+                .push((sub.table.clone(), conjunct.clone()));
+        }
+    }
+    Ok(policy)
+}
+
 /// Seconds a caller token stays valid. Sessions opened with it keep
 /// their own engine-side duration; this bounds how long a stolen
 /// token mints new ones.

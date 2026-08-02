@@ -116,6 +116,9 @@ impl Config {
                 embedding_dimension: std::env::var("COPAL_EMBEDDING_ADDR")
                     .ok()
                     .map(|_| env_parse("COPAL_EMBEDDING_DIMENSION", 768)),
+                // Derived from the contract in main, where a guard
+                // without an engine clause can refuse the boot.
+                engine_policy: copal_store::schema::EnginePolicy::default(),
             },
             blob_root: env_or("COPAL_BLOB_ROOT", "./data/blobs"),
             blob_encryption_key: std::env::var("COPAL_BLOB_ENCRYPTION_KEY").ok(),

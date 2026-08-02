@@ -26,7 +26,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 namespace: config.store.namespace.clone(),
                 database: config.store.database.clone(),
             });
-    let store = Store::connect(config.store.clone()).await?;
+    let mut store_config = config.store.clone();
+    // One declaration set, two enforcement layers: the engine policy
+    // is derived from the contract, and a guard without an engine
+    // clause refuses the boot here.
+    store_config.engine_policy = copal_server::engine::engine_policy()?;
+    let store = Store::connect(store_config).await?;
     let open_blobs = || match &config.blob_encryption_key {
         Some(key) => ObjectStore::open_encrypted(&config.blob_root, key),
         None => ObjectStore::open(&config.blob_root),

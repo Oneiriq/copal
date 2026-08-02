@@ -146,6 +146,17 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ### Governance
 
+- **Engine policy is compiled from the contract.** The hand-written
+  guarded-column list is gone: field guards and read-scope conjuncts
+  derive from the same declarations the application layer enforces,
+  thread into the schema through the store config, and a guard the
+  contract declares without an engine clause refuses the boot. Table
+  select clauses on contract-backed tables now also require the
+  declared read scope (`$token.sc CONTAINS 'read'`) beside the
+  tenancy rule, writes keep tenancy alone, and the generator tests
+  hold the rendered DDL to the contract. One declaration set, two
+  enforcement layers, no list to keep in sync.
+
 - **Caller sessions reach the request path, behind a flag.**
   `COPAL_ENGINE_SESSIONS=on` makes the files resource's handlers run
   repository calls through engine sessions minted per request from

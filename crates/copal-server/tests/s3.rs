@@ -1041,3 +1041,93 @@ async fn a_busy_key_answers_slow_down() {
     assert_eq!(response.headers()["retry-after"], "1");
     assert!(text_body(response).await.contains("SlowDown"));
 }
+
+/// With engine sessions on, the gateway's reads run on a session the
+/// engine filters, minted from the SigV4 credential's own identity.
+/// The write path keeps the service store, because finalizing content
+/// links blob rows and blobs carry no tenancy.
+#[tokio::test]
+async fn the_gateway_reads_through_caller_sessions() {
+    let mut config = StoreConfig::memory_with_engine_access("s3-engine-key");
+    config.engine_policy = copal_server::engine::engine_policy().unwrap();
+    let store = Store::connect(config).await.unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let blobs = ObjectStore::open(dir.path().to_str().unwrap()).unwrap();
+    let cipher = BlobCipher::from_hex(MASTER_KEY).unwrap();
+    let state = AppState::new(store, blobs)
+        .with_auth(AuthConfig {
+            admin_token: Some("root".to_owned()),
+            ..AuthConfig::default()
+        })
+        .with_cipher(Some(cipher))
+        .with_engine_access(Some(copal_server::engine::EngineAccess {
+            key: "s3-engine-key".to_owned(),
+            namespace: "copal_test".to_owned(),
+            database: "copal".to_owned(),
+        }))
+        .with_engine_sessions(true);
+    let gateway = s3_router(state.clone());
+    let admin = s3_admin_router(state);
+    let (access_key, secret) = mint(&admin, "acme").await;
+
+    let put = signed_request(
+        "PUT",
+        "/acme/sessioned.txt",
+        "",
+        "UNSIGNED-PAYLOAD",
+        &access_key,
+        &secret,
+        Body::from(b"through a session".to_vec()),
+        &[],
+    );
+    assert_eq!(
+        gateway.clone().oneshot(put).await.unwrap().status(),
+        StatusCode::OK
+    );
+
+    // Reads answer through the caller session: the listing, the head,
+    // and the bytes.
+    let request = signed_request(
+        "GET",
+        "/acme",
+        "list-type=2",
+        "UNSIGNED-PAYLOAD",
+        &access_key,
+        &secret,
+        Body::empty(),
+        &[],
+    );
+    let response = gateway.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(text_body(response).await.contains("sessioned.txt"));
+
+    let request = signed_request(
+        "GET",
+        "/acme/sessioned.txt",
+        "",
+        "UNSIGNED-PAYLOAD",
+        &access_key,
+        &secret,
+        Body::empty(),
+        &[],
+    );
+    let response = gateway.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(&bytes[..], b"through a session");
+
+    let request = signed_request(
+        "DELETE",
+        "/acme/sessioned.txt",
+        "",
+        "UNSIGNED-PAYLOAD",
+        &access_key,
+        &secret,
+        Body::empty(),
+        &[],
+    );
+    assert_eq!(
+        gateway.clone().oneshot(request).await.unwrap().status(),
+        StatusCode::NO_CONTENT
+    );
+}

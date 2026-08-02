@@ -31,6 +31,11 @@ services:
       # sees the stack.
       COPAL_BLOB_ENCRYPTION_KEY: "0707070707070707070707070707070707070707070707070707070707070707"
       COPAL_ADMIN_TOKEN: conformance-admin
+      # The harness runs the second enforcement layer on, so client
+      # compatibility is measured against the shape a governed
+      # deployment actually serves.
+      COPAL_ENGINE_ACCESS_KEY: conformance-engine-key
+      COPAL_ENGINE_SESSIONS: "on"
 
   curl:
     image: curlimages/curl:latest

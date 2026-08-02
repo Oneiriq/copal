@@ -42,7 +42,7 @@ pub(crate) async fn copy_object<B: BlobStore>(
     request: axum::extract::Request,
 ) -> Response {
     let (parts, _body) = request.into_parts();
-    let tenant = match authorize_bucket(
+    let caller = match authorize_bucket(
         &gateway,
         &parts.method,
         &parts.uri,
@@ -51,9 +51,10 @@ pub(crate) async fn copy_object<B: BlobStore>(
     )
     .await
     {
-        Ok(tenant) => tenant,
+        Ok(caller) => caller,
         Err(response) => return response,
     };
+    let tenant = &caller.tenant;
     let state = &gateway.app;
 
     let raw_source = match parts
@@ -104,7 +105,11 @@ pub(crate) async fn copy_object<B: BlobStore>(
     // The source must be servable, under the same discipline the read
     // path applies: no bytes, quarantined, and grant-only content all
     // refuse. A copy is a read followed by a write.
-    let source = match super::lookup_servable(&gateway, &tenant, source_key).await {
+    let store = match caller.store(state).await {
+        Ok(store) => store,
+        Err(response) => return response,
+    };
+    let source = match super::lookup_servable(&store, tenant, source_key).await {
         Ok(record) => record,
         Err(response) => return response,
     };
@@ -136,7 +141,7 @@ pub(crate) async fn copy_object<B: BlobStore>(
     };
 
     // Destination record, exactly as PutObject would create it.
-    let record = match file_repo::find_by_path(&state.store, &tenant, &key).await {
+    let record = match file_repo::find_by_path(&state.store, tenant, &key).await {
         Ok(Some(record)) => record,
         Ok(None) => {
             let spec = FileSpec {
@@ -146,7 +151,7 @@ pub(crate) async fn copy_object<B: BlobStore>(
                 metadata: serde_json::Value::Null,
                 idempotency_key: None,
             };
-            match file_repo::create_file(&state.store, &tenant, &spec, "s3").await {
+            match file_repo::create_file(&state.store, tenant, &spec, "s3").await {
                 Ok(created) => created.record,
                 Err(err) => return copal_to_s3(err),
             }
@@ -159,27 +164,25 @@ pub(crate) async fn copy_object<B: BlobStore>(
     // happens here; a same-content copy still spends logical quota,
     // because usage is per file even when blobs dedupe.
     let declared = Some(size_bytes);
-    if let Err(err) = state.quota_headroom(&tenant, declared).await {
+    if let Err(err) = state.quota_headroom(tenant, declared).await {
         return copal_to_s3(err.0);
     }
     if let Err(err) = file_repo::claim_upload(
         &state.store,
-        &tenant,
+        tenant,
         &id,
         &state.instance_id,
         state.limits.upload_lease_secs,
     )
     .await
     {
-        state.abandon_reservation(&tenant, declared).await;
-        return super::claim_refusal(state, &tenant, &id, err).await;
+        state.abandon_reservation(tenant, declared).await;
+        return super::claim_refusal(state, tenant, &id, err).await;
     }
 
-    state
-        .settle_reservation(&tenant, declared, size_bytes)
-        .await;
+    state.settle_reservation(tenant, declared, size_bytes).await;
     match finalize_new_content(
-        state, &tenant, &id, &residency, &digest, size_bytes, &store_key,
+        state, tenant, &id, &residency, &digest, size_bytes, &store_key,
     )
     .await
     {
@@ -193,10 +196,10 @@ pub(crate) async fn copy_object<B: BlobStore>(
             xml_response(StatusCode::OK, body)
         }
         Err(err) => {
-            state.abandon_reservation(&tenant, declared).await;
+            state.abandon_reservation(tenant, declared).await;
             let _ = file_repo::transition(
                 &state.store,
-                &tenant,
+                tenant,
                 &id,
                 FileState::Uploading,
                 FileState::Failed,
@@ -217,7 +220,7 @@ pub(crate) async fn delete_objects<B: BlobStore>(
     request: axum::extract::Request,
 ) -> Response {
     let (parts, body) = request.into_parts();
-    let tenant = match authorize_bucket(
+    let caller = match authorize_bucket(
         &gateway,
         &parts.method,
         &parts.uri,
@@ -226,9 +229,10 @@ pub(crate) async fn delete_objects<B: BlobStore>(
     )
     .await
     {
-        Ok(tenant) => tenant,
+        Ok(caller) => caller,
         Err(response) => return response,
     };
+    let tenant = &caller.tenant;
 
     let raw_stream = body.into_data_stream().map(|chunk| match chunk {
         Ok(bytes) => Ok(bytes),
@@ -267,7 +271,7 @@ pub(crate) async fn delete_objects<B: BlobStore>(
     let mut deleted = Vec::new();
     let mut failed = Vec::new();
     for key in keys {
-        match delete_one(&gateway.app, &tenant, &key, origin.as_deref()).await {
+        match delete_one(&gateway.app, tenant, &key, origin.as_deref()).await {
             Ok(()) => deleted.push(key),
             Err(err) => failed.push((key, err)),
         }

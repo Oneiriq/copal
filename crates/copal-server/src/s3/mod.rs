@@ -255,7 +255,7 @@ async fn authenticate<B: BlobStore>(
     method: &Method,
     uri: &Uri,
     headers: &HeaderMap,
-) -> Result<TenantId, Response> {
+) -> Result<(TenantId, String), Response> {
     let auth = sigv4::parse_authorization(headers)
         .map_err(|e| xml_error(StatusCode::FORBIDDEN, "AccessDenied", &e.to_string()))?;
     let row = s3_repo::fetch_credential(&gateway.app.store, &auth.access_key_id)
@@ -317,8 +317,51 @@ async fn authenticate<B: BlobStore>(
             &e.to_string(),
         )
     })?;
-    TenantId::parse(&row.tenant_id)
-        .map_err(|e| xml_error(StatusCode::FORBIDDEN, "AccessDenied", &e.to_string()))
+    let tenant = TenantId::parse(&row.tenant_id)
+        .map_err(|e| xml_error(StatusCode::FORBIDDEN, "AccessDenied", &e.to_string()))?;
+    Ok((tenant, auth.access_key_id))
+}
+
+/// What an authorized gateway request carries: the credential's
+/// tenant and the store its repository calls run on.
+///
+/// With engine sessions on, that store is a caller-bound session the
+/// engine filters, minted from the credential's own identity, so the
+/// S3 face meets the same second enforcement layer the REST and
+/// GraphQL faces do. The gateway's credentials carry no scopes of
+/// their own, and the surface reads and writes the tenant's files,
+/// so the minted token holds read and write.
+pub(crate) struct S3Caller {
+    pub tenant: TenantId,
+    key_id: String,
+}
+
+impl S3Caller {
+    /// The store this request's repository calls run on, opened when
+    /// a handler actually reads. Opening is two engine round trips,
+    /// so a write path that never consults it never pays for one.
+    pub(crate) async fn store<B: BlobStore>(
+        &self,
+        state: &AppState<B>,
+    ) -> Result<copal_store::Store, Response> {
+        if !state.engine_sessions {
+            return Ok(state.store.clone());
+        }
+        let Some(access) = state.engine_access.as_ref() else {
+            return Err(xml_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "InternalError",
+                "engine sessions are on without an access key",
+            ));
+        };
+        let token = crate::engine::mint_caller_token(
+            access,
+            &self.tenant,
+            &self.key_id,
+            &["read".to_owned(), "write".to_owned()],
+        );
+        state.store.caller(&token).await.map_err(copal_to_s3)
+    }
 }
 
 /// Authenticate and pin the bucket to the credential's tenant.
@@ -328,8 +371,8 @@ pub(crate) async fn authorize_bucket<B: BlobStore>(
     uri: &Uri,
     headers: &HeaderMap,
     bucket: &str,
-) -> Result<TenantId, Response> {
-    let tenant = authenticate(gateway, method, uri, headers).await?;
+) -> Result<S3Caller, Response> {
+    let (tenant, key_id) = authenticate(gateway, method, uri, headers).await?;
     if tenant.as_str() != bucket {
         return Err(xml_error(
             StatusCode::FORBIDDEN,
@@ -337,7 +380,7 @@ pub(crate) async fn authorize_bucket<B: BlobStore>(
             "bucket does not belong to this credential",
         ));
     }
-    Ok(tenant)
+    Ok(S3Caller { tenant, key_id })
 }
 
 /// ListBuckets: exactly one bucket, the credential's tenant.
@@ -347,8 +390,8 @@ async fn list_buckets<B: BlobStore>(
     uri: Uri,
     headers: HeaderMap,
 ) -> Response {
-    let tenant = match authenticate(&gateway, &method, &uri, &headers).await {
-        Ok(tenant) => tenant,
+    let (tenant, _key_id) = match authenticate(&gateway, &method, &uri, &headers).await {
+        Ok(identified) => identified,
         Err(response) => return response,
     };
     let body = format!(
@@ -381,10 +424,11 @@ async fn list_objects<B: BlobStore>(
     headers: HeaderMap,
     Path(bucket): Path<String>,
 ) -> Response {
-    let tenant = match authorize_bucket(&gateway, &method, &uri, &headers, &bucket).await {
-        Ok(tenant) => tenant,
+    let caller = match authorize_bucket(&gateway, &method, &uri, &headers, &bucket).await {
+        Ok(caller) => caller,
         Err(response) => return response,
     };
+    let tenant = &caller.tenant;
     let params = parse_query(uri.query().unwrap_or_default());
     // GetBucketLocation: minio-go asks before its first operation and
     // treats a missing answer as a missing bucket. Signing accepts
@@ -400,7 +444,7 @@ async fn list_objects<B: BlobStore>(
     // `?uploads` on the bucket asks for open multipart sessions, not
     // for objects.
     if params.contains_key("uploads") {
-        return multipart::list_uploads(&gateway, &tenant, &bucket).await;
+        return multipart::list_uploads(&gateway, tenant, &bucket).await;
     }
     let prefix = params.get("prefix").cloned().unwrap_or_default();
     let delimiter = params.get("delimiter").cloned().unwrap_or_default();
@@ -427,18 +471,17 @@ async fn list_objects<B: BlobStore>(
         None => None,
     };
 
-    let rows = match file_repo::list_by_path_prefix(
-        &gateway.app.store,
-        &tenant,
-        &prefix,
-        after.as_deref(),
-        max_keys,
-    )
-    .await
-    {
-        Ok(rows) => rows,
-        Err(err) => return copal_to_s3(err),
+    let store = match caller.store(&gateway.app).await {
+        Ok(store) => store,
+        Err(response) => return response,
     };
+    let rows =
+        match file_repo::list_by_path_prefix(&store, tenant, &prefix, after.as_deref(), max_keys)
+            .await
+        {
+            Ok(rows) => rows,
+            Err(err) => return copal_to_s3(err),
+        };
     let truncated = rows.len() as i64 == max_keys;
     let next_token = if truncated {
         rows.last().map(|record| {
@@ -521,7 +564,7 @@ async fn put_object<B: BlobStore>(
     request: axum::extract::Request,
 ) -> Response {
     let (parts, body) = request.into_parts();
-    let tenant = match authorize_bucket(
+    let caller = match authorize_bucket(
         &gateway,
         &parts.method,
         &parts.uri,
@@ -530,9 +573,10 @@ async fn put_object<B: BlobStore>(
     )
     .await
     {
-        Ok(tenant) => tenant,
+        Ok(caller) => caller,
         Err(response) => return response,
     };
+    let tenant = &caller.tenant;
     let state = &gateway.app;
 
     // The signed payload hash doubles as an integrity assertion when
@@ -544,7 +588,7 @@ async fn put_object<B: BlobStore>(
         .filter(|raw| raw.len() == 64 && raw.bytes().all(|b| b.is_ascii_hexdigit()))
         .map(str::to_ascii_lowercase);
 
-    let record = match file_repo::find_by_path(&state.store, &tenant, &key).await {
+    let record = match file_repo::find_by_path(&state.store, tenant, &key).await {
         Ok(Some(record)) => record,
         Ok(None) => {
             let spec = FileSpec {
@@ -559,7 +603,7 @@ async fn put_object<B: BlobStore>(
                 metadata: serde_json::Value::Null,
                 idempotency_key: None,
             };
-            match file_repo::create_file(&state.store, &tenant, &spec, "s3").await {
+            match file_repo::create_file(&state.store, tenant, &spec, "s3").await {
                 Ok(created) => created.record,
                 Err(err) => return copal_to_s3(err),
             }
@@ -573,26 +617,26 @@ async fn put_object<B: BlobStore>(
         .get(header::CONTENT_LENGTH)
         .and_then(|v| v.to_str().ok())
         .and_then(|raw| raw.parse::<u64>().ok());
-    let headroom = match state.quota_headroom(&tenant, declared_len).await {
+    let headroom = match state.quota_headroom(tenant, declared_len).await {
         Ok(headroom) => headroom,
         Err(err) => return copal_to_s3(err.0),
     };
 
-    let (residency, backend) = match state.residency_for(&tenant).await {
+    let (residency, backend) = match state.residency_for(tenant).await {
         Ok(resolved) => resolved,
         Err(err) => return copal_to_s3(err.0),
     };
 
     if let Err(err) = file_repo::claim_upload(
         &state.store,
-        &tenant,
+        tenant,
         &id,
         &state.instance_id,
         state.limits.upload_lease_secs,
     )
     .await
     {
-        return claim_refusal(state, &tenant, &id, err).await;
+        return claim_refusal(state, tenant, &id, err).await;
     }
 
     // Same in-stream ceiling as the REST upload; aws-chunked framing
@@ -627,10 +671,10 @@ async fn put_object<B: BlobStore>(
     let stored = match backend.put_streamed(counted).await {
         Ok(stored) => stored,
         Err(err) => {
-            state.abandon_reservation(&tenant, declared_len).await;
+            state.abandon_reservation(tenant, declared_len).await;
             let _ = file_repo::transition(
                 &state.store,
-                &tenant,
+                tenant,
                 &id,
                 FileState::Uploading,
                 FileState::Failed,
@@ -656,10 +700,10 @@ async fn put_object<B: BlobStore>(
 
     if let Some(declared) = declared_sha256 {
         if declared != digest.as_str() {
-            state.abandon_reservation(&tenant, declared_len).await;
+            state.abandon_reservation(tenant, declared_len).await;
             let _ = file_repo::transition(
                 &state.store,
-                &tenant,
+                tenant,
                 &id,
                 FileState::Uploading,
                 FileState::Failed,
@@ -675,11 +719,11 @@ async fn put_object<B: BlobStore>(
     }
 
     state
-        .settle_reservation(&tenant, declared_len, size_bytes)
+        .settle_reservation(tenant, declared_len, size_bytes)
         .await;
     match finalize_new_content(
         state,
-        &tenant,
+        tenant,
         &id,
         &residency,
         &digest,
@@ -703,11 +747,16 @@ async fn get_object<B: BlobStore>(
     headers: HeaderMap,
     Path((bucket, key)): Path<(String, String)>,
 ) -> Response {
-    let tenant = match authorize_bucket(&gateway, &method, &uri, &headers, &bucket).await {
-        Ok(tenant) => tenant,
+    let caller = match authorize_bucket(&gateway, &method, &uri, &headers, &bucket).await {
+        Ok(caller) => caller,
         Err(response) => return response,
     };
-    let record = match lookup_servable(&gateway, &tenant, &key).await {
+    let tenant = &caller.tenant;
+    let store = match caller.store(&gateway.app).await {
+        Ok(store) => store,
+        Err(response) => return response,
+    };
+    let record = match lookup_servable(&store, tenant, &key).await {
         Ok(record) => record,
         Err(response) => return response,
     };
@@ -758,11 +807,16 @@ async fn head_object<B: BlobStore>(
     headers: HeaderMap,
     Path((bucket, key)): Path<(String, String)>,
 ) -> Response {
-    let tenant = match authorize_bucket(&gateway, &method, &uri, &headers, &bucket).await {
-        Ok(tenant) => tenant,
+    let caller = match authorize_bucket(&gateway, &method, &uri, &headers, &bucket).await {
+        Ok(caller) => caller,
         Err(response) => return response,
     };
-    let record = match lookup_servable(&gateway, &tenant, &key).await {
+    let tenant = &caller.tenant;
+    let store = match caller.store(&gateway.app).await {
+        Ok(store) => store,
+        Err(response) => return response,
+    };
+    let record = match lookup_servable(&store, tenant, &key).await {
         Ok(record) => record,
         Err(response) => return response,
     };
@@ -791,12 +845,12 @@ async fn head_object<B: BlobStore>(
 
 /// Shared read-path lookup: live file at the key, servable, and not
 /// grant-gated.
-pub(crate) async fn lookup_servable<B: BlobStore>(
-    gateway: &S3Gateway<B>,
+pub(crate) async fn lookup_servable(
+    store: &copal_store::Store,
     tenant: &TenantId,
     key: &str,
 ) -> Result<copal_core::FileRecord, Response> {
-    let record = file_repo::find_by_path(&gateway.app.store, tenant, key)
+    let record = file_repo::find_by_path(store, tenant, key)
         .await
         .map_err(copal_to_s3)?
         .ok_or_else(|| xml_error(StatusCode::NOT_FOUND, "NoSuchKey", "no such key"))?;
@@ -826,15 +880,20 @@ async fn delete_object<B: BlobStore>(
     headers: HeaderMap,
     Path((bucket, key)): Path<(String, String)>,
 ) -> Response {
-    let tenant = match authorize_bucket(&gateway, &method, &uri, &headers, &bucket).await {
-        Ok(tenant) => tenant,
+    let caller = match authorize_bucket(&gateway, &method, &uri, &headers, &bucket).await {
+        Ok(caller) => caller,
         Err(response) => return response,
     };
-    match file_repo::find_by_path(&gateway.app.store, &tenant, &key).await {
+    let tenant = &caller.tenant;
+    let store = match caller.store(&gateway.app).await {
+        Ok(store) => store,
+        Err(response) => return response,
+    };
+    match file_repo::find_by_path(&store, tenant, &key).await {
         Ok(Some(record)) => {
             match remove_file_core(
-                &gateway.app.store,
-                &tenant,
+                &store,
+                tenant,
                 &record.id,
                 forwarded_origin(&headers).as_deref(),
             )

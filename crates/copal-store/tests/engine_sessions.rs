@@ -209,6 +209,41 @@ async fn engine_without_credentials_skips_permissions() {
     );
 }
 
+/// Sessions need no engine-side expiry: `DURATION FOR SESSION NONE`
+/// parses, echoes, and authenticates. Copal's own bounds are the
+/// lifetime authority: tokens expire in seconds, request sessions
+/// drop in milliseconds, and streams end on their ceilings, so an
+/// engine clock racing those is a second clock with nothing to add.
+#[tokio::test]
+async fn record_sessions_accept_no_expiry() {
+    let root = engine_with_credentials("no_expiry").await;
+    run_all(
+        &root,
+        &[
+            "DEFINE ACCESS caller ON DATABASE TYPE RECORD              WITH JWT ALGORITHM HS256 KEY 'probe-secret' DURATION FOR SESSION NONE;",
+            "DEFINE TABLE doc SCHEMALESS PERMISSIONS FOR select WHERE tenant = $token.tn              FOR create, update, delete NONE;",
+            "CREATE doc SET tenant = 'acme', body = 'ours';",
+        ],
+    )
+    .await;
+    let mut response = root.query("INFO FOR DB;").await.unwrap();
+    let info: Vec<serde_json::Value> = response.take(0).unwrap();
+    let access = info[0]["accesses"]["caller"].as_str().unwrap();
+    assert!(
+        access.contains("FOR SESSION NONE") || !access.contains("FOR SESSION"),
+        "session duration echoed unexpectedly: {access}"
+    );
+
+    let caller = root.clone();
+    caller
+        .authenticate(jwt("probe-secret", caller_claims("no_expiry")))
+        .await
+        .expect("record JWT authenticates against a no-expiry access method");
+    let mut response = caller.query("SELECT * FROM doc;").await.unwrap();
+    let rows: Vec<serde_json::Value> = response.take(0).unwrap();
+    assert_eq!(rows.len(), 1, "permissions still enforce: {rows:?}");
+}
+
 /// Enforcement follows the actor, and credentials only decide what
 /// the anonymous session may do: a record session is filtered even
 /// on an engine built without them. The caller-session layer works

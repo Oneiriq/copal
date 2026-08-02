@@ -55,9 +55,11 @@ from one contract. What remains:
    (grants, webhooks, edge) and every GraphQL resolver followed: the
    execute path seeds the caller session into the typed context, the
    resolvers read it back, and subscriptions carry the session for
-   their whole lifetime, with the access method's session duration
-   raised above the longest subscription so re-auth, never expiry,
-   ends a stream. What remains here: the S3 gateway, and a session
+   their whole lifetime, with no engine-side session
+   expiry at all: a session's lifetime is its work's lifetime, ended
+   by drop, and Copal's own bounds (token TTL, request scope, stream
+   ceilings) are the lifetime authority, so no configuration
+   ordering can resurrect the expiry race. What remains here: the S3 gateway, and a session
    cache once a deployment has watched the per-request cost. Facts that
    bound the design:
    enforcement follows the actor, so record sessions are filtered

@@ -144,7 +144,10 @@ alongside the total, so an operator can see the difference between
    retention state moves on armed rows while link tampering still
    throws.
 2. The admin surface: set and clear retention, apply and release
-   holds, each writing an audit event with its reason.
+   holds, each writing an audit event with its reason. **Shipped**:
+   the compliance authority line lives in the update's own WHERE
+   clause, so two admins cannot race past it, and an expired
+   compliance clock is an ordinary row again.
 3. Tenant retention policy, stamped at version creation.
 4. The engine-side predicate compiled into `PERMISSIONS`, so caller
    sessions meet it twice.

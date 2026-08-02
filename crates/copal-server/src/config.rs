@@ -76,6 +76,10 @@ pub struct Config {
     /// `off` (default) or `on`: whether request handlers run their
     /// repository calls through caller-bound engine sessions.
     pub engine_sessions: String,
+    /// How long an open caller session may be reused, and how many
+    /// to hold. Either at zero pays the open on every request.
+    pub session_cache_secs: u64,
+    pub session_cache_size: usize,
     /// Path to a JSON object of sha256 hash to GraphQL document. Set,
     /// the GraphQL face runs listed operations only.
     pub persisted_operations: Option<String>,
@@ -153,6 +157,8 @@ impl Config {
             subscription_max_secs: env_parse("COPAL_SUBSCRIPTION_MAX_SECS", 900),
             rate_ledger: env_or("COPAL_RATE_LEDGER", "memory"),
             engine_sessions: env_or("COPAL_ENGINE_SESSIONS", "off"),
+            session_cache_secs: env_parse("COPAL_SESSION_CACHE_SECS", 60),
+            session_cache_size: env_parse("COPAL_SESSION_CACHE_SIZE", 256),
             persisted_operations: std::env::var("COPAL_PERSISTED_OPERATIONS").ok(),
             allow_private_webhook_targets: env_parse("COPAL_WEBHOOK_ALLOW_PRIVATE_TARGETS", false),
             residencies: std::env::var("COPAL_RESIDENCIES")

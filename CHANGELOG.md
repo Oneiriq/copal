@@ -200,6 +200,17 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ### Governance
 
+- **Caller sessions are reused across requests.** Opening one costs
+  two engine round trips, which a caller making many small reads paid
+  every time. Sessions are now held by the identity that minted them:
+  tenant, caller, and scopes, so a key whose scopes change mints a
+  different session rather than riding an old one. The cache sits
+  behind authentication, so a revoked key never reaches it. Bounds
+  are configuration (`COPAL_SESSION_CACHE_SECS`,
+  `COPAL_SESSION_CACHE_SIZE`), and either at zero pays the open every
+  time; sessions carry no engine expiry, so the lifetime is Copal
+  policy alone. Both faces and the S3 gateway share one cache.
+
 - **Engine policy is compiled from the contract.** The hand-written
   guarded-column list is gone: field guards and read-scope conjuncts
   derive from the same declarations the application layer enforces,

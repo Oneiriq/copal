@@ -14,64 +14,55 @@ an item disappearing from it means the item is done.
    GC) makes retention real, because the GC is the only thing that
    erases today.
 
-2. **The pushdown tail: the session cache.** Every face opens caller
-   sessions now, the S3 gateway included, where reads run through one
-   and writes keep the service store because linking blob rows
-   touches a table that carries no tenancy. What remains is
-   amortizing the open, which costs two engine round trips. Sessions
-   carry no engine expiry, so cache lifetime is Copal policy alone,
-   and the conformance harness runs with sessions on, which is where
-   a cache would be proven.
-
-3. **A performance envelope.** No published numbers exist: ingest
+2. **A performance envelope.** No published numbers exist: ingest
    throughput, retrieval latency, gateway baseline against MinIO,
    caller-session overhead. A bench harness turns "watch before you
    trust it" into something an operator can actually do.
 
-4. **Principals within tenants.** The key is the smallest identity
+3. **Principals within tenants.** The key is the smallest identity
    today. Per-human and per-agent principals unlock richer field
    guards, audit attribution, and the identity story agent
    deployments increasingly expect.
 
 ## Then
 
-5. **Blob master key rotation.** The engine access key rotates by
+4. **Blob master key rotation.** The engine access key rotates by
    replacement; the content encryption key has no rotation path.
-6. **Audit export.** `audit_event` rows exist and list; a SIEM
+5. **Audit export.** `audit_event` rows exist and list; a SIEM
     export or streaming shape does not.
-7. **External transformer seam** for transcodes and document
+6. **External transformer seam** for transcodes and document
     renditions, following the extractor and embedding seams: a
     contract several self-hostable implementations speak,
     unconfigured means absent, nothing parsed in-process.
-8. **On-the-fly rendition URLs and multi-source ingestion**, the
+7. **On-the-fly rendition URLs and multi-source ingestion**, the
     axes the hosted services sell.
-9. **More blob backends.** GCS and Azure beside the filesystem and
+8. **More blob backends.** GCS and Azure beside the filesystem and
     S3-compatible stores.
-10. **The embedded tier.** One process with the engine in it, as a
+9. **The embedded tier.** One process with the engine in it, as a
     positioned single-replica mode. Docker already answers deployment
     simplicity; what embedding buys is the wire's removal: every
     repository call stops being a round trip, caller sessions become
     near-free, and the `Session not found` failure class cannot
     exist. Parked until someone measures the round-trip cost and
     cares.
-11. **F16 vectors and DiskANN, blocked upstream.** The server's 3.1
+10. **F16 vectors and DiskANN, blocked upstream.** The server's 3.1
     release added both; the newest published `surrealdb` crate parses
     neither. Probed directly, every form refuses. The available half
     shipped (F32 HNSW). Revisit when the crate catches up.
 
 ## Deferred, with reasons
 
-12. **OTel spans.** OTLP export means new dependencies and a cargo
+11. **OTel spans.** OTLP export means new dependencies and a cargo
     feature CI would not compile, which is untested code by
     construction. The `/metrics` endpoint set a dependency-free
     observability precedent this would break.
-13. **SDK publishing pipelines** for the four generated clients.
+12. **SDK publishing pipelines** for the four generated clients.
     Generated and drift-gated already; publishing is packaging work
     that wants a release cadence to hang from.
-14. **Janus REST runtime router.** Copal's REST handlers carry real
+13. **Janus REST runtime router.** Copal's REST handlers carry real
     behavior (streaming, ranges, conditionals) that a generic router
     has to earn the right to replace.
-15. **The batched `surql-rs` release.** Shon cuts it. The branch
+14. **The batched `surql-rs` release.** Shon cuts it. The branch
     carries the live-query `WHERE` clause, the session-scoped live
     query fix, index-backed KNN, the scan-order correction, caller
     sessions with the record-identity guard, the shared-session

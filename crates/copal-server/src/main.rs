@@ -107,6 +107,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let mut state = AppState::new(store.clone(), blobs)
         .with_engine_access(engine_access)
+        .with_session_cache(config.session_cache_secs, config.session_cache_size)
         .with_flow(registry.clone())
         .with_auth(config.auth.clone())
         .with_residencies(residencies.named.clone())

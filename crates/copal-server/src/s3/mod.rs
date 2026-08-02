@@ -354,13 +354,16 @@ impl S3Caller {
                 "engine sessions are on without an access key",
             ));
         };
-        let token = crate::engine::mint_caller_token(
-            access,
-            &self.tenant,
-            &self.key_id,
-            &["read".to_owned(), "write".to_owned()],
-        );
-        state.store.caller(&token).await.map_err(copal_to_s3)
+        let scopes = ["read".to_owned(), "write".to_owned()];
+        let cache_key =
+            crate::session_cache::SessionCache::key(self.tenant.as_str(), &self.key_id, &scopes);
+        if let Some(store) = state.sessions.get(&cache_key) {
+            return Ok(store);
+        }
+        let token = crate::engine::mint_caller_token(access, &self.tenant, &self.key_id, &scopes);
+        let store = state.store.caller(&token).await.map_err(copal_to_s3)?;
+        state.sessions.put(cache_key, store.clone());
+        Ok(store)
     }
 }
 

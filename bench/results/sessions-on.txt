@@ -1,0 +1,9 @@
+ingest_64mib_ms 469 ms
+ingest_throughput_mib_s 136 MiB/s
+ingest_50_small_ms 222 ms
+ingest_small_objects_s 225 objects/s
+retrieve_64mib_ms 190 ms
+retrieve_throughput_mib_s 336 MiB/s
+retrieve_50_small_ms 125 ms
+retrieve_small_objects_s 400 objects/s
+listing_ms 18 ms

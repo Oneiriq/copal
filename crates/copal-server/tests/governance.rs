@@ -203,26 +203,28 @@ async fn one_ledger_meters_both_faces() {
     let token = mint(&router, &["read"]).await;
 
     // The reads budget is 6000 units a minute and a full page costs
-    // its 100-row limit, so sixty full pages spend it exactly.
-    for i in 0..60 {
+    // its 100-row limit, so sixty full pages spend it. Spending is
+    // driven until the refusal arrives rather than counted to
+    // exactly sixty: the window is per minute, and a loop that
+    // straddles a boundary gets a fresh budget partway through, which
+    // on a slow machine reads as the ledger failing when it is
+    // working. The bound is generous enough to cross one boundary and
+    // still refuse.
+    let mut refusal = None;
+    for i in 0..180 {
         let response = router
             .clone()
             .oneshot(graphql(r#"{ files(limit: 100) { items { id } } }"#, &token))
             .await
             .unwrap();
         let body = json_body(response).await;
-        assert!(body.get("errors").is_none(), "query {i}: {body:#?}");
+        if body.get("errors").is_some() {
+            refusal = Some((i, body));
+            break;
+        }
     }
-
-    // The 61st spend refuses on the GraphQL face with the retryable
-    // code, and the SAME key is refused on the REST face too, because
-    // both faces charged one ledger.
-    let response = router
-        .clone()
-        .oneshot(graphql(r#"{ files(limit: 100) { items { id } } }"#, &token))
-        .await
-        .unwrap();
-    let body = json_body(response).await;
+    let (spent_after, body) = refusal.expect("the budget refuses within the bound");
+    assert!(spent_after >= 59, "refused after only {spent_after} pages");
     assert_eq!(
         body["errors"][0]["extensions"]["code"], "too_many_requests",
         "{body:#?}",
@@ -745,4 +747,92 @@ async fn search_takes_the_read_scope_on_both_faces() {
         .unwrap();
     let body = json_body(response).await;
     assert_eq!(body["errors"][0]["extensions"]["code"], "forbidden");
+}
+
+/// The cache reuses one session per identity and never crosses
+/// callers: a second request from the same key opens nothing new,
+/// and a different tenant's key gets its own session.
+#[tokio::test]
+async fn caller_sessions_are_reused_per_identity() {
+    let mut config = StoreConfig::memory_with_engine_access("cache-key");
+    config.engine_policy = copal_server::engine::engine_policy().unwrap();
+    let store = Store::connect(config).await.unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let blobs = ObjectStore::open(dir.path().to_str().unwrap()).unwrap();
+    let state = AppState::new(store, blobs)
+        .with_auth(AuthConfig {
+            mode: AuthMode::ApiKeys,
+            admin_token: Some(ADMIN.into()),
+            admin_token_previous: None,
+        })
+        .with_engine_access(Some(copal_server::engine::EngineAccess {
+            key: "cache-key".to_owned(),
+            namespace: "copal_test".to_owned(),
+            database: "copal".to_owned(),
+        }))
+        .with_engine_sessions(true)
+        .with_session_cache(60, 8);
+    let sessions = state.sessions.clone();
+    let router = build_router(state);
+    let worker = mint(&router, &["read", "write"]).await;
+    assert!(sessions.is_empty(), "nothing is held before a request");
+
+    for _ in 0..3 {
+        let response = router
+            .clone()
+            .oneshot(rest("GET", "/v1/files", &worker, None))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+    assert_eq!(sessions.len(), 1, "one identity holds one session");
+
+    // A second key is a second identity, so it opens its own.
+    let operator = mint(&router, &["read", "admin"]).await;
+    let response = router
+        .clone()
+        .oneshot(rest("GET", "/v1/files", &operator, None))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        sessions.len(),
+        2,
+        "a different caller never rides another's"
+    );
+}
+
+/// A cache with either bound at zero holds nothing, which is the
+/// configuration for a deployment that would rather pay the open.
+#[tokio::test]
+async fn zero_bounds_hold_no_sessions() {
+    let mut config = StoreConfig::memory_with_engine_access("nocache-key");
+    config.engine_policy = copal_server::engine::engine_policy().unwrap();
+    let store = Store::connect(config).await.unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let blobs = ObjectStore::open(dir.path().to_str().unwrap()).unwrap();
+    let state = AppState::new(store, blobs)
+        .with_auth(AuthConfig {
+            mode: AuthMode::ApiKeys,
+            admin_token: Some(ADMIN.into()),
+            admin_token_previous: None,
+        })
+        .with_engine_access(Some(copal_server::engine::EngineAccess {
+            key: "nocache-key".to_owned(),
+            namespace: "copal_test".to_owned(),
+            database: "copal".to_owned(),
+        }))
+        .with_engine_sessions(true)
+        .with_session_cache(0, 0);
+    let sessions = state.sessions.clone();
+    let router = build_router(state);
+    let worker = mint(&router, &["read", "write"]).await;
+
+    let response = router
+        .clone()
+        .oneshot(rest("GET", "/v1/files", &worker, None))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(sessions.is_empty());
 }

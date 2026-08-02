@@ -38,3 +38,4 @@ serves through issued URLs only. Grants and API keys are stateful
 capabilities: rows holding secret hashes, revocable with one call, with no
 signing key anywhere.
 - [retention.md](retention.md): retention, legal hold, and WORM, designed ahead of the code.
+- [backup.md](backup.md): what to back up, in what order, and how to prove a restore worked.

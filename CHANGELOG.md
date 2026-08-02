@@ -180,6 +180,18 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ### Deployment
 
+- **A backup and restore procedure.** Two stores need an order, and
+  the order follows from the storage model: content is written to a
+  staging name and renamed onto its digest, so blobs are append-only
+  and a blob without a record is harmless while a record without a
+  blob is a broken file. Back up blobs first, metadata second.
+  [backup.md](docs/backup.md) carries the commands, what a restore
+  yields (derived counters rebuild, stale claims reap through the
+  path a crash already uses, journaled runs resume), what it does not
+  cover (point-in-time recovery between exports), and the
+  verification drill, because an untested backup is a claim rather
+  than a procedure.
+
 - Request and transfer timeouts, a CORS allowlist that is absent when
   unconfigured, a multi-stage container image with a non-root runtime user,
   graceful shutdown, `/healthz` and `/readyz`, and a dependency audit in CI.

@@ -105,6 +105,18 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ### Interfaces
 
+- **The conformance table is green, and the failures were the
+  harness.** The two checks that shipped red came from reusing a
+  running stack between runs: rebuilding the image recreates the
+  Copal container with an empty blob root while the engine container
+  keeps its in-memory metadata, so records survive pointing at
+  content the backend no longer holds. That reads exactly like a
+  product defect. The harness now clears the stack before standing
+  it up, and every client passes every check across repeated runs.
+  The run also captures the server's file listing, its blob
+  inventory, and its logs, because attributing a failure needs both
+  sides.
+
 - **A busy key answers SlowDown.** Re-uploading a key whose previous
   upload is still finishing refused with a terminal 409, which broke
   ordinary mirrors: rclone re-uploads whenever its comparison

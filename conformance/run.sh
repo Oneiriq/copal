@@ -22,9 +22,18 @@ export ONEIRIQ_READ_PAT="${ONEIRIQ_READ_PAT:-$(gh auth token 2>/dev/null || true
 
 compose() { docker compose "$@"; }
 
+# A clean slate first. Reusing a running stack mixes states that
+# must not mix: rebuilding the image recreates the Copal container
+# with an empty blob root while the engine container keeps its
+# in-memory metadata, which leaves records pointing at content the
+# backend no longer holds. That reads exactly like a product defect
+# and is not one.
+echo "== clearing any previous stack"
+compose down -v --remove-orphans > /dev/null 2>&1 || true
+
 echo "== building and starting the stack"
 compose build copal
-compose up -d surrealdb minio copal
+compose up -d --force-recreate surrealdb minio copal
 
 echo "== waiting for copal"
 for i in $(seq 1 60); do
@@ -59,6 +68,12 @@ run_client rclone
 # the client; the server's own view of the objects is the other half.
 echo "== capturing server state"
 compose run --rm curl -c     "curl -s 'http://copal:8080/v1/files?limit=100' -H 'x-copal-tenant: $TENANT'"     > results/server-state.json 2>/dev/null || true
+# The blob side of the same question: a record naming a digest the
+# backend does not hold is a different failure from a missing record.
+compose exec -T copal sh -c 'find /data/blobs -type f'     > results/blob-inventory.txt 2>/dev/null || true
+# The server's own account of the run: sweeps, refusals, and errors
+# that no client can report.
+compose logs copal > results/copal.log 2>&1 || true
 
 echo "== rendering the table"
 VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' ../crates/copal-server/Cargo.toml | head -1)

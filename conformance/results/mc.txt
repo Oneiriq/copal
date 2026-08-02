@@ -1,8 +1,0 @@
-mc bucket_reachable PASS
-mc mirror_full PASS
-mc listing_complete PASS
-mc second_pass_noop PASS
-mc diff_empty PASS
-mc stat_readable PASS
-mc multipart_roundtrip_digest PASS
-mc delete_propagates PASS

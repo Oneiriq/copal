@@ -76,6 +76,14 @@ curl -H "x-copal-tenant: acme" "http://copal:8080/v1/search?q=<term>"
 The second line is the point of moving: the mirrored bucket answers
 questions now.
 
+## The conformance table
+
+The recorded run below became a harness: `conformance/run.sh` stands
+the stack up, runs the same scenario through mc, the aws CLI, and
+rclone with every check named, and renders a per-release results
+table in `conformance/results/`. The claim is self-verifiable: run
+the same command on your own hardware and compare tables.
+
 ## The recorded run
 
 Every transcript below is from a live run: MinIO and SurrealDB in

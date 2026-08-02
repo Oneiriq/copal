@@ -178,6 +178,43 @@ pub(crate) fn xml_response(status: StatusCode, body: String) -> Response {
 }
 
 /// Map an internal error onto the S3 error envelope.
+/// A claim refused because the previous upload to this key is still
+/// finishing (uploading, or being scanned and indexed).
+///
+/// S3 has no notion of a key being busy: a client that PUTs the same
+/// key twice expects both writes to be accepted, and a mirror doing
+/// exactly that is the normal case. `SlowDown` is the S3-idiomatic
+/// answer, and stock clients already retry it with backoff, so the
+/// second write lands once processing finishes instead of failing the
+/// sync with a terminal error.
+pub(crate) async fn claim_refusal<B: BlobStore>(
+    state: &AppState<B>,
+    tenant: &TenantId,
+    id: &copal_core::FileId,
+    err: CopalError,
+) -> Response {
+    let busy = matches!(
+        file_repo::get_file(&state.store, tenant, id).await,
+        Ok(Some(record))
+            if matches!(
+                record.state,
+                copal_core::FileState::Uploading | copal_core::FileState::Scanning
+            )
+    );
+    if !busy {
+        return copal_to_s3(err);
+    }
+    let mut response = xml_error(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "SlowDown",
+        "the previous upload to this key is still finishing; retry shortly",
+    );
+    response
+        .headers_mut()
+        .insert(header::RETRY_AFTER, header::HeaderValue::from_static("1"));
+    response
+}
+
 pub(crate) fn copal_to_s3(err: CopalError) -> Response {
     match err {
         CopalError::NotFound(msg) => xml_error(StatusCode::NOT_FOUND, "NoSuchKey", &msg),
@@ -555,7 +592,7 @@ async fn put_object<B: BlobStore>(
     )
     .await
     {
-        return copal_to_s3(err);
+        return claim_refusal(state, &tenant, &id, err).await;
     }
 
     // Same in-stream ceiling as the REST upload; aws-chunked framing

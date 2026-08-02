@@ -172,7 +172,7 @@ pub(crate) async fn copy_object<B: BlobStore>(
     .await
     {
         state.abandon_reservation(&tenant, declared).await;
-        return copal_to_s3(err);
+        return super::claim_refusal(state, &tenant, &id, err).await;
     }
 
     state

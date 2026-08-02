@@ -105,6 +105,24 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ### Interfaces
 
+- **A busy key answers SlowDown.** Re-uploading a key whose previous
+  upload is still finishing refused with a terminal 409, which broke
+  ordinary mirrors: rclone re-uploads whenever its comparison
+  disagrees, and every such write failed the sync. S3 has no notion
+  of a key being busy, so the answer is the retryable `SlowDown` with
+  `Retry-After`, which stock clients already carry. Found by the
+  conformance harness on its first honest run.
+
+- **The conformance harness.** `conformance/run.sh` is one command
+  and one table: the compose stack builds Copal from the repository,
+  pins the engine, seeds MinIO, and runs a named-check scenario per
+  client (mc, aws CLI, rclone), with the five defects the first live
+  migration surfaced as permanent assertions. Results commit per
+  release under `conformance/results/` and the migration guide links
+  them; a prospect reproduces the table with the same command, which
+  is what makes the compatibility claim self-verifiable. A manual
+  workflow runs it on demand.
+
 - **The gateway survives MinIO's own tooling, proven by a recorded
   mirror.** A live `mc mirror` run against the gateway surfaced four
   defects that in-process tests never could, each now fixed and

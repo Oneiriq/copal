@@ -1,0 +1,5 @@
+rclone sync_in PASS
+rclone check_sizes PASS
+rclone roundtrip_digest PASS
+rclone sync_noop PASS
+rclone delete_propagates PASS

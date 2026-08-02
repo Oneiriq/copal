@@ -113,8 +113,16 @@ pub async fn recount_inbound_links(
         .from_table("file_version")
         .map_err(|e| map_store_err("recount", e))?
         .where_str(format!("blob = {blob_target}"))
-        // Record-link traversal: the version's file must be live.
-        .where_str("armed = true AND file.deleted_at IS NONE")
+        // Record-link traversal: the version's file must be live, OR
+        // the version itself must be non-erasable. A hold or an
+        // unexpired retention clock holds content alive through its
+        // file's tombstone, which is the whole of retention's
+        // enforcement: the GC is the only thing that erases, and a
+        // retained version never lets its blob reach the mark step.
+        .where_str(
+            "armed = true AND (file.deleted_at IS NONE OR legal_hold = true \
+             OR (retain_until IS NOT NONE AND retain_until > time::now()))",
+        )
         .group_all();
 
     let mut total = 0i64;

@@ -126,6 +126,8 @@ fn dispatcher<B: BlobStore + 'static>(
     let hooks_remove_state = state.clone();
     let remove_state = state.clone();
     let events_list_state = state.clone();
+    let search_state = state.clone();
+    let text_state = state.clone();
     let events_get_state = state.clone();
     let events_watch_state = state.clone();
     let versions_state = state.clone();
@@ -607,6 +609,52 @@ fn dispatcher<B: BlobStore + 'static>(
                 retry_run_core(&state, &tenant, run_id)
                     .await
                     .map(Some)
+                    .map_err(|e| to_janus_error(e.0))
+            }
+        })
+        // Retrieval on the GraphQL face, through the same cores the
+        // REST handlers call: one implementation, so the two faces
+        // cannot answer differently.
+        .query("search", move |ctx, args| {
+            let state = search_state.clone();
+            async move {
+                let tenant = tenant_of(&ctx)?;
+                let store = store_of(&ctx, &state.store);
+                let q = args
+                    .input
+                    .get("q")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_owned();
+                let mode = args
+                    .input
+                    .get("mode")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_owned);
+                let limit = args
+                    .input
+                    .get("limit")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(20)
+                    .clamp(1, 100);
+                crate::app::search_core(&state, &store, &tenant, &q, mode.as_deref(), limit)
+                    .await
+                    .map_err(|e| to_janus_error(e.0))
+            }
+        })
+        .query("file_text", move |ctx, args| {
+            let state = text_state.clone();
+            async move {
+                let tenant = tenant_of(&ctx)?;
+                let store = store_of(&ctx, &state.store);
+                let id = parse_file_id(
+                    args.input
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default(),
+                )?;
+                crate::app::file_text_core(&store, &tenant, &id)
+                    .await
                     .map_err(|e| to_janus_error(e.0))
             }
         });

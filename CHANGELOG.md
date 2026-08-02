@@ -11,6 +11,18 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ### Retrieval
 
+- **Search and extracted text answer to the contract.** The
+  retrieval surface was REST-only: absent from GraphQL, invisible to
+  the differ, and outside the declaration set governing everything
+  else, on a product whose thesis is governed retrieval. Both are now
+  contract queries, a shape Janus grew for reads that answer a
+  question rather than paging a collection. They declare their
+  parameters, their read scope, and their rate class; they render
+  into the OpenAPI document and the GraphQL schema; and both faces
+  call one core, proven by a test that asserts the two answers are
+  the same value and that a key without the read scope is refused on
+  each.
+
 - **Subscriptions over the event outbox.** A client watches file events as the
   engine writes them instead of polling. Served as graphql-sse on the existing
   `POST /graphql` under `Accept: text/event-stream`, so one route and one

@@ -121,6 +121,8 @@ type Query {
   event(id: ID!): Event
   runs(limit: Int = 100, cursor: String, status: String, sort: RunSort): RunPage!
   run(id: ID!): Run
+  search(q: String!, mode: String, limit: Int): JSON!
+  fileText(id: String!): JSON!
 }
 
 type Mutation {

@@ -237,6 +237,14 @@ into `CommonPrefixes`.
 
 ## Search
 
+Search and extracted text are contract queries: declared parameters,
+declared scopes, declared budget, rendered into `docs/openapi.json`
+and `docs/schema.graphql`, and served on both faces through one
+implementation. `GET /v1/search` and the GraphQL `search` field
+answer the same value; the same holds for `GET /v1/files/{id}/text`
+and `fileText`.
+
+
 ```
 GET /v1/search?q=terms&mode=hybrid&limit=20   search a tenant's documents
 GET /v1/files/{id}/text                        one file's extracted text

@@ -84,12 +84,13 @@ async fn register_endpoint<B: BlobStore>(
     headers: HeaderMap,
     Json(request): Json<RegisterRequest>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
-    let tenant =
-        crate::auth::authenticate_scoped(&state.app, &headers, crate::auth::Scope::Admin, 1)
-            .await?;
+    let auth =
+        crate::auth::authorize_scoped(&state.app, &headers, crate::auth::Scope::Admin, 1).await?;
+    let tenant = &auth.tenant;
     let body = register_core(
+        &auth.store,
         &state.app,
-        &tenant,
+        tenant,
         &request.url,
         &request.events,
         forwarded_origin(&headers).as_deref(),
@@ -101,6 +102,7 @@ async fn register_endpoint<B: BlobStore>(
 /// Register an endpoint, the shared core behind the REST handler and
 /// the GraphQL action resolver.
 pub(crate) async fn register_core<B: BlobStore>(
+    store: &Store,
     app: &AppState<B>,
     tenant: &copal_core::TenantId,
     url: &str,
@@ -115,9 +117,9 @@ pub(crate) async fn register_core<B: BlobStore>(
     let sealed = app.require_cipher()?.seal(secret.as_bytes())?;
     let sealed_b64 = base64::engine::general_purpose::STANDARD.encode(sealed);
     let events = events.join(",");
-    let row = eventing::create_endpoint(&app.store, tenant, url, &events, &sealed_b64).await?;
+    let row = eventing::create_endpoint(store, tenant, url, &events, &sealed_b64).await?;
     copal_store::repo::auth::record_audit(
-        &app.store,
+        store,
         tenant,
         tenant.as_str(),
         "webhook.registered",
@@ -140,9 +142,10 @@ async fn list_endpoints<B: BlobStore>(
     State(state): State<WebhookState<B>>,
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let tenant =
-        crate::auth::authenticate_scoped(&state.app, &headers, crate::auth::Scope::Read, 1).await?;
-    let items = eventing::list_endpoints(&state.app.store, &tenant).await?;
+    let auth =
+        crate::auth::authorize_scoped(&state.app, &headers, crate::auth::Scope::Read, 1).await?;
+    let tenant = &auth.tenant;
+    let items = eventing::list_endpoints(&auth.store, tenant).await?;
     Ok(Json(json!({ "items": items })))
 }
 
@@ -152,12 +155,12 @@ async fn remove_endpoint<B: BlobStore>(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    let tenant =
-        crate::auth::authenticate_scoped(&state.app, &headers, crate::auth::Scope::Admin, 1)
-            .await?;
+    let auth =
+        crate::auth::authorize_scoped(&state.app, &headers, crate::auth::Scope::Admin, 1).await?;
+    let tenant = &auth.tenant;
     remove_core(
-        &state.app,
-        &tenant,
+        &auth.store,
+        tenant,
         &id,
         forwarded_origin(&headers).as_deref(),
     )
@@ -166,17 +169,17 @@ async fn remove_endpoint<B: BlobStore>(
 }
 
 /// Deactivate an endpoint, shared by both faces.
-pub(crate) async fn remove_core<B: BlobStore>(
-    app: &AppState<B>,
+pub(crate) async fn remove_core(
+    store: &Store,
     tenant: &copal_core::TenantId,
     id: &str,
     origin: Option<&str>,
 ) -> Result<(), ApiError> {
-    if !eventing::deactivate_endpoint(&app.store, tenant, id).await? {
+    if !eventing::deactivate_endpoint(store, tenant, id).await? {
         return Err(CopalError::not_found(format!("webhook {id}")).into());
     }
     copal_store::repo::auth::record_audit(
-        &app.store,
+        store,
         tenant,
         tenant.as_str(),
         "webhook.removed",
@@ -210,15 +213,11 @@ async fn list_events<B: BlobStore>(
     axum::extract::Query(params): axum::extract::Query<ListQuery>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let limit = params.limit.unwrap_or(100).clamp(1, 1_000);
-    let tenant = crate::auth::authenticate_scoped(
-        &state.app,
-        &headers,
-        crate::auth::Scope::Read,
-        limit as u64,
-    )
-    .await?;
-    let rows =
-        eventing::list_events(&state.app.store, &tenant, params.action.as_deref(), limit).await?;
+    let auth =
+        crate::auth::authorize_scoped(&state.app, &headers, crate::auth::Scope::Read, limit as u64)
+            .await?;
+    let tenant = &auth.tenant;
+    let rows = eventing::list_events(&auth.store, tenant, params.action.as_deref(), limit).await?;
     let items: Vec<_> = rows
         .iter()
         .map(|row| {
@@ -238,16 +237,15 @@ async fn list_events<B: BlobStore>(
 /// One page of an endpoint's delivery history in wire shape. Shared by
 /// the REST handler and the GraphQL sub-collection so a delivery
 /// cannot render differently on the two faces.
-pub(crate) async fn endpoint_deliveries_page<B: BlobStore>(
-    state: &AppState<B>,
+pub(crate) async fn endpoint_deliveries_page(
+    store: &Store,
     tenant: &copal_core::TenantId,
     endpoint: &str,
     delivery_state: Option<&str>,
     limit: i64,
 ) -> Result<Vec<serde_json::Value>, ApiError> {
     let rows =
-        eventing::list_deliveries(&state.store, tenant, Some(endpoint), delivery_state, limit)
-            .await?;
+        eventing::list_deliveries(store, tenant, Some(endpoint), delivery_state, limit).await?;
     Ok(rows.iter().map(crate::wire::wire_delivery).collect())
 }
 
@@ -259,15 +257,12 @@ async fn list_endpoint_deliveries<B: BlobStore>(
     axum::extract::Query(params): axum::extract::Query<ListQuery>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let limit = params.limit.unwrap_or(100).clamp(1, 1_000);
-    let tenant = crate::auth::authenticate_scoped(
-        &state.app,
-        &headers,
-        crate::auth::Scope::Read,
-        limit as u64,
-    )
-    .await?;
+    let auth =
+        crate::auth::authorize_scoped(&state.app, &headers, crate::auth::Scope::Read, limit as u64)
+            .await?;
+    let tenant = &auth.tenant;
     let items =
-        endpoint_deliveries_page(&state.app, &tenant, &id, params.state.as_deref(), limit).await?;
+        endpoint_deliveries_page(&auth.store, tenant, &id, params.state.as_deref(), limit).await?;
     // Endpoint histories are bounded by the retry ceiling, so the page
     // is the set and there is nothing to resume.
     Ok(Json(
@@ -281,21 +276,12 @@ async fn list_deliveries<B: BlobStore>(
     axum::extract::Query(params): axum::extract::Query<ListQuery>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let limit = params.limit.unwrap_or(100).clamp(1, 1_000);
-    let tenant = crate::auth::authenticate_scoped(
-        &state.app,
-        &headers,
-        crate::auth::Scope::Read,
-        limit as u64,
-    )
-    .await?;
-    let rows = eventing::list_deliveries(
-        &state.app.store,
-        &tenant,
-        None,
-        params.state.as_deref(),
-        limit,
-    )
-    .await?;
+    let auth =
+        crate::auth::authorize_scoped(&state.app, &headers, crate::auth::Scope::Read, limit as u64)
+            .await?;
+    let tenant = &auth.tenant;
+    let rows = eventing::list_deliveries(&auth.store, tenant, None, params.state.as_deref(), limit)
+        .await?;
     let items: Vec<_> = rows
         .iter()
         .map(|row| {

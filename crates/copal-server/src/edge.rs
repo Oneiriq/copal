@@ -26,6 +26,7 @@ use copal_blob::crypto::BlobCipher;
 use copal_blob::BlobStore;
 use copal_core::{CopalError, FileId, TenantId};
 use copal_store::repo::{edge as edge_repo, file as file_repo};
+use copal_store::Store;
 
 use crate::app::{forwarded_origin, AppState};
 use crate::error::ApiError;
@@ -99,12 +100,14 @@ async fn issue_edge_url<B: BlobStore>(
     Path(id): Path<String>,
     Json(request): Json<IssueEdgeRequest>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
-    let tenant =
-        crate::auth::authenticate_scoped(&state.app, &headers, crate::auth::Scope::Read, 1).await?;
+    let auth =
+        crate::auth::authorize_scoped(&state.app, &headers, crate::auth::Scope::Read, 1).await?;
+    let tenant = &auth.tenant;
     let id = FileId::parse(&id)?;
     let body = issue_edge_url_core(
+        &auth.store,
         &state.app,
-        &tenant,
+        tenant,
         &id,
         request.ttl_secs.unwrap_or(DEFAULT_TTL_SECS),
         forwarded_origin(&headers).as_deref(),
@@ -116,6 +119,7 @@ async fn issue_edge_url<B: BlobStore>(
 /// Mint a cg2 token, the shared core behind the REST handler and the
 /// GraphQL action resolver.
 pub(crate) async fn issue_edge_url_core<B: BlobStore>(
+    store: &Store,
     app: &AppState<B>,
     tenant: &copal_core::TenantId,
     id: &FileId,
@@ -129,7 +133,7 @@ pub(crate) async fn issue_edge_url_core<B: BlobStore>(
         ))
         .into());
     }
-    let record = file_repo::get_file(&app.store, tenant, id)
+    let record = file_repo::get_file(store, tenant, id)
         .await?
         .ok_or_else(|| CopalError::not_found(format!("file {id}")))?;
     if !record.servable_content() {
@@ -138,7 +142,7 @@ pub(crate) async fn issue_edge_url_core<B: BlobStore>(
 
     // The newest active key signs; rotation reads as mint new, revoke
     // old once edge configs have moved.
-    let keys = edge_repo::list_keys(&app.store, tenant).await?;
+    let keys = edge_repo::list_keys(store, tenant).await?;
     let signing_key_id = keys
         .iter()
         .rev()
@@ -146,7 +150,7 @@ pub(crate) async fn issue_edge_url_core<B: BlobStore>(
         .and_then(|row| row.get("id").and_then(|v| v.as_str()))
         .map(str::to_owned)
         .ok_or_else(|| CopalError::conflict("no active edge key; mint one on the admin surface"))?;
-    let key_row = edge_repo::fetch_key(&app.store, &signing_key_id)
+    let key_row = edge_repo::fetch_key(store, &signing_key_id)
         .await?
         .ok_or_else(|| CopalError::Store("edge key vanished".into()))?;
     let cipher = app.require_cipher()?;
@@ -162,7 +166,7 @@ pub(crate) async fn issue_edge_url_core<B: BlobStore>(
     };
     let token = copal_sign::EdgeToken::sign(&claims, &secret)?;
     copal_store::repo::auth::record_audit(
-        &app.store,
+        store,
         tenant,
         tenant.as_str(),
         "edge.issued",

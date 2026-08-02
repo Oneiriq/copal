@@ -239,7 +239,7 @@ pub async fn authorize_scoped<B: BlobStore>(
 /// The store a request runs on. Caller sessions cost two engine
 /// round trips to open, which is the price of the second enforcement
 /// layer; the flag keeps it opt-in until a deployment has watched it.
-async fn request_store<B: BlobStore>(
+pub(crate) async fn request_store<B: BlobStore>(
     state: &AppState<B>,
     tenant: &TenantId,
     identity: Option<&KeyIdentity>,

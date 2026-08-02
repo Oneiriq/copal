@@ -527,8 +527,13 @@ async fn engine_sessions_serve_the_files_face() {
             namespace: "copal_test".to_owned(),
             database: "copal".to_owned(),
         }))
-        .with_engine_sessions(true);
-    let router = build_router(state);
+        .with_engine_sessions(true)
+        .with_cipher(Some(
+            copal_blob::crypto::BlobCipher::from_hex(&"07".repeat(32)).unwrap(),
+        ));
+    // The webhook surface mounts beside the API exactly as main does,
+    // gated on the cipher its sealed secrets need.
+    let router = build_router(state.clone()).merge(copal_server::webhooks::webhook_router(state));
     let worker = mint(&router, &["read", "write"]).await;
     let operator = mint(&router, &["read", "admin"]).await;
 
@@ -623,6 +628,53 @@ async fn engine_sessions_serve_the_files_face() {
             &worker,
             None,
         ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // The GraphQL face rides the same caller session: the resolver
+    // reads through the ctx store, and the guarded column arrives
+    // engine-redacted for the worker and intact for the operator.
+    let response = router
+        .clone()
+        .oneshot(graphql(
+            &format!(
+                r#"{{ file(id: "{id}") {{ versions {{ items {{ number created_by }} }} }} }}"#
+            ),
+            &worker,
+        ))
+        .await
+        .unwrap();
+    let row = json_body(response).await["data"]["file"]["versions"]["items"][0].clone();
+    assert_eq!(row["number"], 1);
+    assert!(row["created_by"].is_null(), "{row:#?}");
+    let response = router
+        .clone()
+        .oneshot(graphql(
+            &format!(r#"{{ file(id: "{id}") {{ versions {{ items {{ created_by }} }} }} }}"#),
+            &operator,
+        ))
+        .await
+        .unwrap();
+    let row = json_body(response).await["data"]["file"]["versions"]["items"][0].clone();
+    assert!(row["created_by"].is_string(), "{row:#?}");
+
+    // Webhook management under caller sessions, admin scope enforced
+    // by both layers.
+    let response = router
+        .clone()
+        .oneshot(rest(
+            "POST",
+            "/v1/webhooks",
+            &operator,
+            Some(json!({ "url": "https://example.com/hook", "events": ["file.created"] })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let response = router
+        .clone()
+        .oneshot(rest("GET", "/v1/webhooks", &worker, None))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);

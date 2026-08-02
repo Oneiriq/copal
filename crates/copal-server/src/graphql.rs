@@ -63,6 +63,16 @@ impl Middleware for RequireTenant {
     }
 }
 
+/// The store this operation runs on: the caller session the request
+/// path opened when engine sessions are on, or the face's service
+/// store. Subscriptions carry the session for their whole lifetime,
+/// because the stream owns the clone.
+fn store_of(ctx: &JanusContext, fallback: &copal_store::Store) -> copal_store::Store {
+    ctx.get::<copal_store::Store>()
+        .cloned()
+        .unwrap_or_else(|| fallback.clone())
+}
+
 fn tenant_of(ctx: &JanusContext) -> Result<TenantId, JanusError> {
     ctx.get::<Tenant>().map(|t| t.0.clone()).ok_or_else(|| {
         JanusError::Unauthorized(
@@ -131,6 +141,7 @@ fn dispatcher<B: BlobStore + 'static>(
             let state = list_state.clone();
             async move {
                 let tenant = tenant_of(&ctx)?;
+                let store = store_of(&ctx, &state.store);
                 let ascending = matches!(&args.sort, Some((_, SortDirection::Asc)));
                 let after = args
                     .cursor
@@ -145,7 +156,7 @@ fn dispatcher<B: BlobStore + 'static>(
                     .transpose()?;
                 let limit = i64::from(args.limit);
                 let records = file_repo::list_files(
-                    &state.store,
+                    &store,
                     &tenant,
                     limit,
                     after.as_ref(),
@@ -177,8 +188,9 @@ fn dispatcher<B: BlobStore + 'static>(
             let state = get_state.clone();
             async move {
                 let tenant = tenant_of(&ctx)?;
+                let store = store_of(&ctx, &state.store);
                 let id = parse_file_id(&args.id)?;
-                let record = file_repo::get_file(&state.store, &tenant, &id)
+                let record = file_repo::get_file(&store, &tenant, &id)
                     .await
                     .map_err(to_janus_error)?;
                 Ok(record.as_ref().map(wire_file))
@@ -188,6 +200,7 @@ fn dispatcher<B: BlobStore + 'static>(
             let state = url_state.clone();
             async move {
                 let tenant = tenant_of(&ctx)?;
+                let store = store_of(&ctx, &state.store);
                 let id = parse_file_id(args.id.as_deref().unwrap_or_default())?;
                 let ttl_secs = args
                     .input
@@ -201,16 +214,25 @@ fn dispatcher<B: BlobStore + 'static>(
                     .and_then(|v| v.as_u64())
                     .and_then(|v| u32::try_from(v).ok());
                 let origin = ctx.get::<RequestOrigin>().map(|o| o.0.clone());
-                issue_grant_core(&state, &tenant, &id, ttl_secs, max_uses, origin.as_deref())
-                    .await
-                    .map(Some)
-                    .map_err(|e| to_janus_error(e.0))
+                issue_grant_core(
+                    &store,
+                    &state,
+                    &tenant,
+                    &id,
+                    ttl_secs,
+                    max_uses,
+                    origin.as_deref(),
+                )
+                .await
+                .map(Some)
+                .map_err(|e| to_janus_error(e.0))
             }
         })
         .action("files", "issue_upload_url", move |ctx, args| {
             let state = upload_url_state.clone();
             async move {
                 let tenant = tenant_of(&ctx)?;
+                let store = store_of(&ctx, &state.store);
                 let id = parse_file_id(args.id.as_deref().unwrap_or_default())?;
                 let ttl_secs = args
                     .input
@@ -220,7 +242,7 @@ fn dispatcher<B: BlobStore + 'static>(
                     .unwrap_or(900);
                 let origin = ctx.get::<RequestOrigin>().map(|o| o.0.clone());
                 crate::app::issue_upload_grant_core(
-                    &state,
+                    &store,
                     &tenant,
                     &id,
                     ttl_secs,
@@ -235,6 +257,7 @@ fn dispatcher<B: BlobStore + 'static>(
             let state = edge_url_state.clone();
             async move {
                 let tenant = tenant_of(&ctx)?;
+                let store = store_of(&ctx, &state.store);
                 let id = parse_file_id(args.id.as_deref().unwrap_or_default())?;
                 let ttl_secs = args
                     .input
@@ -242,10 +265,17 @@ fn dispatcher<B: BlobStore + 'static>(
                     .and_then(|v| v.as_i64())
                     .unwrap_or(900);
                 let origin = ctx.get::<RequestOrigin>().map(|o| o.0.clone());
-                crate::edge::issue_edge_url_core(&state, &tenant, &id, ttl_secs, origin.as_deref())
-                    .await
-                    .map(Some)
-                    .map_err(|e| to_janus_error(e.0))
+                crate::edge::issue_edge_url_core(
+                    &store,
+                    &state,
+                    &tenant,
+                    &id,
+                    ttl_secs,
+                    origin.as_deref(),
+                )
+                .await
+                .map(Some)
+                .map_err(|e| to_janus_error(e.0))
             }
         })
         .action("files", "request_rendition", move |ctx, args| {
@@ -289,9 +319,10 @@ fn dispatcher<B: BlobStore + 'static>(
             let state = remove_state.clone();
             async move {
                 let tenant = tenant_of(&ctx)?;
+                let store = store_of(&ctx, &state.store);
                 let id = parse_file_id(args.id.as_deref().unwrap_or_default())?;
                 let origin = ctx.get::<RequestOrigin>().map(|o| o.0.clone());
-                crate::app::remove_file_core(&state.store, &tenant, &id, origin.as_deref())
+                crate::app::remove_file_core(&store, &tenant, &id, origin.as_deref())
                     .await
                     .map_err(|e| to_janus_error(e.0))?;
                 Ok(None)
@@ -301,7 +332,8 @@ fn dispatcher<B: BlobStore + 'static>(
             let state = hooks_list_state.clone();
             async move {
                 let tenant = tenant_of(&ctx)?;
-                let items = copal_store::repo::eventing::list_endpoints(&state.store, &tenant)
+                let store = store_of(&ctx, &state.store);
+                let items = copal_store::repo::eventing::list_endpoints(&store, &tenant)
                     .await
                     .map_err(to_janus_error)?;
                 Ok(ListOutput {
@@ -315,7 +347,8 @@ fn dispatcher<B: BlobStore + 'static>(
             let state = hooks_get_state.clone();
             async move {
                 let tenant = tenant_of(&ctx)?;
-                let found = copal_store::repo::eventing::list_endpoints(&state.store, &tenant)
+                let store = store_of(&ctx, &state.store);
+                let found = copal_store::repo::eventing::list_endpoints(&store, &tenant)
                     .await
                     .map_err(to_janus_error)?
                     .into_iter()
@@ -327,6 +360,7 @@ fn dispatcher<B: BlobStore + 'static>(
             let state = hooks_register_state.clone();
             async move {
                 let tenant = tenant_of(&ctx)?;
+                let store = store_of(&ctx, &state.store);
                 let url = args
                     .input
                     .get("url")
@@ -344,19 +378,27 @@ fn dispatcher<B: BlobStore + 'static>(
                     })
                     .unwrap_or_default();
                 let origin = ctx.get::<RequestOrigin>().map(|o| o.0.clone());
-                crate::webhooks::register_core(&state, &tenant, &url, &events, origin.as_deref())
-                    .await
-                    .map(Some)
-                    .map_err(|e| to_janus_error(e.0))
+                crate::webhooks::register_core(
+                    &store,
+                    &state,
+                    &tenant,
+                    &url,
+                    &events,
+                    origin.as_deref(),
+                )
+                .await
+                .map(Some)
+                .map_err(|e| to_janus_error(e.0))
             }
         })
         .action("webhooks", "remove", move |ctx, args| {
             let state = hooks_remove_state.clone();
             async move {
                 let tenant = tenant_of(&ctx)?;
+                let store = store_of(&ctx, &state.store);
                 let id = args.id.clone().unwrap_or_default();
                 let origin = ctx.get::<RequestOrigin>().map(|o| o.0.clone());
-                crate::webhooks::remove_core(&state, &tenant, &id, origin.as_deref())
+                crate::webhooks::remove_core(&store, &tenant, &id, origin.as_deref())
                     .await
                     .map_err(|e| to_janus_error(e.0))?;
                 Ok(None)
@@ -366,15 +408,16 @@ fn dispatcher<B: BlobStore + 'static>(
             let state = versions_state.clone();
             async move {
                 let tenant = tenant_of(&ctx)?;
+                let store = store_of(&ctx, &state.store);
                 let id = parse_file_id(&args.parent_id)?;
                 // Tenancy and tombstone filtering ride the file fetch,
                 // exactly as the REST handler does it.
-                file_repo::get_file(&state.store, &tenant, &id)
+                file_repo::get_file(&store, &tenant, &id)
                     .await
                     .map_err(to_janus_error)?
                     .ok_or_else(|| to_janus_error(CopalError::not_found(format!("file {id}"))))?;
                 let (items, next_cursor) = crate::app::list_versions_page(
-                    &state.store,
+                    &store,
                     &tenant,
                     &id,
                     i64::from(args.limit),
@@ -389,13 +432,14 @@ fn dispatcher<B: BlobStore + 'static>(
             let state = deliveries_state.clone();
             async move {
                 let tenant = tenant_of(&ctx)?;
+                let store = store_of(&ctx, &state.store);
                 let delivery_state = args
                     .filters
                     .get("state")
                     .and_then(|v| v.as_str())
                     .map(str::to_owned);
                 let items = crate::webhooks::endpoint_deliveries_page(
-                    &state,
+                    &store,
                     &tenant,
                     &args.parent_id,
                     delivery_state.as_deref(),
@@ -413,12 +457,12 @@ fn dispatcher<B: BlobStore + 'static>(
             let state = events_list_state.clone();
             async move {
                 let tenant = tenant_of(&ctx)?;
+                let store = store_of(&ctx, &state.store);
                 let limit = i64::from(args.limit);
                 let action = args.filters.get("action").and_then(|v| v.as_str());
-                let rows =
-                    copal_store::repo::eventing::list_events(&state.store, &tenant, action, limit)
-                        .await
-                        .map_err(to_janus_error)?;
+                let rows = copal_store::repo::eventing::list_events(&store, &tenant, action, limit)
+                    .await
+                    .map_err(to_janus_error)?;
                 Ok(ListOutput {
                     items: rows.iter().map(wire_event).collect(),
                     // The outbox listing is newest-first and bounded;
@@ -432,18 +476,16 @@ fn dispatcher<B: BlobStore + 'static>(
             let state = events_watch_state.clone();
             async move {
                 let tenant = tenant_of(&ctx)?;
+                let store = store_of(&ctx, &state.store);
                 let action = args
                     .filters
                     .get("action")
                     .and_then(|v| v.as_str())
                     .map(str::to_owned);
-                let rows = copal_store::repo::eventing::watch_events(
-                    &state.store,
-                    &tenant,
-                    action.as_deref(),
-                )
-                .await
-                .map_err(to_janus_error)?;
+                let rows =
+                    copal_store::repo::eventing::watch_events(&store, &tenant, action.as_deref())
+                        .await
+                        .map_err(to_janus_error)?;
                 // The same mapper the list face uses, so a row looks
                 // identical whether it was polled or pushed.
                 Ok(
@@ -457,7 +499,8 @@ fn dispatcher<B: BlobStore + 'static>(
             let state = events_get_state.clone();
             async move {
                 let tenant = tenant_of(&ctx)?;
-                let row = copal_store::repo::eventing::fetch_event(&state.store, &args.id)
+                let store = store_of(&ctx, &state.store);
+                let row = copal_store::repo::eventing::fetch_event(&store, &args.id)
                     .await
                     .map_err(to_janus_error)?
                     .filter(|row| row.tenant_id == tenant.as_str());
@@ -468,6 +511,7 @@ fn dispatcher<B: BlobStore + 'static>(
             let state = runs_list_state.clone();
             async move {
                 let tenant = tenant_of(&ctx)?;
+                let store = store_of(&ctx, &state.store);
                 let ascending = matches!(&args.sort, Some((_, SortDirection::Asc)));
                 let after = args
                     .cursor
@@ -482,7 +526,7 @@ fn dispatcher<B: BlobStore + 'static>(
                     .map(str::to_owned);
                 let limit = i64::from(args.limit);
                 let runs = flow_repo::list_runs(
-                    &state.store,
+                    &store,
                     &tenant,
                     limit,
                     after.as_ref(),
@@ -514,7 +558,8 @@ fn dispatcher<B: BlobStore + 'static>(
             let state = runs_get_state.clone();
             async move {
                 let tenant = tenant_of(&ctx)?;
-                let run = flow_repo::get_run(&state.store, &tenant, &args.id)
+                let store = store_of(&ctx, &state.store);
+                let run = flow_repo::get_run(&store, &tenant, &args.id)
                     .await
                     .map_err(to_janus_error)?;
                 Ok(run.as_ref().map(wire_run))
@@ -712,6 +757,25 @@ async fn execute<B: BlobStore>(
     if let Ok((tenant, identity)) =
         crate::auth::authenticate_with_identity(&gql.app, &headers).await
     {
+        // With engine sessions on, every resolver and every
+        // subscription runs its repository calls on this
+        // caller-bound session. A session that fails to open fails
+        // the request closed, because the deployment asked for the
+        // second layer.
+        match crate::auth::request_store(&gql.app, &tenant, identity.as_ref()).await {
+            Ok(store) => {
+                ctx.insert(store);
+            }
+            Err(error) => {
+                return Json(serde_json::json!({
+                    "errors": [{
+                        "message": error.0.to_string(),
+                        "extensions": { "code": "internal" },
+                    }]
+                }))
+                .into_response();
+            }
+        }
         ctx.insert(Tenant(tenant));
         // In key mode the key's scopes ride as the principal, so the
         // dispatcher can enforce whatever the contract declares. The

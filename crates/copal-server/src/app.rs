@@ -1794,12 +1794,13 @@ async fn issue_upload_grant<B: BlobStore>(
     Path(id): Path<String>,
     Json(request): Json<IssueUploadRequest>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
-    let tenant =
-        crate::auth::authenticate_scoped(&state, &headers, crate::auth::Scope::Write, 1).await?;
+    let auth =
+        crate::auth::authorize_scoped(&state, &headers, crate::auth::Scope::Write, 1).await?;
+    let tenant = &auth.tenant;
     let id = parse_id(&id)?;
     let body = issue_upload_grant_core(
-        &state,
-        &tenant,
+        &auth.store,
+        tenant,
         &id,
         request.ttl_secs,
         forwarded_origin(&headers).as_deref(),
@@ -1810,8 +1811,8 @@ async fn issue_upload_grant<B: BlobStore>(
 
 /// Mint a write capability, the shared core behind the REST handler
 /// and the GraphQL action resolver.
-pub(crate) async fn issue_upload_grant_core<B: BlobStore>(
-    state: &AppState<B>,
+pub(crate) async fn issue_upload_grant_core(
+    store: &Store,
     tenant: &TenantId,
     id: &FileId,
     ttl_secs: u32,
@@ -1823,7 +1824,7 @@ pub(crate) async fn issue_upload_grant_core<B: BlobStore>(
         )
         .into());
     }
-    let record = file_repo::get_file(&state.store, tenant, id)
+    let record = file_repo::get_file(store, tenant, id)
         .await?
         .ok_or_else(|| CopalError::not_found(format!("file {id}")))?;
     if matches!(record.state, FileState::Quarantined | FileState::Deleted) {
@@ -1836,7 +1837,7 @@ pub(crate) async fn issue_upload_grant_core<B: BlobStore>(
 
     let token = GrantToken::mint();
     let grant = grant_repo::issue(
-        &state.store,
+        store,
         tenant,
         id,
         &token.grant_id,
@@ -1850,7 +1851,7 @@ pub(crate) async fn issue_upload_grant_core<B: BlobStore>(
     )
     .await?;
     copal_store::repo::auth::record_audit(
-        &state.store,
+        store,
         tenant,
         tenant.as_str(),
         "grant.upload_issued",
@@ -1990,6 +1991,7 @@ async fn redeem_upload_grant<B: BlobStore>(
 /// the proxy's business. The token appears exactly once, here; the
 /// store keeps only its hash.
 pub(crate) async fn issue_grant_core<B: BlobStore>(
+    store: &Store,
     state: &AppState<B>,
     tenant: &TenantId,
     id: &FileId,
@@ -2006,7 +2008,7 @@ pub(crate) async fn issue_grant_core<B: BlobStore>(
 
     // Only a servable file gets a URL; a draft link would 404 until
     // upload anyway, and issuing it would leak lifecycle state.
-    let record = file_repo::get_file(&state.store, tenant, id)
+    let record = file_repo::get_file(store, tenant, id)
         .await?
         .ok_or_else(|| CopalError::not_found(format!("file {id}")))?;
     if !record.servable_content() {
@@ -2022,7 +2024,7 @@ pub(crate) async fn issue_grant_core<B: BlobStore>(
 
     let token = GrantToken::mint();
     let grant = grant_repo::issue(
-        &state.store,
+        store,
         tenant,
         id,
         &token.grant_id,
@@ -2036,7 +2038,7 @@ pub(crate) async fn issue_grant_core<B: BlobStore>(
     )
     .await?;
     copal_store::repo::auth::record_audit(
-        &state.store,
+        store,
         tenant,
         tenant.as_str(),
         "grant.issued",
@@ -2061,12 +2063,13 @@ async fn issue_grant<B: BlobStore>(
     Path(id): Path<String>,
     Json(request): Json<IssueGrantRequest>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
-    let tenant =
-        crate::auth::authenticate_scoped(&state, &headers, crate::auth::Scope::Read, 1).await?;
+    let auth = crate::auth::authorize_scoped(&state, &headers, crate::auth::Scope::Read, 1).await?;
+    let tenant = &auth.tenant;
     let id = parse_id(&id)?;
     let issued = issue_grant_core(
+        &auth.store,
         &state,
-        &tenant,
+        tenant,
         &id,
         request.ttl_secs,
         request.max_uses,
@@ -2151,12 +2154,13 @@ async fn revoke_grant<B: BlobStore>(
     headers: HeaderMap,
     Path(grant_ref): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    let tenant =
-        crate::auth::authenticate_scoped(&state, &headers, crate::auth::Scope::Write, 1).await?;
-    grant_repo::revoke(&state.store, &tenant, &grant_ref).await?;
+    let auth =
+        crate::auth::authorize_scoped(&state, &headers, crate::auth::Scope::Write, 1).await?;
+    let tenant = &auth.tenant;
+    grant_repo::revoke(&auth.store, tenant, &grant_ref).await?;
     copal_store::repo::auth::record_audit(
-        &state.store,
-        &tenant,
+        &auth.store,
+        tenant,
         tenant.as_str(),
         "grant.revoked",
         &grant_ref,

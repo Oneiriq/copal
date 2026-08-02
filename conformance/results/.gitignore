@@ -1,0 +1,6 @@
+# Per-run evidence: written on every run, read when a check fails,
+# never committed. The rendered table beside them is the artifact.
+*.txt
+*.json
+*.log
+!.gitignore

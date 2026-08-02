@@ -1,0 +1,4 @@
+# Per-run samples: written on every run, reduced into the table,
+# never committed. The rendered envelope beside them is the artifact.
+*.txt
+!.gitignore

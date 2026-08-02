@@ -180,6 +180,16 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ### Deployment
 
+- **A performance envelope.** `bench/run.sh` stands the stack up
+  twice, with caller-bound engine sessions off and on, and takes the
+  same measurements through the S3 gateway both times, so the cost of
+  the second enforcement layer is a column rather than a guess.
+  Timings are the best of three with the spread beside them, because
+  on a single node the two configurations differ by less than the
+  machine's own noise, and the table says so rather than implying a
+  precision it does not have. Results commit per release under
+  `bench/results/`.
+
 - **A backup and restore procedure.** Two stores need an order, and
   the order follows from the storage model: content is written to a
   staging name and renamed onto its digest, so blobs are append-only

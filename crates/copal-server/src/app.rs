@@ -162,6 +162,9 @@ pub struct AppState<B: BlobStore> {
     /// be watched before it is trusted; boot refuses `on` without the
     /// access key.
     pub engine_sessions: bool,
+    /// Open caller sessions, reused across requests by the identity
+    /// that minted them.
+    pub sessions: std::sync::Arc<crate::session_cache::SessionCache>,
 }
 
 impl<B: BlobStore> AppState<B> {
@@ -183,7 +186,15 @@ impl<B: BlobStore> AppState<B> {
             persisted_operations: None,
             engine_access: None,
             engine_sessions: false,
+            sessions: std::sync::Arc::new(crate::session_cache::SessionCache::default()),
         }
+    }
+
+    /// Install the caller-session cache.
+    pub fn with_session_cache(mut self, ttl_secs: u64, capacity: usize) -> Self {
+        self.sessions =
+            std::sync::Arc::new(crate::session_cache::SessionCache::new(ttl_secs, capacity));
+        self
     }
 
     /// Turn caller-bound engine sessions on for request handlers.

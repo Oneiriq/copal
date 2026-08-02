@@ -262,8 +262,14 @@ pub(crate) async fn request_store<B: BlobStore>(
             KEY_SCOPES.iter().map(|s| (*s).to_owned()).collect(),
         ),
     };
+    let cache_key = crate::session_cache::SessionCache::key(tenant.as_str(), key_id, &scopes);
+    if let Some(store) = state.sessions.get(&cache_key) {
+        return Ok(store);
+    }
     let token = crate::engine::mint_caller_token(access, tenant, key_id, &scopes);
-    state.store.caller(&token).await.map_err(ApiError::from)
+    let store = state.store.caller(&token).await.map_err(ApiError::from)?;
+    state.sessions.put(cache_key, store.clone());
+    Ok(store)
 }
 
 /// [`authenticate_scoped`], keeping the identity, for handlers that

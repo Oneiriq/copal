@@ -136,8 +136,11 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
   end: a non-admin key lists version history with `created_by`
   removed by the engine before projection, an admin key sees it, and
   wire shapes match the service-session face exactly. Off by
-  default; the remaining handlers, the GraphQL resolvers, and the S3
-  gateway adopt next.
+  default. The sweep then reached every handler with direct
+  tenant-scoped store access: search, text, usage, renditions and
+  run listings, version downloads, and the tus trio. Content
+  uploads, the public download path, and the flow engine stay on the
+  service store by architecture, with the reasons on the roadmap.
 
 - **The engine is now a second enforcement layer.** Every table
   carries `PERMISSIONS` by a mechanical rule: tables with a

@@ -601,6 +601,32 @@ async fn engine_sessions_serve_the_files_face() {
     let row = json_body(response).await["items"][0].clone();
     assert!(row["created_by"].is_string(), "{row:#?}");
 
+    // The swept read surfaces answer under caller sessions too:
+    // usage accounting, the empty search, and a version's bytes.
+    let response = router
+        .clone()
+        .oneshot(rest("GET", "/v1/usage", &worker, None))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let response = router
+        .clone()
+        .oneshot(rest("GET", "/v1/search?q=session", &worker, None))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let response = router
+        .clone()
+        .oneshot(rest(
+            "GET",
+            &format!("/v1/files/{id}/versions/1/content"),
+            &worker,
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
     let response = router
         .clone()
         .oneshot(rest("DELETE", &format!("/v1/files/{id}"), &worker, None))

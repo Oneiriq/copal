@@ -641,9 +641,10 @@ async fn search_text<B: BlobStore>(
     axum::extract::Query(params): axum::extract::Query<SearchQuery>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let limit = params.limit.unwrap_or(20).clamp(1, 100);
-    let tenant =
-        crate::auth::authenticate_scoped(&state, &headers, crate::auth::Scope::Read, limit as u64)
+    let auth =
+        crate::auth::authorize_scoped(&state, &headers, crate::auth::Scope::Read, limit as u64)
             .await?;
+    let tenant = &auth.tenant;
     let requested = params.mode.as_deref().unwrap_or("hybrid");
     // Semantic modes need an embedding service; without one, asking
     // for meaning gets words rather than an error, and the response
@@ -664,7 +665,7 @@ async fn search_text<B: BlobStore>(
     };
 
     let lexical = if mode != "semantic" {
-        copal_store::repo::text::search(&state.store, &tenant, &params.q, limit).await?
+        copal_store::repo::text::search(&auth.store, tenant, &params.q, limit).await?
     } else {
         Vec::new()
     };
@@ -674,8 +675,8 @@ async fn search_text<B: BlobStore>(
         let (addr, model) = state.embedding.clone().expect("checked above");
         let vector = crate::embed::embed(&addr, &model, &params.q).await?;
         copal_store::repo::text::semantic_search(
-            &state.store,
-            &tenant,
+            &auth.store,
+            tenant,
             &vector,
             limit,
             state.limits.max_semantic_distance,
@@ -730,10 +731,10 @@ async fn file_text<B: BlobStore>(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let tenant =
-        crate::auth::authenticate_scoped(&state, &headers, crate::auth::Scope::Read, 1).await?;
+    let auth = crate::auth::authorize_scoped(&state, &headers, crate::auth::Scope::Read, 1).await?;
+    let tenant = &auth.tenant;
     let id = parse_id(&id)?;
-    let row = copal_store::repo::text::get_text(&state.store, &tenant, &id)
+    let row = copal_store::repo::text::get_text(&auth.store, tenant, &id)
         .await?
         .ok_or_else(|| CopalError::not_found(format!("no extracted text for file {id}")))?;
     Ok(Json(json!({
@@ -751,14 +752,13 @@ async fn tenant_usage<B: BlobStore>(
     State(state): State<AppState<B>>,
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let tenant =
-        crate::auth::authenticate_scoped(&state, &headers, crate::auth::Scope::Read, 1).await?;
-    let (bytes, files) =
-        match copal_store::repo::tenant::cached_usage(&state.store, &tenant).await? {
-            Some(cached) => cached,
-            None => copal_store::repo::tenant::reconcile_usage(&state.store, &tenant).await?,
-        };
-    let quota = copal_store::repo::tenant::get_quota(&state.store, &tenant).await?;
+    let auth = crate::auth::authorize_scoped(&state, &headers, crate::auth::Scope::Read, 1).await?;
+    let tenant = &auth.tenant;
+    let (bytes, files) = match copal_store::repo::tenant::cached_usage(&auth.store, tenant).await? {
+        Some(cached) => cached,
+        None => copal_store::repo::tenant::reconcile_usage(&auth.store, tenant).await?,
+    };
+    let quota = copal_store::repo::tenant::get_quota(&auth.store, tenant).await?;
     Ok(Json(json!({
         "bytes": bytes,
         "files": files,
@@ -1427,10 +1427,10 @@ async fn list_renditions<B: BlobStore>(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let tenant =
-        crate::auth::authenticate_scoped(&state, &headers, crate::auth::Scope::Read, 1).await?;
+    let auth = crate::auth::authorize_scoped(&state, &headers, crate::auth::Scope::Read, 1).await?;
+    let tenant = &auth.tenant;
     let id = parse_id(&id)?;
-    let rows = file_repo::list_renditions(&state.store, &tenant, &id).await?;
+    let rows = file_repo::list_renditions(&auth.store, tenant, &id).await?;
     let items: Vec<_> = rows.iter().map(crate::wire::wire_file).collect();
     Ok(Json(json!({ "items": items })))
 }
@@ -2263,17 +2263,17 @@ async fn download_version<B: BlobStore>(
     headers: HeaderMap,
     Path((id, number)): Path<(String, u64)>,
 ) -> Result<Response, ApiError> {
-    let tenant =
-        crate::auth::authenticate_scoped(&state, &headers, crate::auth::Scope::Read, 1).await?;
+    let auth = crate::auth::authorize_scoped(&state, &headers, crate::auth::Scope::Read, 1).await?;
+    let tenant = &auth.tenant;
     let id = parse_id(&id)?;
-    let record = file_repo::get_file(&state.store, &tenant, &id)
+    let record = file_repo::get_file(&auth.store, tenant, &id)
         .await?
         .ok_or_else(|| CopalError::not_found(format!("file {id}")))?;
     // Quarantine blocks the whole record, history included.
     if record.state == FileState::Quarantined {
         return Err(CopalError::conflict("file is quarantined").into());
     }
-    let version = version_repo::get_version(&state.store, &tenant, &id, number)
+    let version = version_repo::get_version(&auth.store, tenant, &id, number)
         .await?
         .ok_or_else(|| CopalError::not_found(format!("version {number} of file {id}")))?;
     // Grant-only files serve bytes exclusively through issued URLs,
@@ -2509,9 +2509,10 @@ async fn list_runs<B: BlobStore>(
     axum::extract::Query(params): axum::extract::Query<RunListQuery>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let limit = params.limit.unwrap_or(100).clamp(1, 100);
-    let tenant =
-        crate::auth::authenticate_scoped(&state, &headers, crate::auth::Scope::Read, limit as u64)
+    let auth =
+        crate::auth::authorize_scoped(&state, &headers, crate::auth::Scope::Read, limit as u64)
             .await?;
+    let tenant = &auth.tenant;
     if let Some(status) = params.status.as_deref() {
         if !RUN_STATUSES.contains(&status) {
             return Err(CopalError::validation(format!("unknown status {status:?}")).into());
@@ -2530,8 +2531,8 @@ async fn list_runs<B: BlobStore>(
         .map(|raw| decode_run_cursor(raw, ascending))
         .transpose()?;
     let runs = flow_repo::list_runs(
-        &state.store,
-        &tenant,
+        &auth.store,
+        tenant,
         limit,
         after.as_ref(),
         ascending,

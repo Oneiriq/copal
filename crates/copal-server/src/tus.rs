@@ -118,15 +118,16 @@ async fn create_session<B: BlobStore>(
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     require_version(&headers)?;
-    let tenant =
-        crate::auth::authenticate_scoped(&state, &headers, crate::auth::Scope::Write, 1).await?;
+    let auth =
+        crate::auth::authorize_scoped(&state, &headers, crate::auth::Scope::Write, 1).await?;
+    let tenant = &auth.tenant;
 
     let upload_length: u64 = headers
         .get("upload-length")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.parse().ok())
         .ok_or_else(|| CopalError::validation("Upload-Length is required"))?;
-    state.quota_headroom(&tenant, Some(upload_length)).await?;
+    state.quota_headroom(tenant, Some(upload_length)).await?;
     if upload_length as usize > state.limits.max_upload_bytes {
         return Err(CopalError::PayloadTooLarge(format!(
             "upload exceeds {} bytes",
@@ -158,11 +159,11 @@ async fn create_session<B: BlobStore>(
 
     // The file exists and is claimed for the whole session, so a rival
     // single-PUT upload loses its CAS instead of interleaving.
-    let created = file_repo::create_file(&state.store, &tenant, &spec, "tus").await?;
+    let created = file_repo::create_file(&auth.store, tenant, &spec, "tus").await?;
     let file_id = created.record.id.clone();
     file_repo::claim_upload(
-        &state.store,
-        &tenant,
+        &auth.store,
+        tenant,
         &file_id,
         &state.instance_id,
         state.limits.tus_session_ttl_secs,
@@ -171,7 +172,7 @@ async fn create_session<B: BlobStore>(
 
     let staging_key = format!("tus/{}", ulid::Ulid::new().to_string().to_ascii_lowercase());
     let session_id =
-        tus_repo::create_session(&state.store, &tenant, &file_id, upload_length, &staging_key)
+        tus_repo::create_session(&auth.store, tenant, &file_id, upload_length, &staging_key)
             .await?;
 
     let mut response = StatusCode::CREATED.into_response();
@@ -193,9 +194,10 @@ async fn session_status<B: BlobStore>(
     Path(id): Path<String>,
 ) -> Result<Response, ApiError> {
     require_version(&headers)?;
-    let tenant =
-        crate::auth::authenticate_scoped(&state, &headers, crate::auth::Scope::Write, 1).await?;
-    let session = tus_repo::fetch(&state.store, &tenant, &id)
+    let auth =
+        crate::auth::authorize_scoped(&state, &headers, crate::auth::Scope::Write, 1).await?;
+    let tenant = &auth.tenant;
+    let session = tus_repo::fetch(&auth.store, tenant, &id)
         .await?
         .ok_or_else(|| CopalError::not_found(format!("upload {id}")))?;
 
@@ -359,17 +361,18 @@ async fn terminate<B: BlobStore>(
     Path(id): Path<String>,
 ) -> Result<Response, ApiError> {
     require_version(&headers)?;
-    let tenant =
-        crate::auth::authenticate_scoped(&state, &headers, crate::auth::Scope::Write, 1).await?;
-    let session = tus_repo::fetch(&state.store, &tenant, &id)
+    let auth =
+        crate::auth::authorize_scoped(&state, &headers, crate::auth::Scope::Write, 1).await?;
+    let tenant = &auth.tenant;
+    let session = tus_repo::fetch(&auth.store, tenant, &id)
         .await?
         .ok_or_else(|| CopalError::not_found(format!("upload {id}")))?;
 
     state.blobs.discard_staged(&session.staging_key).await?;
     if let Ok(file_id) = session.file_id() {
         let _ = file_repo::transition(
-            &state.store,
-            &tenant,
+            &auth.store,
+            tenant,
             &file_id,
             FileState::Uploading,
             FileState::Failed,
@@ -378,9 +381,9 @@ async fn terminate<B: BlobStore>(
         .await;
     }
     state
-        .abandon_reservation(&tenant, Some(session.upload_length))
+        .abandon_reservation(tenant, Some(session.upload_length))
         .await;
-    tus_repo::delete_session(&state.store, &id).await?;
+    tus_repo::delete_session(&auth.store, &id).await?;
 
     let mut response = StatusCode::NO_CONTENT.into_response();
     tus_headers(&mut response);

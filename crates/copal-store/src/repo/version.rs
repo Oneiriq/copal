@@ -346,3 +346,34 @@ async fn version_rid(
         .map_err(|e| map_store_err("version_rid", e))?;
     Ok(rid.to_string())
 }
+
+/// Remove erasable history beyond the newest `keep` versions of one
+/// file. Holds and unexpired clocks survive any setting, and the
+/// current version always survives because `keep >= 1`. Returns how
+/// many rows went; their bytes follow through the ordinary GC.
+pub async fn prune_erasable(
+    store: &Store,
+    tenant: &TenantId,
+    file: &FileId,
+    keep: u32,
+    newest_number: u64,
+) -> copal_core::Result<u64> {
+    let file_rid =
+        RecordID::<()>::new("file", file.as_str()).map_err(|e| map_store_err("prune", e))?;
+    let cutoff = newest_number.saturating_sub(u64::from(keep.max(1)));
+    if cutoff == 0 {
+        return Ok(0);
+    }
+    let query = Query::new()
+        .delete(TABLE)
+        .map_err(|e| map_store_err("prune", e))?
+        .where_(eq("tenant_id", tenant.as_str()))
+        .where_str(format!("file = {file_rid}"))
+        .where_str(format!("number <= {cutoff}"))
+        .where_str("legal_hold != true AND (retain_until IS NONE OR retain_until < time::now())")
+        .return_format(surql::query::helpers::ReturnFormat::Before);
+    let rows: Vec<serde_json::Value> = query_records(store.client(), &query)
+        .await
+        .map_err(|e| map_store_err("prune", e))?;
+    Ok(rows.len() as u64)
+}

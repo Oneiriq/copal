@@ -380,3 +380,98 @@ pub async fn tenants_with_usage(store: &Store, limit: i64) -> copal_core::Result
         .map(str::to_owned)
         .collect())
 }
+
+/// A tenant's default retention for new versions.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+pub struct RetentionPolicy {
+    pub seconds: Option<u64>,
+    pub mode: Option<String>,
+    pub keep_last: Option<u32>,
+}
+
+/// The retention policy for new versions, when one is set.
+pub async fn get_retention_policy(
+    store: &Store,
+    tenant: &TenantId,
+) -> copal_core::Result<Option<RetentionPolicy>> {
+    let query = Query::new()
+        .select(None)
+        .from_table("tenant_retention")
+        .map_err(|e| map_store_err("retention_policy", e))?
+        .where_(eq("tenant_id", tenant.as_str()));
+    let rows: Vec<RetentionPolicy> = query_records(store.client(), &query)
+        .await
+        .map_err(|e| map_store_err("retention_policy", e))?;
+    Ok(rows.into_iter().next())
+}
+
+/// Set the tenant's retention policy, replacing any prior one.
+pub async fn set_retention_policy(
+    store: &Store,
+    tenant: &TenantId,
+    policy: &RetentionPolicy,
+) -> copal_core::Result<()> {
+    clear_retention_policy(store, tenant).await?;
+    let id = ulid::Ulid::new().to_string().to_ascii_lowercase();
+    let rid = RecordID::<()>::new("tenant_retention", id.as_str())
+        .map_err(|e| map_store_err("retention_policy", e))?;
+    // Absent keys rather than JSON nulls: the engine's option<T>
+    // accepts NONE, and a null is NULL, which it refuses.
+    let mut payload = serde_json::Map::new();
+    payload.insert(
+        "tenant_id".to_owned(),
+        serde_json::Value::from(tenant.as_str()),
+    );
+    if let Some(seconds) = policy.seconds {
+        payload.insert("seconds".to_owned(), serde_json::Value::from(seconds));
+    }
+    if let Some(mode) = &policy.mode {
+        payload.insert("mode".to_owned(), serde_json::Value::from(mode.as_str()));
+    }
+    if let Some(keep) = policy.keep_last {
+        payload.insert("keep_last".to_owned(), serde_json::Value::from(keep));
+    }
+    let payload = serde_json::Value::Object(payload);
+    create_record(store.client(), &rid.to_string(), payload)
+        .await
+        .map_err(|e| map_store_err("retention_policy", e))?;
+    Ok(())
+}
+
+/// Remove the tenant's retention policy. Versions already stamped
+/// keep their clocks.
+pub async fn clear_retention_policy(store: &Store, tenant: &TenantId) -> copal_core::Result<()> {
+    let query = Query::new()
+        .delete("tenant_retention")
+        .map_err(|e| map_store_err("retention_policy", e))?
+        .where_(eq("tenant_id", tenant.as_str()));
+    query_records::<serde_json::Value>(store.client(), &query)
+        .await
+        .map_err(|e| map_store_err("retention_policy", e))?;
+    Ok(())
+}
+
+/// Bytes this tenant cannot release: the sum over versions a hold or
+/// an unexpired clock keeps. Computed live; the retained set is small
+/// beside the file count, and an advisory figure that lags would
+/// defeat its purpose, which is telling "full" apart from "full of
+/// things I may not remove".
+pub async fn retained_bytes(store: &Store, tenant: &TenantId) -> copal_core::Result<i64> {
+    let query = Query::new()
+        .select(Some(vec!["math::sum(size_bytes) AS retained".to_owned()]))
+        .from_table("file_version")
+        .map_err(|e| map_store_err("retained_bytes", e))?
+        .where_(eq("tenant_id", tenant.as_str()))
+        .where_str(
+            "(legal_hold = true OR (retain_until IS NOT NONE AND retain_until > time::now()))",
+        )
+        .group_all();
+    let rows: Vec<serde_json::Value> = query_records(store.client(), &query)
+        .await
+        .map_err(|e| map_store_err("retained_bytes", e))?;
+    Ok(rows
+        .first()
+        .and_then(|r| r.get("retained"))
+        .and_then(serde_json::Value::as_i64)
+        .unwrap_or(0))
+}

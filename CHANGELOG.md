@@ -210,6 +210,17 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ### Governance
 
+- **Retention completes: policy, pruning, the engine clause, and the
+  ledger line.** A tenant default stamps every new version at
+  creation, computed once and never recomputed, so a policy change
+  cannot shorten what exists. `keep_last` prunes erasable history
+  beyond a depth, and only erasable history: holds and unexpired
+  clocks survive any setting. The compiled `PERMISSIONS` delete
+  clause on versions refuses while anything binds the row, so a
+  request-path bug meets a second refusal. Retained bytes ride
+  beside usage, so a full tenant can see how much of the total is
+  bound.
+
 - **The retention admin surface, with the WORM authority line.**
   Retention and holds are set on the admin listener, and compliance
   mode refuses shortening, clearing, and downgrading until its clock

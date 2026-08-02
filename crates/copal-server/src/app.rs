@@ -565,6 +565,12 @@ pub fn admin_router<B: BlobStore + 'static>(state: AppState<B>) -> Router {
         )
         .route("/v1/admin/tenants/{tenant}/audit", get(list_audit::<B>))
         .route(
+            "/v1/admin/tenants/{tenant}/retention",
+            put(set_retention_policy::<B>)
+                .get(get_retention_policy::<B>)
+                .delete(clear_retention_policy::<B>),
+        )
+        .route(
             "/v1/admin/tenants/{tenant}/files/{file}/versions/{number}/retention",
             put(set_version_retention::<B>).delete(clear_version_retention::<B>),
         )
@@ -807,9 +813,13 @@ async fn tenant_usage<B: BlobStore>(
         None => copal_store::repo::tenant::reconcile_usage(&auth.store, tenant).await?,
     };
     let quota = copal_store::repo::tenant::get_quota(&auth.store, tenant).await?;
+    // Retained bytes ride beside the total so a tenant can tell
+    // "full" apart from "full of things I may not remove".
+    let retained = copal_store::repo::tenant::retained_bytes(&auth.store, tenant).await?;
     Ok(Json(json!({
         "bytes": bytes,
         "files": files,
+        "retained_bytes": retained,
         "quota_bytes": quota,
     })))
 }
@@ -841,6 +851,105 @@ async fn set_quota<B: BlobStore>(
     )
     .await?;
     Ok(Json(json!({ "max_bytes": request.max_bytes })))
+}
+
+#[derive(serde::Deserialize)]
+struct RetentionPolicyRequest {
+    #[serde(default)]
+    seconds: Option<u64>,
+    #[serde(default)]
+    mode: Option<String>,
+    #[serde(default)]
+    keep_last: Option<u32>,
+}
+
+/// Set the tenant's default retention: a clock and mode stamped onto
+/// every new version, a history depth pruned to, or both.
+async fn set_retention_policy<B: BlobStore>(
+    State(state): State<AppState<B>>,
+    headers: HeaderMap,
+    Path(tenant): Path<String>,
+    Json(request): Json<RetentionPolicyRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    crate::auth::require_admin(&state, &headers)?;
+    let tenant = TenantId::parse(&tenant)?;
+    if request.seconds.is_none() && request.keep_last.is_none() {
+        return Err(CopalError::validation("a policy needs seconds, keep_last, or both").into());
+    }
+    if let Some(mode) = request.mode.as_deref() {
+        if mode != "governance" && mode != "compliance" {
+            return Err(CopalError::validation("mode must be governance or compliance").into());
+        }
+    }
+    if request.keep_last == Some(0) {
+        return Err(CopalError::validation("keep_last must be at least 1").into());
+    }
+    let policy = copal_store::repo::tenant::RetentionPolicy {
+        seconds: request.seconds,
+        mode: request.mode.clone(),
+        keep_last: request.keep_last,
+    };
+    copal_store::repo::tenant::set_retention_policy(&state.store, &tenant, &policy).await?;
+    copal_store::repo::auth::record_audit(
+        &state.store,
+        &tenant,
+        "admin",
+        "tenant.retention_policy_set",
+        tenant.as_str(),
+        forwarded_origin(&headers).as_deref(),
+        Some(json!({
+            "seconds": request.seconds,
+            "mode": request.mode,
+            "keep_last": request.keep_last,
+        })),
+    )
+    .await?;
+    Ok(Json(json!({
+        "seconds": request.seconds,
+        "mode": request.mode,
+        "keep_last": request.keep_last,
+    })))
+}
+
+async fn get_retention_policy<B: BlobStore>(
+    State(state): State<AppState<B>>,
+    headers: HeaderMap,
+    Path(tenant): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    crate::auth::require_admin(&state, &headers)?;
+    let tenant = TenantId::parse(&tenant)?;
+    let policy = copal_store::repo::tenant::get_retention_policy(&state.store, &tenant).await?;
+    match policy {
+        Some(policy) => Ok(Json(json!({
+            "seconds": policy.seconds,
+            "mode": policy.mode,
+            "keep_last": policy.keep_last,
+        }))),
+        None => Err(CopalError::not_found("no retention policy").into()),
+    }
+}
+
+/// Remove the default. Versions already stamped keep their clocks,
+/// because the stamp is never recomputed.
+async fn clear_retention_policy<B: BlobStore>(
+    State(state): State<AppState<B>>,
+    headers: HeaderMap,
+    Path(tenant): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    crate::auth::require_admin(&state, &headers)?;
+    let tenant = TenantId::parse(&tenant)?;
+    copal_store::repo::tenant::clear_retention_policy(&state.store, &tenant).await?;
+    copal_store::repo::auth::record_audit(
+        &state.store,
+        &tenant,
+        "admin",
+        "tenant.retention_policy_cleared",
+        tenant.as_str(),
+        forwarded_origin(&headers).as_deref(),
+        None,
+    )
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(serde::Deserialize)]
@@ -1012,8 +1121,10 @@ async fn get_quota<B: BlobStore>(
     let tenant = TenantId::parse(&tenant)?;
     let quota = copal_store::repo::tenant::get_quota(&state.store, &tenant).await?;
     let (bytes, files) = copal_store::repo::tenant::usage(&state.store, &tenant).await?;
+    let retained = copal_store::repo::tenant::retained_bytes(&state.store, &tenant).await?;
     Ok(Json(json!({
         "max_bytes": quota,
+        "retained_bytes": retained,
         "bytes": bytes,
         "files": files,
     })))

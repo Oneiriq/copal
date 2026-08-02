@@ -375,3 +375,158 @@ async fn holds_carry_their_reasons_into_audit() {
     assert!(trail.contains("version.hold_released"), "{trail}");
     assert!(trail.contains("case 2026-cv-1138"), "{trail}");
 }
+
+/// A tenant policy stamps every new version at creation, proven at
+/// the eraser: the stamped clock carries bytes through deletion with
+/// nobody having touched the version directly, and clearing the
+/// policy afterward changes nothing already stamped.
+#[tokio::test]
+async fn tenant_policy_stamps_new_versions() {
+    let (router, admin, store, blobs, dir) = admin_stack().await;
+    let response = admin
+        .clone()
+        .oneshot(admin_req(
+            "PUT",
+            "/v1/admin/tenants/acme/retention",
+            Some(json!({ "seconds": 3600 })),
+        ))
+        .await
+        .unwrap();
+    let status = response.status();
+    let body = json_body(response).await;
+    assert_eq!(status, StatusCode::OK, "{body:#?}");
+
+    let payload = b"stamped by policy";
+    let (_tenant, file, digest) = deleted_file_with_version(&router, payload).await;
+
+    // Clearing the policy must not unstamp what exists.
+    let response = admin
+        .clone()
+        .oneshot(admin_req(
+            "DELETE",
+            "/v1/admin/tenants/acme/retention",
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    delete_file(&router, &file).await;
+    assert_eq!(sweep_twice(&store, &blobs).await, 0, "the stamp binds");
+    let object = dir.path().join("objects").join(digest.storage_key());
+    assert!(object.exists());
+
+    // Governance stamp: the admin clears it, and collection follows.
+    let retention = format!("/v1/admin/tenants/acme/files/{file}/versions/1/retention");
+    let response = admin
+        .clone()
+        .oneshot(admin_req("DELETE", &retention, None))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(sweep_twice(&store, &blobs).await, 1);
+}
+
+/// keep_last prunes erasable history and only erasable history: a
+/// held early version survives any depth setting.
+#[tokio::test]
+async fn pruning_keeps_history_depth_and_respects_holds() {
+    let (router, admin, store, _blobs, _dir) = admin_stack().await;
+    let response = admin
+        .clone()
+        .oneshot(admin_req(
+            "PUT",
+            "/v1/admin/tenants/acme/retention",
+            Some(json!({ "keep_last": 2 })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let create = req(
+        "POST",
+        "/v1/files",
+        Body::from(json!({"path": "pruned.txt"}).to_string()),
+    );
+    let response = router.clone().oneshot(create).await.unwrap();
+    let id = json_body(response).await["id"].as_str().unwrap().to_owned();
+    let tenant = copal_core::TenantId::parse("acme").unwrap();
+    let file = copal_core::FileId::parse(&id).unwrap();
+
+    for content in [b"one".as_slice(), b"two", b"three"] {
+        let upload = req(
+            "PUT",
+            &format!("/v1/files/{id}/content"),
+            Body::from(content.to_vec()),
+        );
+        let response = router.clone().oneshot(upload).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+    // Hold version 2, then push two more versions past the depth.
+    copal_store::repo::version::set_legal_hold(&store, &tenant, &file, 2, true)
+        .await
+        .unwrap();
+    for content in [b"four".as_slice(), b"five"] {
+        let upload = req(
+            "PUT",
+            &format!("/v1/files/{id}/content"),
+            Body::from(content.to_vec()),
+        );
+        let response = router.clone().oneshot(upload).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    let response = router
+        .clone()
+        .oneshot(req(
+            "GET",
+            &format!("/v1/files/{id}/versions?limit=50"),
+            Body::empty(),
+        ))
+        .await
+        .unwrap();
+    let body = json_body(response).await;
+    let numbers: Vec<i64> = body["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v["number"].as_i64().unwrap())
+        .collect();
+    assert!(numbers.contains(&5) && numbers.contains(&4), "{numbers:?}");
+    assert!(
+        numbers.contains(&2),
+        "the held version survives: {numbers:?}"
+    );
+    assert!(
+        !numbers.contains(&1) && !numbers.contains(&3),
+        "erasable history beyond the depth goes: {numbers:?}",
+    );
+}
+
+/// Retained bytes appear beside the total, so a tenant can tell
+/// "full" apart from "full of things I may not remove".
+#[tokio::test]
+async fn retained_bytes_ride_beside_usage() {
+    let (router, _admin, store, _blobs, _dir) = admin_stack().await;
+    let payload = b"sixteen fat bytes";
+    let (tenant, file, _digest) = deleted_file_with_version(&router, payload).await;
+
+    let response = router
+        .clone()
+        .oneshot(req("GET", "/v1/usage", Body::empty()))
+        .await
+        .unwrap();
+    let body = json_body(response).await;
+    assert_eq!(body["retained_bytes"], 0, "{body:#?}");
+
+    copal_store::repo::version::set_legal_hold(&store, &tenant, &file, 1, true)
+        .await
+        .unwrap();
+    let response = router
+        .clone()
+        .oneshot(req("GET", "/v1/usage", Body::empty()))
+        .await
+        .unwrap();
+    let body = json_body(response).await;
+    assert_eq!(body["retained_bytes"], payload.len() as i64, "{body:#?}");
+}

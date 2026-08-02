@@ -295,6 +295,21 @@ PUT    /v1/admin/tenants/{tenant}/files/{id}/versions/{n}/hold        body: { "r
 DELETE /v1/admin/tenants/{tenant}/files/{id}/versions/{n}/hold        body: { "reason": "case closed" }
 ```
 
+A tenant default stamps every new version at creation and prunes
+history:
+
+```
+PUT    /v1/admin/tenants/{tenant}/retention   body: { "seconds": 31536000, "mode": "governance", "keep_last": 10 }
+GET    /v1/admin/tenants/{tenant}/retention
+DELETE /v1/admin/tenants/{tenant}/retention
+```
+
+The stamped value is computed at creation and never recomputed, so a
+policy change cannot shorten what already exists. `keep_last` prunes
+only erasable history: holds and unexpired clocks survive any depth.
+Retained bytes appear beside usage on `/v1/usage` and the admin quota
+view, so a full tenant can see how much of the total is bound.
+
 `mode` is `governance` (the default) or `compliance`. A compliance
 clock only extends: shortening, clearing, or downgrading it refuses
 with 409 until it expires, for admins too, which is the authority

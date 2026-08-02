@@ -70,6 +70,16 @@ pub fn engine_policy() -> copal_core::Result<copal_store::schema::EnginePolicy> 
             add_guards(&sub.table, &sub.fields)?;
         }
     }
+    // Retention is enforceable policy the contract cannot declare
+    // yet, so it is stated here explicitly rather than derived: a
+    // caller session may delete a version row only when nothing
+    // binds it. The service store bypasses this, and version pruning
+    // runs there; the clause exists so a request-path bug that
+    // reaches version deletion meets a second refusal.
+    policy.delete_conjuncts.push((
+        "file_version".to_owned(),
+        "legal_hold != true AND (retain_until IS NONE OR retain_until < time::now())".to_owned(),
+    ));
     for resource in &contract.resources {
         if resource.reads_require.is_empty() {
             continue;

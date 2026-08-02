@@ -39,6 +39,10 @@ pub struct EnginePolicy {
     /// `(table, conjunct)`: appended to the table's select clause,
     /// for contract-backed tables whose reads require a scope.
     pub select_conjuncts: Vec<(String, String)>,
+    /// `(table, conjunct)`: appended to the table's delete clause.
+    /// Retention rides here: the contract cannot declare it yet, so
+    /// the server states it explicitly when deriving the policy.
+    pub delete_conjuncts: Vec<(String, String)>,
 }
 
 /// Every table in the Copal control plane, in application order,
@@ -88,9 +92,22 @@ fn with_engine_permissions(mut table: TableDefinition, policy: &EnginePolicy) ->
         "false".to_owned()
     };
     let write_rule = if tenant_scoped {
-        "tenant_id = $token.tn"
+        "tenant_id = $token.tn".to_owned()
     } else {
-        "false"
+        "false".to_owned()
+    };
+    let delete_rule = if tenant_scoped {
+        let conjunct = policy
+            .delete_conjuncts
+            .iter()
+            .find(|(name, _)| *name == table.name)
+            .map(|(_, clause)| clause.as_str());
+        match conjunct {
+            Some(clause) => format!("tenant_id = $token.tn AND {clause}"),
+            None => "tenant_id = $token.tn".to_owned(),
+        }
+    } else {
+        "false".to_owned()
     };
     for field in &mut table.fields {
         let guard = policy
@@ -103,7 +120,8 @@ fn with_engine_permissions(mut table: TableDefinition, policy: &EnginePolicy) ->
     }
     table.with_permissions([
         ("select", select_rule.as_str()),
-        ("create, update, delete", write_rule),
+        ("create, update", write_rule.as_str()),
+        ("delete", delete_rule.as_str()),
     ])
 }
 
@@ -239,6 +257,7 @@ mod tests {
                 "$token.adm = true".to_owned(),
             )],
             select_conjuncts: vec![("file".to_owned(), "$token.sc CONTAINS 'read'".to_owned())],
+            delete_conjuncts: vec![],
         };
         let tables = tables_with_policy(&policy);
         let version = tables.iter().find(|t| t.name == "file_version").unwrap();
@@ -254,14 +273,26 @@ mod tests {
         let file = tables.iter().find(|t| t.name == "file").unwrap();
         let select = file.permissions.as_ref().unwrap().get("select").unwrap();
         assert!(select.contains("AND $token.sc CONTAINS 'read'"), "{select}");
-        // Writes never gain read conjuncts.
+        // Writes never gain read conjuncts, and a delete conjunct
+        // reaches only the table that declares it.
         let writes = file
             .permissions
             .as_ref()
             .unwrap()
-            .get("create, update, delete")
+            .get("create, update")
             .unwrap();
         assert_eq!(writes, "tenant_id = $token.tn");
+        let deletes = file.permissions.as_ref().unwrap().get("delete").unwrap();
+        assert_eq!(deletes, "tenant_id = $token.tn");
+
+        let with_delete = EnginePolicy {
+            delete_conjuncts: vec![("file".to_owned(), "legal_hold != true".to_owned())],
+            ..EnginePolicy::default()
+        };
+        let tables = tables_with_policy(&with_delete);
+        let file = tables.iter().find(|t| t.name == "file").unwrap();
+        let deletes = file.permissions.as_ref().unwrap().get("delete").unwrap();
+        assert_eq!(deletes, "tenant_id = $token.tn AND legal_hold != true");
     }
 
     #[test]

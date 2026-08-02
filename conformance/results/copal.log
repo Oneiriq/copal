@@ -1,0 +1,7 @@
+copal-1  | [2m2026-08-02T08:41:34.298248Z[0m [32m INFO[0m [2mcopal_server[0m[2m:[0m starting copal [3mbind[0m[2m=[0m0.0.0.0:8080 [3mdb[0m[2m=[0mws://surrealdb:8000
+copal-1  | [2m2026-08-02T08:41:35.344008Z[0m [32m INFO[0m [2mcopal_store::store[0m[2m:[0m bringing the database up to the code's schema [3mstatements[0m[2m=[0m242
+copal-1  | [2m2026-08-02T08:41:35.366463Z[0m [33m WARN[0m [2mcopal_server[0m[2m:[0m auth mode is TRUSTED HEADER (x-copal-tenant): development only; set COPAL_AUTH_MODE=keys with COPAL_ADMIN_TOKEN for any exposed deployment
+copal-1  | [2m2026-08-02T08:41:35.366517Z[0m [32m INFO[0m [2mcopal_server[0m[2m:[0m upload-claim owner id [3minstance[0m[2m=[0m01kz0t5ew62n7chh61rggsnjgp
+copal-1  | [2m2026-08-02T08:41:35.366671Z[0m [32m INFO[0m [2mcopal_server[0m[2m:[0m s3 gateway listening [3maddr[0m[2m=[0m0.0.0.0:9000
+copal-1  | [2m2026-08-02T08:41:35.366809Z[0m [32m INFO[0m [2mcopal_server[0m[2m:[0m admin surface listening [3maddr[0m[2m=[0m0.0.0.0:8081
+copal-1  | [2m2026-08-02T08:41:35.367433Z[0m [32m INFO[0m [2mcopal_server[0m[2m:[0m listening [3maddr[0m[2m=[0m0.0.0.0:8080

@@ -29,6 +29,15 @@ release, which is what the migration guide links. The claim the
 table makes is self-verifiable: run the same command on your own
 hardware and compare.
 
+Each run starts by clearing the stack. Reusing one mixes states
+that must not mix: rebuilding the image recreates the Copal
+container with an empty blob root while the engine container keeps
+its metadata, leaving records that point at content the backend no
+longer holds. Every run also captures the server's file listing,
+blob inventory, and logs into `results/`, because client output
+alone cannot say whether a failure belongs to the product or to the
+harness.
+
 The harness tests what it names, nothing more. Its credibility is
 that the choices are visible, the suite is runnable by anyone, and
 extending it is one script edit.

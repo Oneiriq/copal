@@ -16,7 +16,7 @@ named. Run the same command to reproduce the table.
 | sync_noop | PASS |
 | delete_propagates | PASS |
 
-## mc: 6/8
+## mc: 8/8
 
 | check | result |
 | --- | --- |
@@ -24,9 +24,9 @@ named. Run the same command to reproduce the table.
 | mirror_full | PASS |
 | listing_complete | PASS |
 | second_pass_noop | PASS |
-| diff_empty | FAIL |
+| diff_empty | PASS |
 | stat_readable | PASS |
-| multipart_roundtrip_digest | FAIL |
+| multipart_roundtrip_digest | PASS |
 | delete_propagates | PASS |
 
 ## rclone: 5/5

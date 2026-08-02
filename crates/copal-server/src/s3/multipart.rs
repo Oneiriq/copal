@@ -455,7 +455,7 @@ pub async fn dispatch<B: BlobStore>(
     let query = super::parse_query(parts.uri.query().unwrap_or_default());
     let is_create = parts.method == axum::http::Method::POST && query.contains_key("uploads");
 
-    let tenant = match authorize_bucket(
+    let caller = match authorize_bucket(
         &gateway,
         &parts.method,
         &parts.uri,
@@ -464,9 +464,10 @@ pub async fn dispatch<B: BlobStore>(
     )
     .await
     {
-        Ok(tenant) => tenant,
+        Ok(caller) => caller,
         Err(response) => return response,
     };
+    let tenant = &caller.tenant;
 
     if is_create {
         let content_type = parts
@@ -474,7 +475,7 @@ pub async fn dispatch<B: BlobStore>(
             .get(header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
             .unwrap_or("application/octet-stream");
-        return create_multipart(&gateway, &tenant, &bucket, &key, content_type).await;
+        return create_multipart(&gateway, tenant, &bucket, &key, content_type).await;
     }
 
     let upload_id = query.get("uploadId").cloned().unwrap_or_default();
@@ -486,7 +487,7 @@ pub async fn dispatch<B: BlobStore>(
                 .unwrap_or(0);
             upload_part(
                 &gateway,
-                &tenant,
+                tenant,
                 &upload_id,
                 part_number,
                 &parts.headers,
@@ -499,10 +500,10 @@ pub async fn dispatch<B: BlobStore>(
                 Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
                 Err(_) => String::new(),
             };
-            complete_multipart(&gateway, &tenant, &bucket, &upload_id, &manifest).await
+            complete_multipart(&gateway, tenant, &bucket, &upload_id, &manifest).await
         }
-        axum::http::Method::DELETE => abort_multipart(&gateway, &tenant, &upload_id).await,
-        axum::http::Method::GET => list_parts(&gateway, &tenant, &bucket, &upload_id).await,
+        axum::http::Method::DELETE => abort_multipart(&gateway, tenant, &upload_id).await,
+        axum::http::Method::GET => list_parts(&gateway, tenant, &bucket, &upload_id).await,
         _ => super::xml_error(
             StatusCode::METHOD_NOT_ALLOWED,
             "MethodNotAllowed",

@@ -148,10 +148,15 @@ alongside the total, so an operator can see the difference between
    the compliance authority line lives in the update's own WHERE
    clause, so two admins cannot race past it, and an expired
    compliance clock is an ordinary row again.
-3. Tenant retention policy, stamped at version creation.
+3. Tenant retention policy, stamped at version creation. **Shipped**,
+   with version pruning riding it: `keep_last` removes erasable
+   history beyond the depth, and holds and unexpired clocks survive
+   any setting.
 4. The engine-side predicate compiled into `PERMISSIONS`, so caller
-   sessions meet it twice.
-5. Retained-bytes in usage accounting.
+   sessions meet it twice. **Shipped**: the delete clause on
+   `file_version` refuses while anything binds the row.
+5. Retained-bytes in usage accounting. **Shipped** on `/v1/usage` and
+   the admin quota view.
 
 Nothing here needs a new subsystem. Retention is a predicate, a pair
 of columns, and the discipline to consult them in the three places

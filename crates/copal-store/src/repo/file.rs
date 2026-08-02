@@ -611,6 +611,20 @@ pub async fn complete_upload(
         prior_version_id: row.current_version.clone(),
     };
     let version_id = super::version::record_version(store, tenant, id, &snapshot).await?;
+    // Tenant policy stamps the fresh version and prunes erasable
+    // history, both here so every face inherits them: the value is
+    // computed from the policy at this moment and never recomputed,
+    // because a policy change must not shorten what already exists.
+    if let Some(policy) = super::tenant::get_retention_policy(store, tenant).await? {
+        if let Some(seconds) = policy.seconds {
+            let mode = policy.mode.as_deref().unwrap_or("governance");
+            super::version::set_retention(store, tenant, id, row.version_count, seconds, mode)
+                .await?;
+        }
+        if let Some(keep) = policy.keep_last {
+            super::version::prune_erasable(store, tenant, id, keep, row.version_count).await?;
+        }
+    }
 
     let link = Query::new()
         .update_set(rid(id)?.to_string())

@@ -26,8 +26,40 @@ pub fn tables() -> Vec<TableDefinition> {
         file_version_table(),
         tenant_storage_table(),
         tenant_quota_table(),
+        tenant_retention_table(),
         tenant_usage_table(),
     ]
+}
+
+/// Default retention for new versions, per tenant. The applied value
+/// is stamped onto each version at creation and never recomputed:
+/// a policy change must not shorten what already exists.
+fn tenant_retention_table() -> TableDefinition {
+    table_schema("tenant_retention")
+        .with_mode(TableMode::Schemafull)
+        .with_fields([
+            built(string_field("tenant_id").assertion("$value != ''")),
+            built(
+                int_field("seconds")
+                    .nullable(true)
+                    .assertion("$value == NONE OR $value >= 0"),
+            ),
+            built(
+                string_field("mode")
+                    .nullable(true)
+                    .assertion("$value == NONE OR $value INSIDE ['governance', 'compliance']"),
+            ),
+            // Version pruning: how much history to keep, counting the
+            // current version. Pruning removes only erasable rows, so
+            // holds and unexpired clocks survive any setting.
+            built(
+                int_field("keep_last")
+                    .nullable(true)
+                    .assertion("$value == NONE OR $value >= 1"),
+            ),
+            built(datetime_field("updated_at").value("time::now()")),
+        ])
+        .with_indexes([unique_index("uniq_tenant_retention", ["tenant_id"])])
 }
 
 /// Cached usage per tenant: an advisory counter, not the truth.

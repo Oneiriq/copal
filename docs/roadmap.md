@@ -4,15 +4,11 @@ What is left, ordered by what it blocks. Shipped work lives in
 [CHANGELOG.md](../CHANGELOG.md); this file carries only open items, so
 an item disappearing from it means the item is done.
 
-1. **Retention, legal hold, and WORM, designed.**
-   [retention.md](retention.md) carries the design: retention and
-   holds attach to versions, one `erasable` predicate gates the three
-   places that erase, and `compliance` mode is the whole of WORM
-   because the difference from `governance` is authority rather than
-   mechanism. The build order is in the document; the first slice
-   (two columns, the hold flag, and the predicate consulted by the
-   GC) makes retention real, because the GC is the only thing that
-   erases today.
+1. **Retention, legal hold, and WORM: built.** All five slices of
+   [retention.md](retention.md) shipped: the erasable predicate at
+   the GC, the admin surface with the compliance authority line,
+   tenant policy stamped at creation with `keep_last` pruning, the
+   engine-side delete clause, and retained bytes beside usage.
 
 2. **Principals within tenants, designed.**
    [principals.md](principals.md) carries the design: keys become

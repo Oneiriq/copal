@@ -227,3 +227,86 @@ fn versions_query(tenant: &TenantId, file: &FileId) -> copal_core::Result<Query>
         .order_by("number", "DESC")
         .map_err(|e| map_store_err("versions", e))
 }
+
+/// Set or clear a version's retention clock. `retain_secs` is seconds
+/// from now; `None` clears both the clock and the mode. The admin
+/// surface decides who may call this and whether compliance mode
+/// refuses; the repository records what was decided.
+pub async fn set_retention(
+    store: &Store,
+    tenant: &TenantId,
+    file: &FileId,
+    number: u64,
+    retain_secs: Option<u64>,
+    mode: Option<&str>,
+) -> copal_core::Result<()> {
+    let rid = version_rid(store, tenant, file, number).await?;
+    let mut update = Query::new()
+        .update_set(rid)
+        .map_err(|e| map_store_err("set_retention", e))?;
+    update = match retain_secs {
+        Some(secs) => update
+            .set_expr("retain_until", raw(format!("time::now() + {secs}s")))
+            .map_err(|e| map_store_err("set_retention", e))?
+            .set(
+                "retention_mode",
+                serde_json::Value::from(mode.unwrap_or("governance")),
+            )
+            .map_err(|e| map_store_err("set_retention", e))?,
+        None => update
+            .set_expr("retain_until", raw("NONE"))
+            .map_err(|e| map_store_err("set_retention", e))?
+            .set_expr("retention_mode", raw("NONE"))
+            .map_err(|e| map_store_err("set_retention", e))?,
+    };
+    let update = update.return_after();
+    query_records::<serde_json::Value>(store.client(), &update)
+        .await
+        .map_err(|e| map_store_err("set_retention", e))?;
+    Ok(())
+}
+
+/// Apply or release a legal hold on a version.
+pub async fn set_legal_hold(
+    store: &Store,
+    tenant: &TenantId,
+    file: &FileId,
+    number: u64,
+    held: bool,
+) -> copal_core::Result<()> {
+    let rid = version_rid(store, tenant, file, number).await?;
+    let update = Query::new()
+        .update_set(rid)
+        .map_err(|e| map_store_err("set_legal_hold", e))?
+        .set("legal_hold", serde_json::Value::from(held))
+        .map_err(|e| map_store_err("set_legal_hold", e))?
+        .return_after();
+    query_records::<serde_json::Value>(store.client(), &update)
+        .await
+        .map_err(|e| map_store_err("set_legal_hold", e))?;
+    Ok(())
+}
+
+/// The record id of one version row, by file and number.
+async fn version_rid(
+    store: &Store,
+    tenant: &TenantId,
+    file: &FileId,
+    number: u64,
+) -> copal_core::Result<String> {
+    #[derive(Deserialize)]
+    struct IdRow {
+        id: String,
+    }
+    let find = versions_query(tenant, file)?.where_(eq("number", number as i64));
+    let rows: Vec<IdRow> = query_records(store.client(), &find)
+        .await
+        .map_err(|e| map_store_err("version_rid", e))?;
+    let row = rows
+        .into_iter()
+        .next()
+        .ok_or_else(|| CopalError::not_found("version"))?;
+    let rid = RecordID::<()>::new(TABLE, trim_table(&row.id))
+        .map_err(|e| map_store_err("version_rid", e))?;
+    Ok(rid.to_string())
+}

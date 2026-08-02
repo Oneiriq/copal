@@ -210,6 +210,18 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ### Governance
 
+- **Retention holds bytes at the eraser.** Versions carry
+  `retain_until`, `retention_mode`, and `legal_hold`, and the GC's
+  reference recount treats a non-erasable version as a live link: a
+  hold or an unexpired clock carries content through its file's
+  deletion, and the blob never reaches the mark step. The freeze
+  event now names the frozen set (links and the armed flag) rather
+  than refusing every update, so retention state moves on armed rows
+  while the artifact stays immutable and tampering still throws.
+  Tests prove the round trip at zero grace: held bytes survive an
+  aggressive sweep, release collects them on the next pass, and the
+  clock alone decides.
+
 - **Principals within tenants, designed.** The API key is the
   smallest identity Copal has, so audit answers "which credential"
   rather than "who", and two keys with the same scopes are

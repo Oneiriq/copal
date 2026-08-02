@@ -244,6 +244,17 @@ fn file_version_table() -> TableDefinition {
             built(record_field("blob", Some("blob")).nullable(true)),
             built(record_field("prior", Some("file_version")).nullable(true)),
             built(bool_field("armed").default("false")),
+            // Retention state is the one part of a version that moves
+            // after arming: the artifact is frozen, the policy about
+            // it is not. The freeze event names the frozen set
+            // explicitly so these stay writable.
+            built(datetime_field("retain_until").nullable(true)),
+            built(
+                string_field("retention_mode")
+                    .nullable(true)
+                    .assertion("$value == NONE OR $value INSIDE ['governance', 'compliance']"),
+            ),
+            built(bool_field("legal_hold").default("false")),
             built(
                 datetime_field("created_at")
                     .default("time::now()")
@@ -257,7 +268,14 @@ fn file_version_table() -> TableDefinition {
         ])
         .with_events([event(
             "file_version_frozen",
-            "$event = 'UPDATE' AND $before.armed = true",
+            // Scalars defend themselves through READONLY; this event
+            // guards what READONLY cannot: the links (set at arming)
+            // and the armed flag itself. Retention columns move after
+            // arming by design, so the condition names the frozen set
+            // rather than refusing every update.
+            "$event = 'UPDATE' AND $before.armed = true AND ($after.file != $before.file OR \
+             $after.blob != $before.blob OR $after.prior != $before.prior OR \
+             $after.armed != $before.armed)",
             "THROW 'file_version records are immutable once armed'",
         )])
 }

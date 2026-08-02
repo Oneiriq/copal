@@ -137,7 +137,12 @@ alongside the total, so an operator can see the difference between
 
 1. The two version columns, the `legal_hold` flag, and `erasable`
    consulted by the GC. This alone makes retention real, because the
-   GC is the only thing that erases today.
+   GC is the only thing that erases today. **Shipped**: the predicate
+   lives in the reference recount, so a non-erasable version holds
+   its blob alive through its file's tombstone and the blob never
+   reaches the mark step; the freeze event names the frozen set so
+   retention state moves on armed rows while link tampering still
+   throws.
 2. The admin surface: set and clear retention, apply and release
    holds, each writing an audit event with its reason.
 3. Tenant retention policy, stamped at version creation.

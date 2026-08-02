@@ -228,42 +228,78 @@ fn versions_query(tenant: &TenantId, file: &FileId) -> copal_core::Result<Query>
         .map_err(|e| map_store_err("versions", e))
 }
 
-/// Set or clear a version's retention clock. `retain_secs` is seconds
-/// from now; `None` clears both the clock and the mode. The admin
-/// surface decides who may call this and whether compliance mode
-/// refuses; the repository records what was decided.
+/// The clause under which a compliance clock may be touched at all:
+/// never, until it has expired. Governance rows and unset rows pass.
+const COMPLIANCE_ALLOWS: &str =
+    "(retention_mode IS NONE OR retention_mode != 'compliance' OR retain_until < time::now())";
+
+/// Set a version's retention clock. Returns whether the update
+/// applied: `false` means the row exists and compliance mode refused,
+/// which is the whole WORM property enforced in one WHERE clause
+/// rather than a read-then-write the admin could race.
+///
+/// Compliance rows accept only extensions of themselves: a longer
+/// clock in compliance mode. Everything else (shortening, clearing,
+/// downgrading to governance) refuses until the clock has expired.
 pub async fn set_retention(
     store: &Store,
     tenant: &TenantId,
     file: &FileId,
     number: u64,
-    retain_secs: Option<u64>,
-    mode: Option<&str>,
-) -> copal_core::Result<()> {
+    retain_secs: u64,
+    mode: &str,
+) -> copal_core::Result<bool> {
     let rid = version_rid(store, tenant, file, number).await?;
-    let mut update = Query::new()
-        .update_set(rid)
-        .map_err(|e| map_store_err("set_retention", e))?;
-    update = match retain_secs {
-        Some(secs) => update
-            .set_expr("retain_until", raw(format!("time::now() + {secs}s")))
-            .map_err(|e| map_store_err("set_retention", e))?
-            .set(
-                "retention_mode",
-                serde_json::Value::from(mode.unwrap_or("governance")),
-            )
-            .map_err(|e| map_store_err("set_retention", e))?,
-        None => update
-            .set_expr("retain_until", raw("NONE"))
-            .map_err(|e| map_store_err("set_retention", e))?
-            .set_expr("retention_mode", raw("NONE"))
-            .map_err(|e| map_store_err("set_retention", e))?,
+    let allowed = if mode == "compliance" {
+        // Tightening: any row may enter compliance, and a compliance
+        // row may extend. `<=` because re-asserting the same clock is
+        // not a shortening.
+        format!(
+            "(retention_mode IS NONE OR retention_mode != 'compliance' \
+             OR retain_until IS NONE OR retain_until <= time::now() + {retain_secs}s)",
+        )
+    } else {
+        // Loosening into governance: only off an expired compliance
+        // clock, or a row that was never compliance.
+        COMPLIANCE_ALLOWS.to_owned()
     };
-    let update = update.return_after();
-    query_records::<serde_json::Value>(store.client(), &update)
+    let update = Query::new()
+        .update_set(rid)
+        .map_err(|e| map_store_err("set_retention", e))?
+        .set_expr("retain_until", raw(format!("time::now() + {retain_secs}s")))
+        .map_err(|e| map_store_err("set_retention", e))?
+        .set("retention_mode", serde_json::Value::from(mode))
+        .map_err(|e| map_store_err("set_retention", e))?
+        .where_str(allowed)
+        .return_after();
+    let rows: Vec<serde_json::Value> = query_records(store.client(), &update)
         .await
         .map_err(|e| map_store_err("set_retention", e))?;
-    Ok(())
+    Ok(!rows.is_empty())
+}
+
+/// Clear a version's retention. Refuses on an unexpired compliance
+/// clock, exactly as shortening does.
+pub async fn clear_retention(
+    store: &Store,
+    tenant: &TenantId,
+    file: &FileId,
+    number: u64,
+) -> copal_core::Result<bool> {
+    let rid = version_rid(store, tenant, file, number).await?;
+    let update = Query::new()
+        .update_set(rid)
+        .map_err(|e| map_store_err("clear_retention", e))?
+        .set_expr("retain_until", raw("NONE"))
+        .map_err(|e| map_store_err("clear_retention", e))?
+        .set_expr("retention_mode", raw("NONE"))
+        .map_err(|e| map_store_err("clear_retention", e))?
+        .where_str(COMPLIANCE_ALLOWS)
+        .return_after();
+    let rows: Vec<serde_json::Value> = query_records(store.client(), &update)
+        .await
+        .map_err(|e| map_store_err("clear_retention", e))?;
+    Ok(!rows.is_empty())
 }
 
 /// Apply or release a legal hold on a version.

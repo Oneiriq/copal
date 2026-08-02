@@ -283,6 +283,26 @@ sweep recomputes it from the file rows, the same way blob reference
 counts are derived rather than trusted, so any drift a crash leaves
 behind corrects within one interval.
 
+## Retention and legal holds
+
+Retention attaches to versions, and the admin surface is where policy
+is stated:
+
+```
+PUT    /v1/admin/tenants/{tenant}/files/{id}/versions/{n}/retention   body: { "seconds": 31536000, "mode": "compliance" }
+DELETE /v1/admin/tenants/{tenant}/files/{id}/versions/{n}/retention
+PUT    /v1/admin/tenants/{tenant}/files/{id}/versions/{n}/hold        body: { "reason": "case 2026-cv-1138" }
+DELETE /v1/admin/tenants/{tenant}/files/{id}/versions/{n}/hold        body: { "reason": "case closed" }
+```
+
+`mode` is `governance` (the default) or `compliance`. A compliance
+clock only extends: shortening, clearing, or downgrading it refuses
+with 409 until it expires, for admins too, which is the authority
+line WORM names. Holds require a stated reason in both directions,
+and every change writes an audit event carrying it. A held or
+retained version keeps its bytes through file deletion; soft delete
+still hides the file, because hiding is not erasing.
+
 ## Maintenance sweeps
 
 One interval loop runs five failure-isolated passes: expired upload claims to

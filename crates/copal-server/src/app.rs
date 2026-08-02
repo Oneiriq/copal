@@ -565,6 +565,14 @@ pub fn admin_router<B: BlobStore + 'static>(state: AppState<B>) -> Router {
         )
         .route("/v1/admin/tenants/{tenant}/audit", get(list_audit::<B>))
         .route(
+            "/v1/admin/tenants/{tenant}/files/{file}/versions/{number}/retention",
+            put(set_version_retention::<B>).delete(clear_version_retention::<B>),
+        )
+        .route(
+            "/v1/admin/tenants/{tenant}/files/{file}/versions/{number}/hold",
+            put(apply_version_hold::<B>).delete(release_version_hold::<B>),
+        )
+        .route(
             "/v1/admin/tenants/{tenant}/storage",
             put(assign_storage::<B>).get(get_storage::<B>),
         )
@@ -833,6 +841,165 @@ async fn set_quota<B: BlobStore>(
     )
     .await?;
     Ok(Json(json!({ "max_bytes": request.max_bytes })))
+}
+
+#[derive(serde::Deserialize)]
+struct RetentionRequest {
+    seconds: u64,
+    #[serde(default)]
+    mode: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct HoldRequest {
+    reason: String,
+}
+
+/// Set a version's retention clock. Compliance mode accepts only
+/// extensions of itself; the refusal is a 409 because the row is in
+/// a state the request may not move it out of, admin or no admin,
+/// and that authority line is the whole of WORM.
+async fn set_version_retention<B: BlobStore>(
+    State(state): State<AppState<B>>,
+    headers: HeaderMap,
+    Path((tenant, file, number)): Path<(String, String, u64)>,
+    Json(request): Json<RetentionRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    crate::auth::require_admin(&state, &headers)?;
+    let tenant = TenantId::parse(&tenant)?;
+    let file = parse_id(&file)?;
+    let mode = request.mode.as_deref().unwrap_or("governance");
+    if mode != "governance" && mode != "compliance" {
+        return Err(CopalError::validation("mode must be governance or compliance").into());
+    }
+    let applied = copal_store::repo::version::set_retention(
+        &state.store,
+        &tenant,
+        &file,
+        number,
+        request.seconds,
+        mode,
+    )
+    .await?;
+    if !applied {
+        return Err(
+            CopalError::conflict("compliance retention only extends; wait for the clock").into(),
+        );
+    }
+    copal_store::repo::auth::record_audit(
+        &state.store,
+        &tenant,
+        "admin",
+        "version.retention_set",
+        &format!("{file}#v{number}"),
+        forwarded_origin(&headers).as_deref(),
+        Some(json!({ "seconds": request.seconds, "mode": mode })),
+    )
+    .await?;
+    Ok(Json(json!({ "seconds": request.seconds, "mode": mode })))
+}
+
+/// Clear a version's retention. Refuses on an unexpired compliance
+/// clock, exactly as shortening does.
+async fn clear_version_retention<B: BlobStore>(
+    State(state): State<AppState<B>>,
+    headers: HeaderMap,
+    Path((tenant, file, number)): Path<(String, String, u64)>,
+) -> Result<StatusCode, ApiError> {
+    crate::auth::require_admin(&state, &headers)?;
+    let tenant = TenantId::parse(&tenant)?;
+    let file = parse_id(&file)?;
+    let applied =
+        copal_store::repo::version::clear_retention(&state.store, &tenant, &file, number).await?;
+    if !applied {
+        return Err(
+            CopalError::conflict("compliance retention only extends; wait for the clock").into(),
+        );
+    }
+    copal_store::repo::auth::record_audit(
+        &state.store,
+        &tenant,
+        "admin",
+        "version.retention_cleared",
+        &format!("{file}#v{number}"),
+        forwarded_origin(&headers).as_deref(),
+        None,
+    )
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Apply a legal hold. The reason is required because a hold is a
+/// statement someone made on purpose, and the audit trail is where
+/// that statement lives.
+async fn apply_version_hold<B: BlobStore>(
+    State(state): State<AppState<B>>,
+    headers: HeaderMap,
+    Path((tenant, file, number)): Path<(String, String, u64)>,
+    Json(request): Json<HoldRequest>,
+) -> Result<StatusCode, ApiError> {
+    version_hold(
+        &state,
+        &headers,
+        &tenant,
+        &file,
+        number,
+        &request.reason,
+        true,
+    )
+    .await
+}
+
+/// Release a legal hold, with the reason recorded beside the apply.
+async fn release_version_hold<B: BlobStore>(
+    State(state): State<AppState<B>>,
+    headers: HeaderMap,
+    Path((tenant, file, number)): Path<(String, String, u64)>,
+    Json(request): Json<HoldRequest>,
+) -> Result<StatusCode, ApiError> {
+    version_hold(
+        &state,
+        &headers,
+        &tenant,
+        &file,
+        number,
+        &request.reason,
+        false,
+    )
+    .await
+}
+
+async fn version_hold<B: BlobStore>(
+    state: &AppState<B>,
+    headers: &HeaderMap,
+    tenant: &str,
+    file: &str,
+    number: u64,
+    reason: &str,
+    held: bool,
+) -> Result<StatusCode, ApiError> {
+    crate::auth::require_admin(state, headers)?;
+    if reason.trim().is_empty() {
+        return Err(CopalError::validation("a hold change requires a reason").into());
+    }
+    let tenant = TenantId::parse(tenant)?;
+    let file = parse_id(file)?;
+    copal_store::repo::version::set_legal_hold(&state.store, &tenant, &file, number, held).await?;
+    copal_store::repo::auth::record_audit(
+        &state.store,
+        &tenant,
+        "admin",
+        if held {
+            "version.hold_applied"
+        } else {
+            "version.hold_released"
+        },
+        &format!("{file}#v{number}"),
+        forwarded_origin(headers).as_deref(),
+        Some(json!({ "reason": reason })),
+    )
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// A tenant's quota and current usage, admin view.

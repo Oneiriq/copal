@@ -210,6 +210,14 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ### Governance
 
+- **The retention admin surface, with the WORM authority line.**
+  Retention and holds are set on the admin listener, and compliance
+  mode refuses shortening, clearing, and downgrading until its clock
+  expires, for admins too. The refusal is enforced in the update's
+  own WHERE clause rather than a read-then-write two admins could
+  race. Holds require a stated reason in both directions, and every
+  change writes an audit event carrying it.
+
 - **Retention holds bytes at the eraser.** Versions carry
   `retain_until`, `retention_mode`, and `legal_hold`, and the GC's
   reference recount treats a non-erasable version as a live link: a

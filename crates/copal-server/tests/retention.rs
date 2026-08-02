@@ -135,16 +135,16 @@ async fn the_retention_clock_gates_collection() {
     let payload = b"retained quarterly report";
     let (tenant, file, digest) = deleted_file_with_version(&router, payload).await;
 
-    copal_store::repo::version::set_retention(
+    assert!(copal_store::repo::version::set_retention(
         &store,
         &tenant,
         &file,
         1,
-        Some(3600),
-        Some("compliance"),
+        3600,
+        "governance",
     )
     .await
-    .expect("retention applies to armed versions");
+    .expect("retention applies to armed versions"));
     delete_file(&router, &file).await;
 
     assert_eq!(
@@ -158,9 +158,11 @@ async fn the_retention_clock_gates_collection() {
     // The clock runs out (simulated by clearing, which slice two will
     // gate behind mode and authority; the GC's contract is the
     // predicate, and an absent clock is an expired one).
-    copal_store::repo::version::set_retention(&store, &tenant, &file, 1, None, None)
-        .await
-        .expect("governance-layer clear");
+    assert!(
+        copal_store::repo::version::clear_retention(&store, &tenant, &file, 1)
+            .await
+            .expect("governance clears")
+    );
     assert_eq!(sweep_twice(&store, &blobs).await, 1);
     assert!(!object.exists());
 }
@@ -172,9 +174,11 @@ async fn retention_moves_while_the_artifact_stays_frozen() {
     let (router, store, _blobs, _dir) = stack().await;
     let (tenant, file, _digest) = deleted_file_with_version(&router, b"frozen artifact").await;
 
-    copal_store::repo::version::set_retention(&store, &tenant, &file, 1, Some(60), None)
-        .await
-        .expect("the clock sets on an armed row");
+    assert!(
+        copal_store::repo::version::set_retention(&store, &tenant, &file, 1, 60, "governance")
+            .await
+            .expect("the clock sets on an armed row")
+    );
     copal_store::repo::version::set_legal_hold(&store, &tenant, &file, 1, true)
         .await
         .expect("the hold sets on an armed row");
@@ -183,4 +187,191 @@ async fn retention_moves_while_the_artifact_stays_frozen() {
         .await
         .expect_err("disarming must still throw");
     assert!(err.to_string().contains("immutable"), "{err}");
+}
+
+use copal_server::app::admin_router;
+use copal_server::auth::AuthConfig;
+
+async fn admin_stack() -> (
+    axum::Router,
+    axum::Router,
+    Store,
+    ObjectStore,
+    tempfile::TempDir,
+) {
+    let store = Store::connect(StoreConfig::memory()).await.unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let blobs = ObjectStore::open(dir.path().to_str().unwrap()).unwrap();
+    let state = AppState::new(store.clone(), blobs.clone()).with_auth(AuthConfig {
+        admin_token: Some("root".to_owned()),
+        ..AuthConfig::default()
+    });
+    (
+        build_router(state.clone()),
+        admin_router(state),
+        store,
+        blobs,
+        dir,
+    )
+}
+
+fn admin_req(method: &str, uri: &str, body: Option<Value>) -> Request<Body> {
+    let mut builder = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("x-copal-admin-token", "root");
+    let body = match body {
+        Some(value) => {
+            builder = builder.header("content-type", "application/json");
+            Body::from(value.to_string())
+        }
+        None => Body::empty(),
+    };
+    builder.body(body).unwrap()
+}
+
+/// Compliance mode is an authority line: the clock extends and
+/// nothing else, admin or no admin. Governance shortens and clears
+/// freely, and an expired compliance clock is an ordinary row again.
+#[tokio::test]
+async fn compliance_only_extends() {
+    let (router, admin, _store, _blobs, _dir) = admin_stack().await;
+    let (_tenant, file, _digest) = deleted_file_with_version(&router, b"worm subject").await;
+    let retention = format!("/v1/admin/tenants/acme/files/{file}/versions/1/retention");
+
+    // Into compliance, then extend: both apply.
+    for seconds in [3600, 7200] {
+        let response = admin
+            .clone()
+            .oneshot(admin_req(
+                "PUT",
+                &retention,
+                Some(json!({ "seconds": seconds, "mode": "compliance" })),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "seconds {seconds}");
+    }
+
+    // Shortening, downgrading, and clearing all refuse with 409.
+    for body in [
+        json!({ "seconds": 60, "mode": "compliance" }),
+        json!({ "seconds": 999_999, "mode": "governance" }),
+    ] {
+        let response = admin
+            .clone()
+            .oneshot(admin_req("PUT", &retention, Some(body.clone())))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT, "{body}");
+    }
+    let response = admin
+        .clone()
+        .oneshot(admin_req("DELETE", &retention, None))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+}
+
+/// An expired compliance clock no longer binds: clearing succeeds.
+#[tokio::test]
+async fn an_expired_compliance_clock_releases_its_grip() {
+    let (router, admin, _store, _blobs, _dir) = admin_stack().await;
+    let (_tenant, file, _digest) = deleted_file_with_version(&router, b"expired worm").await;
+    let retention = format!("/v1/admin/tenants/acme/files/{file}/versions/1/retention");
+
+    let response = admin
+        .clone()
+        .oneshot(admin_req(
+            "PUT",
+            &retention,
+            Some(json!({ "seconds": 0, "mode": "compliance" })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let response = admin
+        .clone()
+        .oneshot(admin_req("DELETE", &retention, None))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+}
+
+/// Governance is the operator's own leash: shorten and clear freely,
+/// with every change audited.
+#[tokio::test]
+async fn governance_shortens_and_clears() {
+    let (router, admin, _store, _blobs, _dir) = admin_stack().await;
+    let (_tenant, file, _digest) = deleted_file_with_version(&router, b"governed subject").await;
+    let retention = format!("/v1/admin/tenants/acme/files/{file}/versions/1/retention");
+
+    for seconds in [3600, 60] {
+        let response = admin
+            .clone()
+            .oneshot(admin_req(
+                "PUT",
+                &retention,
+                Some(json!({ "seconds": seconds })),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+    let response = admin
+        .clone()
+        .oneshot(admin_req("DELETE", &retention, None))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+}
+
+/// Holds require a stated reason, and both directions land in the
+/// audit trail carrying it: the trail of who was granted what is the
+/// reason the surface exists.
+#[tokio::test]
+async fn holds_carry_their_reasons_into_audit() {
+    let (router, admin, _store, _blobs, _dir) = admin_stack().await;
+    let (_tenant, file, _digest) = deleted_file_with_version(&router, b"litigation subject").await;
+    let hold = format!("/v1/admin/tenants/acme/files/{file}/versions/1/hold");
+
+    let response = admin
+        .clone()
+        .oneshot(admin_req("PUT", &hold, Some(json!({ "reason": "  " }))))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let response = admin
+        .clone()
+        .oneshot(admin_req(
+            "PUT",
+            &hold,
+            Some(json!({ "reason": "case 2026-cv-1138" })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    let response = admin
+        .clone()
+        .oneshot(admin_req(
+            "DELETE",
+            &hold,
+            Some(json!({ "reason": "case closed" })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    let response = admin
+        .clone()
+        .oneshot(admin_req("GET", "/v1/admin/tenants/acme/audit", None))
+        .await
+        .unwrap();
+    let body = json_body(response).await;
+    let trail = body["items"].to_string();
+    assert!(trail.contains("version.hold_applied"), "{trail}");
+    assert!(trail.contains("version.hold_released"), "{trail}");
+    assert!(trail.contains("case 2026-cv-1138"), "{trail}");
 }

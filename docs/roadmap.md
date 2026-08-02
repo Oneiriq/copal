@@ -14,12 +14,13 @@ an item disappearing from it means the item is done.
    GC) makes retention real, because the GC is the only thing that
    erases today.
 
-2. **Principals within tenants.** The key is the smallest identity
-   today. Per-human and per-agent principals unlock richer field
-   guards, audit attribution, and the identity story agent
-   deployments increasingly expect.
-
-## Then
+2. **Principals within tenants, designed.**
+   [principals.md](principals.md) carries the design: keys become
+   credentials belonging to named actors, the token gains a `pr`
+   claim, and ownership becomes expressible in compiled
+   `PERMISSIONS`, which is what lets the engine layer say what the
+   application layer says. The first two slices are additive, so a
+   deployment with no principals behaves exactly as it does today.
 
 3. **Blob master key rotation.** The engine access key rotates by
    replacement; the content encryption key has no rotation path.

@@ -210,6 +210,19 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ### Governance
 
+- **Principals within tenants, designed.** The API key is the
+  smallest identity Copal has, so audit answers "which credential"
+  rather than "who", and two keys with the same scopes are
+  indistinguishable to every layer.
+  [principals.md](docs/principals.md) makes keys credentials
+  belonging to named actors: scopes resolve as the intersection of
+  key and principal, the token gains a `pr` claim, and ownership
+  becomes expressible in compiled `PERMISSIONS`, which is what lets
+  the engine layer say what the application layer says. Rows written
+  before principals existed count as nobody's, because treating
+  unknown authorship as ownership would silently widen access on
+  upgrade.
+
 - **Caller sessions are reused across requests.** Opening one costs
   two engine round trips, which a caller making many small reads paid
   every time. Sessions are now held by the identity that minted them:

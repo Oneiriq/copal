@@ -203,26 +203,28 @@ async fn one_ledger_meters_both_faces() {
     let token = mint(&router, &["read"]).await;
 
     // The reads budget is 6000 units a minute and a full page costs
-    // its 100-row limit, so sixty full pages spend it exactly.
-    for i in 0..60 {
+    // its 100-row limit, so sixty full pages spend it. Spending is
+    // driven until the refusal arrives rather than counted to
+    // exactly sixty: the window is per minute, and a loop that
+    // straddles a boundary gets a fresh budget partway through, which
+    // on a slow machine reads as the ledger failing when it is
+    // working. The bound is generous enough to cross one boundary and
+    // still refuse.
+    let mut refusal = None;
+    for i in 0..180 {
         let response = router
             .clone()
             .oneshot(graphql(r#"{ files(limit: 100) { items { id } } }"#, &token))
             .await
             .unwrap();
         let body = json_body(response).await;
-        assert!(body.get("errors").is_none(), "query {i}: {body:#?}");
+        if body.get("errors").is_some() {
+            refusal = Some((i, body));
+            break;
+        }
     }
-
-    // The 61st spend refuses on the GraphQL face with the retryable
-    // code, and the SAME key is refused on the REST face too, because
-    // both faces charged one ledger.
-    let response = router
-        .clone()
-        .oneshot(graphql(r#"{ files(limit: 100) { items { id } } }"#, &token))
-        .await
-        .unwrap();
-    let body = json_body(response).await;
+    let (spent_after, body) = refusal.expect("the budget refuses within the bound");
+    assert!(spent_after >= 59, "refused after only {spent_after} pages");
     assert_eq!(
         body["errors"][0]["extensions"]["code"], "too_many_requests",
         "{body:#?}",

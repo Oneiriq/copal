@@ -1,0 +1,19 @@
+# The bench reuses the conformance stack and changes three things:
+# the session flag comes from the environment so one command can
+# measure both configurations, MinIO is not needed (nothing is being
+# migrated), and the mc runner mounts the bench scripts.
+services:
+  copal:
+    environment:
+      COPAL_ENGINE_SESSIONS: "${COPAL_ENGINE_SESSIONS:-off}"
+
+  mc:
+    # Paths resolve against the project directory, which the first
+    # compose file sets to conformance/, so the bench's own scripts
+    # are named from there.
+    volumes:
+      - ../bench/runners:/bench:ro
+      - ../bench/results:/results
+
+  curl:
+    profiles: [runners]

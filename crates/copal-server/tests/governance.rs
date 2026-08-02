@@ -695,3 +695,54 @@ async fn engine_sessions_serve_the_files_face() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
 }
+
+/// Retrieval answers on both faces from one contract declaration:
+/// the REST path the contract names and the GraphQL field it
+/// renders, through the same core, under the same scope.
+#[tokio::test]
+async fn search_answers_identically_on_both_faces() {
+    let (router, _dir) = keyed_router().await;
+    let reader = mint(&router, &["read", "write"]).await;
+
+    let response = router
+        .clone()
+        .oneshot(rest("GET", "/v1/search?q=quarterly", &reader, None))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let rest_answer = json_body(response).await;
+    assert_eq!(rest_answer["mode"], "lexical");
+    assert!(rest_answer["items"].is_array());
+
+    let response = router
+        .clone()
+        .oneshot(graphql(r#"{ search(q: "quarterly") }"#, &reader))
+        .await
+        .unwrap();
+    let body = json_body(response).await;
+    assert!(body["errors"].is_null(), "{body:#?}");
+    assert_eq!(body["data"]["search"], rest_answer);
+}
+
+/// The declaration is enforced on the GraphQL face by the dispatcher:
+/// a key without the read scope is refused before the resolver runs.
+#[tokio::test]
+async fn search_takes_the_read_scope_on_both_faces() {
+    let (router, _dir) = keyed_router().await;
+    let writer = mint(&router, &["write"]).await;
+
+    let response = router
+        .clone()
+        .oneshot(rest("GET", "/v1/search?q=anything", &writer, None))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+    let response = router
+        .clone()
+        .oneshot(graphql(r#"{ search(q: "anything") }"#, &writer))
+        .await
+        .unwrap();
+    let body = json_body(response).await;
+    assert_eq!(body["errors"][0]["extensions"]["code"], "forbidden");
+}

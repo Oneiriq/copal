@@ -681,6 +681,35 @@
         ]
       }
     },
+    "/v1/files/{id}/text": {
+      "get": {
+        "operationId": "file_text",
+        "parameters": [
+          {
+            "description": "The file whose extracted text to read.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the answer"
+          }
+        },
+        "summary": "One file's extracted text, as the pipeline stored it."
+      }
+    },
     "/v1/files/{id}/upload-url": {
       "post": {
         "description": "Issue a single-use write capability, so a browser can upload without holding a tenant key.",
@@ -999,6 +1028,53 @@
         "x-requires-scopes": [
           "write"
         ]
+      }
+    },
+    "/v1/search": {
+      "get": {
+        "operationId": "search",
+        "parameters": [
+          {
+            "description": "The question, in the caller's own words.",
+            "in": "query",
+            "name": "q",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "lexical, semantic, or hybrid (the default). A deployment without                              an embedding service answers lexically and says so.",
+            "in": "query",
+            "name": "mode",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Documents to return, 1..=100.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "the answer"
+          }
+        },
+        "summary": "Retrieval across the tenant's extracted text: engine-selected candidates                      rescored in process, fused across lexical and semantic rankings."
       }
     },
     "/v1/webhooks": {

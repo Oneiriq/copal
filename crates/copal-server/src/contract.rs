@@ -7,7 +7,7 @@
 //! cannot disagree because they are the same object.
 
 use janus::{
-    Action, ActionField, ActionOutput, Contract, ContractLimits, FieldExposure, Resource,
+    Action, ActionField, ActionOutput, Contract, ContractLimits, FieldExposure, Query, Resource,
     SubResource, TypeRef,
 };
 
@@ -450,6 +450,64 @@ pub fn contract() -> Contract {
                         rate_class: Some("mutations".into()),
                     },
                 ],
+            },
+        ],
+        // Retrieval is the product, so it answers to the contract
+        // like everything else: declared parameters, declared scopes,
+        // declared budget, both faces, and the differ naming any
+        // tightening. Neither shape fits a listing: search ranks by
+        // relevance rather than sorting by a column, and a file's
+        // text is one document rather than a page of rows.
+        queries: vec![
+            Query {
+                name: "search".into(),
+                path: "/v1/search".into(),
+                input: vec![
+                    ActionField {
+                        name: "q".into(),
+                        kind: TypeRef::String,
+                        required: true,
+                        description: Some("The question, in the caller's own words.".into()),
+                    },
+                    ActionField {
+                        name: "mode".into(),
+                        kind: TypeRef::String,
+                        required: false,
+                        description: Some(
+                            "lexical, semantic, or hybrid (the default). A deployment without                              an embedding service answers lexically and says so."
+                                .into(),
+                        ),
+                    },
+                    ActionField {
+                        name: "limit".into(),
+                        kind: TypeRef::Int,
+                        required: false,
+                        description: Some("Documents to return, 1..=100.".into()),
+                    },
+                ],
+                description: Some(
+                    "Retrieval across the tenant's extracted text: engine-selected candidates                      rescored in process, fused across lexical and semantic rankings."
+                        .into(),
+                ),
+                graphql_field: None,
+                requires: vec!["read".into()],
+                rate_class: Some("reads".into()),
+            },
+            Query {
+                name: "file_text".into(),
+                path: "/v1/files/{id}/text".into(),
+                input: vec![ActionField {
+                    name: "id".into(),
+                    kind: TypeRef::String,
+                    required: true,
+                    description: Some("The file whose extracted text to read.".into()),
+                }],
+                description: Some(
+                    "One file's extracted text, as the pipeline stored it.".into(),
+                ),
+                graphql_field: None,
+                requires: vec!["read".into()],
+                rate_class: Some("reads".into()),
             },
         ],
     }

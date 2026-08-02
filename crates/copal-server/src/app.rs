@@ -635,17 +635,17 @@ struct SearchQuery {
 /// full-text relevance order. There is no score field: SurrealDB 3.x
 /// does not report per-row BM25 values, and a column that is always
 /// zero would read as relevance without being it.
-async fn search_text<B: BlobStore>(
-    State(state): State<AppState<B>>,
-    headers: HeaderMap,
-    axum::extract::Query(params): axum::extract::Query<SearchQuery>,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    let limit = params.limit.unwrap_or(20).clamp(1, 100);
-    let auth =
-        crate::auth::authorize_scoped(&state, &headers, crate::auth::Scope::Read, limit as u64)
-            .await?;
-    let tenant = &auth.tenant;
-    let requested = params.mode.as_deref().unwrap_or("hybrid");
+/// Retrieval, shared by the REST handler and the contract query
+/// resolver so the two faces cannot answer differently.
+pub(crate) async fn search_core<B: BlobStore>(
+    state: &AppState<B>,
+    store: &copal_store::Store,
+    tenant: &TenantId,
+    q: &str,
+    mode: Option<&str>,
+    limit: i64,
+) -> Result<serde_json::Value, ApiError> {
+    let requested = mode.unwrap_or("hybrid");
     // Semantic modes need an embedding service; without one, asking
     // for meaning gets words rather than an error, and the response
     // says which retrieval actually ran.
@@ -665,7 +665,7 @@ async fn search_text<B: BlobStore>(
     };
 
     let lexical = if mode != "semantic" {
-        copal_store::repo::text::search(&auth.store, tenant, &params.q, limit).await?
+        copal_store::repo::text::search(store, tenant, q, limit).await?
     } else {
         Vec::new()
     };
@@ -673,9 +673,9 @@ async fn search_text<B: BlobStore>(
         Vec::new()
     } else {
         let (addr, model) = state.embedding.clone().expect("checked above");
-        let vector = crate::embed::embed(&addr, &model, &params.q).await?;
+        let vector = crate::embed::embed(&addr, &model, q).await?;
         copal_store::repo::text::semantic_search(
-            &auth.store,
+            store,
             tenant,
             &vector,
             limit,
@@ -718,33 +718,62 @@ async fn search_text<B: BlobStore>(
                 "file": id,
                 // Which passage matched, so a caller can point at it.
                 "passage": ordinal,
-                "excerpt": excerpt_around(body, &params.q),
+                "excerpt": excerpt_around(body, q),
             }))
         })
         .collect();
-    Ok(Json(json!({ "mode": mode, "items": items })))
+    Ok(json!({ "mode": mode, "items": items }))
+}
+
+async fn search_text<B: BlobStore>(
+    State(state): State<AppState<B>>,
+    headers: HeaderMap,
+    axum::extract::Query(params): axum::extract::Query<SearchQuery>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let limit = params.limit.unwrap_or(20).clamp(1, 100);
+    let auth =
+        crate::auth::authorize_scoped(&state, &headers, crate::auth::Scope::Read, limit as u64)
+            .await?;
+    let answer = search_core(
+        &state,
+        &auth.store,
+        &auth.tenant,
+        &params.q,
+        params.mode.as_deref(),
+        limit,
+    )
+    .await?;
+    Ok(Json(answer))
 }
 
 /// One file's extracted text.
-async fn file_text<B: BlobStore>(
-    State(state): State<AppState<B>>,
-    headers: HeaderMap,
-    Path(id): Path<String>,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    let auth = crate::auth::authorize_scoped(&state, &headers, crate::auth::Scope::Read, 1).await?;
-    let tenant = &auth.tenant;
-    let id = parse_id(&id)?;
-    let row = copal_store::repo::text::get_text(&auth.store, tenant, &id)
+/// One file's extracted text, shared by both faces.
+pub(crate) async fn file_text_core(
+    store: &copal_store::Store,
+    tenant: &TenantId,
+    id: &FileId,
+) -> Result<serde_json::Value, ApiError> {
+    let row = copal_store::repo::text::get_text(store, tenant, id)
         .await?
         .ok_or_else(|| CopalError::not_found(format!("no extracted text for file {id}")))?;
-    Ok(Json(json!({
+    Ok(json!({
         "file": id.as_str(),
         "digest": row.digest,
         "chars": row.chars,
         "extractor": row.extractor,
         "text": row.body,
         "updated_at": row.updated_at,
-    })))
+    }))
+}
+
+async fn file_text<B: BlobStore>(
+    State(state): State<AppState<B>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let auth = crate::auth::authorize_scoped(&state, &headers, crate::auth::Scope::Read, 1).await?;
+    let id = parse_id(&id)?;
+    Ok(Json(file_text_core(&auth.store, &auth.tenant, &id).await?))
 }
 
 /// A tenant's own usage and ceiling.

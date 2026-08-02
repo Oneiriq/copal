@@ -1,0 +1,76 @@
+# The conformance stack: Copal built from this repo, the engine
+# pinned to the version the code is developed against, MinIO as the
+# migration source, and one runner service per S3 client under test.
+# Runners sit behind a profile so `up` never starts them; run.sh
+# invokes them one at a time and collects /results.
+
+services:
+  surrealdb:
+    image: surrealdb/surrealdb:v3.2.3
+    command: start --user root --pass root
+
+  minio:
+    image: minio/minio:latest
+    command: server /data
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+
+  copal:
+    build:
+      context: ..
+      secrets:
+        - oneiriq_token
+    depends_on:
+      - surrealdb
+    environment:
+      COPAL_DB_URL: ws://surrealdb:8000
+      COPAL_ADMIN_BIND: 0.0.0.0:8081
+      COPAL_S3_BIND: 0.0.0.0:9000
+      # Harness-only key; nothing outside this compose network ever
+      # sees the stack.
+      COPAL_BLOB_ENCRYPTION_KEY: "0707070707070707070707070707070707070707070707070707070707070707"
+      COPAL_ADMIN_TOKEN: conformance-admin
+
+  curl:
+    image: curlimages/curl:latest
+    profiles: [runners]
+    entrypoint: /bin/sh
+    volumes:
+      - ./runners:/runners:ro
+
+  mc:
+    image: minio/mc:latest
+    profiles: [runners]
+    entrypoint: /bin/sh
+    volumes:
+      - ./runners:/runners:ro
+      - ./results:/results
+      - seed:/seed
+
+  aws:
+    image: amazon/aws-cli:latest
+    profiles: [runners]
+    entrypoint: /bin/sh
+    environment:
+      AWS_DEFAULT_REGION: us-east-1
+    volumes:
+      - ./runners:/runners:ro
+      - ./results:/results
+      - seed:/seed
+
+  rclone:
+    image: rclone/rclone:latest
+    profiles: [runners]
+    entrypoint: /bin/sh
+    volumes:
+      - ./runners:/runners:ro
+      - ./results:/results
+      - seed:/seed
+
+volumes:
+  seed:
+
+secrets:
+  oneiriq_token:
+    environment: ONEIRIQ_READ_PAT

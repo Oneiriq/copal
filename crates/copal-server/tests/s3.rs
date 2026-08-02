@@ -21,11 +21,18 @@ use copal_store::{Store, StoreConfig};
 const MASTER_KEY: &str = "6f2a1c9d8e7b64530f1e2d3c4b5a69788796a5b4c3d2e1f00112233445566778";
 
 async fn stack() -> (axum::Router, axum::Router, tempfile::TempDir) {
+    let (gateway, admin, dir, _store) = stack_with_store().await;
+    (gateway, admin, dir)
+}
+
+/// [`stack`], keeping the store, for tests that arrange record state
+/// the gateway alone cannot reach.
+async fn stack_with_store() -> (axum::Router, axum::Router, tempfile::TempDir, Store) {
     let store = Store::connect(StoreConfig::memory()).await.unwrap();
     let dir = tempfile::tempdir().unwrap();
     let blobs = ObjectStore::open(dir.path().to_str().unwrap()).unwrap();
     let cipher = BlobCipher::from_hex(MASTER_KEY).unwrap();
-    let state = AppState::new(store, blobs)
+    let state = AppState::new(store.clone(), blobs)
         .with_auth(AuthConfig {
             admin_token: Some("root".to_owned()),
             ..AuthConfig::default()
@@ -33,7 +40,7 @@ async fn stack() -> (axum::Router, axum::Router, tempfile::TempDir) {
         .with_cipher(Some(cipher));
     let gateway = s3_router(state.clone());
     let admin = s3_admin_router(state);
-    (gateway, admin, dir)
+    (gateway, admin, dir, store)
 }
 
 async fn json_body(response: axum::response::Response) -> Value {
@@ -980,4 +987,57 @@ async fn chunked_parts_assemble_content_bytes() {
         b"streaming!",
         "assembled object is content bytes"
     );
+}
+
+/// S3 has no notion of a key being busy: a client that PUTs the same
+/// key twice expects both writes to be accepted, and a mirror doing
+/// exactly that is the normal case. While the previous upload is
+/// still finishing, the answer is the retryable SlowDown rather than
+/// a terminal refusal, so stock clients converge instead of failing
+/// the sync.
+#[tokio::test]
+async fn a_busy_key_answers_slow_down() {
+    let (gateway, admin, _dir, store) = stack_with_store().await;
+    let (access_key, secret) = mint(&admin, "acme").await;
+
+    let put = signed_request(
+        "PUT",
+        "/acme/busy.txt",
+        "",
+        "UNSIGNED-PAYLOAD",
+        &access_key,
+        &secret,
+        Body::from(b"first".to_vec()),
+        &[],
+    );
+    assert_eq!(
+        gateway.clone().oneshot(put).await.unwrap().status(),
+        StatusCode::OK
+    );
+
+    // The processing shape, held: an upload claim that never
+    // completes leaves the key busy for the next writer.
+    let tenant = copal_core::TenantId::parse("acme").unwrap();
+    let record = copal_store::repo::file::find_by_path(&store, &tenant, "busy.txt")
+        .await
+        .unwrap()
+        .expect("the object exists");
+    copal_store::repo::file::claim_upload(&store, &tenant, &record.id, "other-instance", 900)
+        .await
+        .expect("a competing claim holds the key");
+
+    let put = signed_request(
+        "PUT",
+        "/acme/busy.txt",
+        "",
+        "UNSIGNED-PAYLOAD",
+        &access_key,
+        &secret,
+        Body::from(b"second".to_vec()),
+        &[],
+    );
+    let response = gateway.clone().oneshot(put).await.unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(response.headers()["retry-after"], "1");
+    assert!(text_body(response).await.contains("SlowDown"));
 }

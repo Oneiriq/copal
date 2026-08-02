@@ -1,0 +1,23 @@
+# The conformance harness on demand: manual runs while the practice
+# settles, releases later. Not part of per-commit CI, because the
+# stack builds a release binary in docker and the per-commit suite
+# already gates correctness; this gates client compatibility.
+name: Conformance
+on:
+  workflow_dispatch:
+
+jobs:
+  conformance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run the harness
+        run: ./conformance/run.sh
+        env:
+          ONEIRIQ_READ_PAT: ${{ secrets.ONEIRIQ_READ_PAT }}
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: conformance-results
+          path: conformance/results/

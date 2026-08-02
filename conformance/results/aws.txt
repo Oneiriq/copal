@@ -1,0 +1,7 @@
+aws sync_in PASS
+aws listing_complete PASS
+aws head_last_modified PASS
+aws multipart_roundtrip_digest PASS
+aws abort_leaves_no_ghost PASS
+aws sync_noop PASS
+aws delete_propagates PASS

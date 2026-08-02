@@ -4,13 +4,14 @@ What is left, ordered by what it blocks. Shipped work lives in
 [CHANGELOG.md](../CHANGELOG.md); this file carries only open items, so
 an item disappearing from it means the item is done.
 
-1. **The conformance harness.** The recorded mc run becomes a
-   repeatable artifact: a compose stack (pinned SurrealDB, Copal,
-   MinIO seed, mc/aws/rclone runners), scripted per-client scenarios
-   with the five wedge defects as named permanent assertions, and a
-   per-release results table the migration guide links. A
-   one-container image rides along, which is the deployment answer
-   for the wedge audience; a prospect replays the run in minutes.
+1. **The read-after-mirror race the harness found.** On a cold
+   stack, some objects answer `HEAD` while `GET` reports them
+   missing, and `mc diff` marks them changed; the same scenario run
+   against a warm stack passes every check. Metadata and blob files
+   are both present afterward, and the pipeline runs complete clean,
+   so the window sits between upload completion and the read path.
+   The harness reproduces it, which is what makes it findable, and
+   the committed table carries the failures rather than hiding them.
 
 2. **Search and text join the contract.** The retrieval surface is
    REST-only today: invisible to the differ, and field guards do not

@@ -4,131 +4,95 @@ What is left, ordered by what it blocks. Shipped work lives in
 [CHANGELOG.md](../CHANGELOG.md); this file carries only open items, so
 an item disappearing from it means the item is done.
 
-The three streams below are independent. They touch disjoint code, so
-they proceed on parallel branches instead of queueing behind one
-another's CI.
+1. **Compile engine policy from the contract.** The two enforcement
+   layers are held equal today by a parity test between contract
+   declarations and hand-written `PERMISSIONS`. Generating the engine
+   DDL from the contract makes Janus the single source for both
+   layers: `ADMIN_GUARDED_COLUMNS` disappears into generation and the
+   parity test becomes a generator-correctness test.
 
-## Stream 1: the governance tier
+2. **The conformance harness.** The recorded mc run becomes a
+   repeatable artifact: a compose stack (pinned SurrealDB, Copal,
+   MinIO seed, mc/aws/rclone runners), scripted per-client scenarios
+   with the five wedge defects as named permanent assertions, and a
+   per-release results table the migration guide links. A
+   one-container image rides along, which is the deployment answer
+   for the wedge audience; a prospect replays the run in minutes.
 
-From the July 2026 Janus review. The design: policies as named
-references in the IR, enforced as dispatcher projection so REST,
-GraphQL, and subscriptions inherit them identically, with the differ
-treating any tightening as a named breaking change. The tier shipped:
-error variants, contract-declared ceilings, principals and scopes,
-rate classes metering at the dispatcher, field guards behind the
-shared projection API, watch slots, stream lifetimes, the
-fleet-shared ledger, and persisted operations, all live on both faces
-from one contract. What remains:
+3. **Search and text join the contract.** The retrieval surface is
+   REST-only today: invisible to the differ, and field guards do not
+   project into results. On a product whose thesis is governed
+   retrieval, the flagship surface must be the governed one. Search
+   interacts with the guard projection, so it lands with stream
+   design rather than ahead of it.
 
-1. **More guards as the data model earns them.** Per-field policy is
-   in place; principals within tenants are what will make richer
-   guards meaningful.
+4. **Retention, legal hold, and WORM.** The compliance tier the
+   enterprise buyers ask for. Retention interacts with the GC grace
+   period and soft delete, so it needs design before code.
 
-2. **`PERMISSIONS` pushdown, revived by probe.** An earlier note here
-   dispositioned pushdown on the claim that the engine cannot tell
-   Copal's callers apart. The conclusion was wrong.
-   `engine_sessions.rs` pins the mechanism it missed: a cloned handle
-   is its own engine session over the same connection, a record
-   access JWT binds a caller identity to it, and table and field
-   `PERMISSIONS` then filter engine side while the root handle beside
-   it keeps full authority. The mechanism is in place end
-   to end: `DatabaseClient::caller_session` opens the per-caller
-   session and refuses tokens `PERMISSIONS` would never filter;
-   every Copal table carries engine permissions by a mechanical rule
-   (tenant tables admit only the token's tenant, tables without a
-   tenant column are closed to caller sessions); the record access
-   method applies with `COPAL_ENGINE_ACCESS_KEY`, rotating by
-   replacement; token minting mirrors the scope model; and a parity
-   test holds engine field guards equal to contract field guards.
-   The request path started
-   adopting: `COPAL_ENGINE_SESSIONS=on` routes the files resource's
-   repository calls through caller sessions minted after
-   authentication, proven on the REST face with the guarded column
-   arriving engine-redacted. The sweep reached every handler
-   with direct tenant-scoped store access: search, text, usage,
-   renditions and run listings, version downloads, and the tus
-   trio. Three surfaces stay on the service store by architecture:
-   content uploads link blob rows, and blobs are deduplicated across
-   tenants, so the blob table cannot be tenant-scoped; the public
-   download path reads unscoped before it can know a tenant; and the
-   flow engine holds its own store handle. The helper-based handlers
-   (grants, webhooks, edge) and every GraphQL resolver followed: the
-   execute path seeds the caller session into the typed context, the
-   resolvers read it back, and subscriptions carry the session for
-   their whole lifetime, with no engine-side session
-   expiry at all: a session's lifetime is its work's lifetime, ended
-   by drop, and Copal's own bounds (token TTL, request scope, stream
-   ceilings) are the lifetime authority, so no configuration
-   ordering can resurrect the expiry race. What remains here: the S3 gateway, and a session
-   cache once a deployment has watched the per-request cost. Facts that
-   bound the design:
-   enforcement follows the actor, so record sessions are filtered
-   even on a credential-less engine, whose exposure is the anonymous
-   session acting as owner; only record sessions are filtered, and
-   plain `TYPE JWT` access lands database-level sessions that bypass
-   table permissions; refused writes return empty rows with no error,
-   so the application layer stays the face that explains refusals.
+5. **The pushdown tail.** The S3 gateway still runs on the service
+   session; adoption mirrors the REST and GraphQL faces. After it, a
+   session cache amortizes the per-request open cost once a
+   deployment has watched it; sessions carry no engine expiry, so
+   cache lifetime is Copal policy alone.
 
-## Stream 2: the migration wedge
+6. **A backup and restore story.** Two stores (metadata plane, blob
+   root) and no written procedure for a coherent snapshot or a
+   restore drill. A storage product without a stated recovery
+   procedure is not one yet.
 
-MinIO's community edition was archived in 2026, and its recommended
-replacements are plain object stores. Copal can take those users only
-if their existing tooling works, and the evidence now exists: the
-migration guide carries a recorded `mc mirror` run end to end, with a
-no-op second pass, an empty `mc diff`, and an 80 MiB multipart object
-round-tripping byte-identical. Getting there surfaced and fixed four
-gateway defects no in-process test had reached, which is the argument
-for evidence runs as a practice. Remaining here:
+7. **A performance envelope.** No published numbers exist: ingest
+   throughput, retrieval latency, gateway baseline against MinIO,
+   caller-session overhead. A bench harness turns "watch before you
+   trust it" into something an operator can actually do.
 
-1. **A compose file for the demo stack.** The recorded run hand-built
-   its stack; a `docker compose up` that yields MinIO, Copal, and a
-   seeded mirror would let a prospect replay it in minutes.
-
-## Stream 3: retrieval cost
-
-8. **F16 vectors and DiskANN, blocked upstream.** The server's 3.1
-   release added both, and the newest published `surrealdb` crate
-   (3.2.3, which is also the embedded engine tests run on) parses
-   neither, along with the new distance metrics. Probed directly:
-   every form refuses. The available half shipped: the HNSW index
-   stores F32 instead of F64, since embedding models emit single
-   precision at best. Revisit when the crate catches up to the
-   server.
+8. **Principals within tenants.** The key is the smallest identity
+   today. Per-human and per-agent principals unlock richer field
+   guards, audit attribution, and the identity story agent
+   deployments increasingly expect.
 
 ## Then
 
-9. **Retention policies, legal hold, and WORM.** The compliance tier
-   the enterprise buyers ask for. Retention interacts with the GC
-   grace period and soft delete, so it needs design before code.
-10. **External transformer seam** for transcodes and document
-    renditions, following the pattern the extractor and embedding
-    seams already set: pick a contract several self-hostable
-    implementations speak, treat unconfigured as the feature being
-    absent, and parse nothing in-process.
-11. **On-the-fly rendition URLs and multi-source ingestion**, the
+9. **Blob master key rotation.** The engine access key rotates by
+   replacement; the content encryption key has no rotation path.
+10. **Audit export.** `audit_event` rows exist and list; a SIEM
+    export or streaming shape does not.
+11. **External transformer seam** for transcodes and document
+    renditions, following the extractor and embedding seams: a
+    contract several self-hostable implementations speak,
+    unconfigured means absent, nothing parsed in-process.
+12. **On-the-fly rendition URLs and multi-source ingestion**, the
     axes the hosted services sell.
-12. **More blob backends.** GCS and Azure beside the filesystem and
-    S3-compatible stores, and the SurrealDB bucket backend as a
-    first-class single-binary mode.
-13. **Extracted text and search as contract shapes.** Text is a
-    document rather than a collection, and search is a query rather
-    than a listing, so neither fits the shapes the contract has.
-    Either they gain shapes or the docs say plainly that they stay
-    REST-only the way usage does. Search's answer interacts with
-    stream 1, since field guards must project search results.
+13. **More blob backends.** GCS and Azure beside the filesystem and
+    S3-compatible stores.
+14. **The embedded tier.** One process with the engine in it, as a
+    positioned single-replica mode. Docker already answers deployment
+    simplicity; what embedding buys is the wire's removal: every
+    repository call stops being a round trip, caller sessions become
+    near-free, and the `Session not found` failure class cannot
+    exist. Parked until someone measures the round-trip cost and
+    cares.
+15. **F16 vectors and DiskANN, blocked upstream.** The server's 3.1
+    release added both; the newest published `surrealdb` crate parses
+    neither. Probed directly, every form refuses. The available half
+    shipped (F32 HNSW). Revisit when the crate catches up.
 
 ## Deferred, with reasons
 
-14. **OTel spans.** Deferred twice. OTLP export means new
-    dependencies and a cargo feature CI would not compile, which is
-    untested code by construction. The `/metrics` endpoint set a
-    dependency-free observability precedent this would break.
-15. **SDK publishing pipelines** for the four generated clients.
+16. **OTel spans.** OTLP export means new dependencies and a cargo
+    feature CI would not compile, which is untested code by
+    construction. The `/metrics` endpoint set a dependency-free
+    observability precedent this would break.
+17. **SDK publishing pipelines** for the four generated clients.
     Generated and drift-gated already; publishing is packaging work
     that wants a release cadence to hang from.
-16. **Janus REST runtime router.** Copal's REST handlers carry real
+18. **Janus REST runtime router.** Copal's REST handlers carry real
     behavior (streaming, ranges, conditionals) that a generic router
     has to earn the right to replace.
-17. **The batched `surql-rs` release.** Shon cuts it. The branch
+19. **The batched `surql-rs` release.** Shon cuts it. The branch
     carries the live-query `WHERE` clause, the session-scoped live
-    query fix, index-backed KNN, and the scan-order correction.
+    query fix, index-backed KNN, the scan-order correction, caller
+    sessions with the record-identity guard, the shared-session
+    client model, `OVERWRITE` rendering, and the live-database
+    reconciliation layer (analyzer parsing, echo-shape fixes, and
+    apply-safe diffs) that schema evolution stands on.

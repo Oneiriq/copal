@@ -113,6 +113,9 @@ impl Config {
                 username,
                 password,
                 engine_access_key: std::env::var("COPAL_ENGINE_ACCESS_KEY").ok(),
+                embedding_dimension: std::env::var("COPAL_EMBEDDING_ADDR")
+                    .ok()
+                    .map(|_| env_parse("COPAL_EMBEDDING_DIMENSION", 768)),
             },
             blob_root: env_or("COPAL_BLOB_ROOT", "./data/blobs"),
             blob_encryption_key: std::env::var("COPAL_BLOB_ENCRYPTION_KEY").ok(),

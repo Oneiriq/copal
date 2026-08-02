@@ -39,10 +39,30 @@ Every value comes from the environment. Defaults target local development.
 | `COPAL_RATE_LEDGER` | memory | `store` shares one consumption budget across a fleet. |
 | `COPAL_ENGINE_ACCESS_KEY` | unset | HS256 key for the engine's caller access method. Set, the store defines record access, every table's `PERMISSIONS` become enforceable per caller, and `Store::caller` sessions filter engine side. Rotation replaces the method on next boot. |
 | `COPAL_ENGINE_SESSIONS` | `off` | `on` runs the adopted request handlers' repository calls through caller-bound engine sessions, so `PERMISSIONS` filter live traffic. Requires the access key; boot refuses otherwise. Two engine round trips per request to open the session. |
+
 | `COPAL_PERSISTED_OPERATIONS` | unset | JSON file of sha256 to document; set, GraphQL runs listed operations only. |
 | `COPAL_MAX_SEMANTIC_DISTANCE` | `0.65` | Cosine distance beyond which a passage is not a semantic match (0 identical, 1 unrelated). Without a floor, nearest-neighbour search answers every query with its nearest results however far away they are. |
 | `COPAL_WEBHOOK_ALLOW_PRIVATE_TARGETS` | `false` | Permit webhook endpoints resolving to private, loopback, or link-local addresses. Off by default: tenant-supplied URLs pointing inside the deployment are server-side request forgery. Turn on only when receivers are genuinely internal and tenants are trusted. |
 | `COPAL_RESIDENCIES` | unset | JSON map of named storage residencies beyond `local`, e.g. `{"eu": {"scheme": "s3", "bucket": "...", "endpoint": "...", "region": "...", "access_key_id": "...", "secret_access_key": "...", "encryption_key": "<64 hex>"}}`. Filesystem residencies use `{"scheme": "fs", "root": "...", "encryption_key": "<64 hex>"}`. `encryption_key` is optional and seals that residency's objects under its own key instead of the master. Names are lowercase alphanumeric. |
+
+
+## Upgrades and the schema
+
+Boot reconciles the database against the code. The store introspects
+what the engine actually holds (`INFO FOR DB` for modes, permissions,
+analyzers, and access methods; `INFO FOR TABLE` per table for fields,
+indexes, and events), diffs it against the release's schema, and
+applies only the differences as `OVERWRITE` statements, which create
+absent objects and replace present definitions while leaving rows
+untouched. A database that matches runs no DDL at all. A database
+created by an older release receives every later definition,
+`PERMISSIONS` included, on its first boot under newer code.
+
+Definitions the database holds that the code no longer declares are
+logged and left alone: removal is an operator decision, made with
+`REMOVE` statements when the definition is truly retired. Concurrent
+replica boots race benignly, since identical `OVERWRITE` statements
+are idempotent.
 
 ## Key custody
 

@@ -44,10 +44,17 @@ from one contract. What remains:
    adopting: `COPAL_ENGINE_SESSIONS=on` routes the files resource's
    repository calls through caller sessions minted after
    authentication, proven on the REST face with the guarded column
-   arriving engine-redacted. What remains here: the sweep of the
-   other handlers (uploads, downloads, search, tus, webhooks, edge),
-   the GraphQL resolvers and the S3 gateway, and a session cache once
-   a deployment has watched the per-request cost. Facts that
+   arriving engine-redacted. The sweep reached every handler
+   with direct tenant-scoped store access: search, text, usage,
+   renditions and run listings, version downloads, and the tus
+   trio. Three surfaces stay on the service store by architecture:
+   content uploads link blob rows, and blobs are deduplicated across
+   tenants, so the blob table cannot be tenant-scoped; the public
+   download path reads unscoped before it can know a tenant; and the
+   flow engine holds its own store handle. What remains here: the
+   helper-based handlers (grants, webhooks, edge) with the GraphQL
+   resolvers and the S3 gateway, and a session cache once a
+   deployment has watched the per-request cost. Facts that
    bound the design:
    enforcement follows the actor, so record sessions are filtered
    even on a credential-less engine, whose exposure is the anonymous

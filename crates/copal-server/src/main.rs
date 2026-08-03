@@ -32,9 +32,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // clause refuses the boot here.
     store_config.engine_policy = copal_server::engine::engine_policy()?;
     let store = Store::connect(store_config).await?;
-    let open_blobs = || match &config.blob_encryption_key {
-        Some(key) => ObjectStore::open_encrypted(&config.blob_root, key),
-        None => ObjectStore::open(&config.blob_root),
+    let open_blobs = || {
+        let store = match &config.blob_encryption_key {
+            Some(key) => ObjectStore::open_encrypted(&config.blob_root, key),
+            None => ObjectStore::open(&config.blob_root),
+        }?;
+        match &config.blob_encryption_key_previous {
+            Some(previous) => store.with_previous_cipher(previous),
+            None => Ok(store),
+        }
     };
     let blobs = open_blobs()?;
     // Named residencies open beside local; the master key, when set,
@@ -52,6 +58,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let mut backend = ObjectStore::open_backend(backend_config)?;
                 if let Some(key) = &config.blob_encryption_key {
                     backend = backend.with_cipher(key)?;
+                }
+                if let Some(previous) = &config.blob_encryption_key_previous {
+                    backend = backend.with_previous_cipher(previous)?;
                 }
                 named.insert(name.clone(), backend);
             }
@@ -113,7 +122,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_residencies(residencies.named.clone())
         .with_scan_gate(config.clamav_addr.is_some())
         .with_cipher(match &config.blob_encryption_key {
-            Some(key) => Some(copal_blob::crypto::BlobCipher::from_hex(key)?),
+            Some(key) => {
+                let cipher = copal_blob::crypto::BlobCipher::from_hex(key)?;
+                Some(match &config.blob_encryption_key_previous {
+                    Some(previous) => cipher.with_previous(previous)?,
+                    None => cipher,
+                })
+            }
             None => None,
         })
         .with_embedding(
@@ -227,6 +242,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .s3_bind
         .as_ref()
         .map(|_| copal_server::s3::s3_admin_router(state.clone()));
+
+    // A retiring master key drains through two motions: sealed
+    // database secrets re-seal once here, before traffic, and sealed
+    // objects re-seal through the background sweep until passes come
+    // back empty.
+    if let Some(cipher) = state.cipher.as_ref().filter(|c| c.has_previous()) {
+        copal_server::rotate::reseal_secrets(&store, cipher).await;
+    }
+    let mut rotating: Vec<(String, ObjectStore)> = Vec::new();
+    if residencies.local.is_rotating() {
+        rotating.push(("local".to_owned(), residencies.local.clone()));
+    }
+    for (name, store) in &residencies.named {
+        if store.is_rotating() {
+            rotating.push((name.clone(), store.clone()));
+        }
+    }
+    if !rotating.is_empty() {
+        tracing::info!(
+            residencies = rotating.len(),
+            "master key rotation under way; object sweep running",
+        );
+        tokio::spawn(copal_server::rotate::run_sweep(rotating));
+    }
 
     // Webhooks and cg2 edge tokens store secrets sealed under the
     // master key, so their surfaces exist under the same gate.

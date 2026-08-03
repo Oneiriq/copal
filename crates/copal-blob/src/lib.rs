@@ -14,6 +14,7 @@ pub mod crypto;
 
 use futures::Stream;
 use futures::StreamExt as _;
+use futures::TryStreamExt as _;
 use opendal::{services::Fs, services::S3, Operator};
 
 use copal_core::{ContentDigest, CopalError, DigestBuilder};
@@ -29,6 +30,9 @@ pub enum BackendConfig {
         /// falls back to the deployment master key.
         #[serde(default)]
         encryption_key: Option<String>,
+        /// The retiring key during a rotation; opens only.
+        #[serde(default)]
+        previous_encryption_key: Option<String>,
     },
     /// An S3-compatible service. `endpoint` covers MinIO-style and
     /// other compatible targets; unset means AWS itself.
@@ -45,6 +49,9 @@ pub enum BackendConfig {
         /// Optional 64-hex key sealing this residency's objects.
         #[serde(default)]
         encryption_key: Option<String>,
+        /// The retiring key during a rotation; opens only.
+        #[serde(default)]
+        previous_encryption_key: Option<String>,
     },
 }
 
@@ -55,6 +62,20 @@ impl BackendConfig {
             Self::Fs { encryption_key, .. } | Self::S3 { encryption_key, .. } => {
                 encryption_key.as_deref()
             }
+        }
+    }
+
+    /// The residency's own retiring key, when a rotation is under way.
+    pub fn previous_encryption_key(&self) -> Option<&str> {
+        match self {
+            Self::Fs {
+                previous_encryption_key,
+                ..
+            }
+            | Self::S3 {
+                previous_encryption_key,
+                ..
+            } => previous_encryption_key.as_deref(),
         }
     }
 }
@@ -188,6 +209,7 @@ impl ObjectStore {
         Self::open_backend(&BackendConfig::Fs {
             root: root.to_owned(),
             encryption_key: None,
+            previous_encryption_key: None,
         })
     }
 
@@ -237,7 +259,13 @@ impl ObjectStore {
         // and residencies already carry that scope: a tenant that
         // needs its own key gets its own residency.
         let cipher = match config.encryption_key() {
-            Some(key) => Some(crypto::BlobCipher::from_hex(key)?),
+            Some(key) => {
+                let mut cipher = crypto::BlobCipher::from_hex(key)?;
+                if let Some(previous) = config.previous_encryption_key() {
+                    cipher = cipher.with_previous(previous)?;
+                }
+                Some(cipher)
+            }
             None => None,
         };
         Ok(Self { op, cipher })
@@ -253,9 +281,135 @@ impl ObjectStore {
         Ok(self)
     }
 
+    /// Attach the deployment's retiring key for a rotation. A
+    /// residency already carrying its own previous key keeps it, the
+    /// same precedence [`Self::with_cipher`] applies to the current
+    /// key.
+    pub fn with_previous_cipher(mut self, key_hex: &str) -> copal_core::Result<Self> {
+        if let Some(cipher) = self.cipher.take() {
+            self.cipher = Some(if cipher.has_previous() {
+                cipher
+            } else {
+                cipher.with_previous(key_hex)?
+            });
+        }
+        Ok(self)
+    }
+
+    /// Pick the per-object cipher that actually opens this object:
+    /// the current key, or the retiring one during a rotation. The
+    /// probe decrypts the first frame once, so a stream never fails
+    /// mid-flight on a key mismatch; the flag reports whether the
+    /// current key won.
+    async fn opening_cipher(
+        &self,
+        path: &str,
+        prefix: &[u8],
+        disk_len: u64,
+    ) -> copal_core::Result<(crypto::Aes256Gcm, bool)> {
+        let Some(master) = &self.cipher else {
+            return Err(CopalError::Blob(
+                "object is sealed but no encryption key is configured".into(),
+            ));
+        };
+        let salt = crypto::parse_header(prefix)?;
+        let logical = crypto::plaintext_len(disk_len as usize)?;
+        let total_frames = crypto::frame_count(logical) as u32;
+        let first_len = crypto::sealed_frame_len(logical, 0) as u64;
+        let start = crypto::HEADER as u64;
+        let buffer = self
+            .op
+            .read_with(path)
+            .range(start..start + first_len)
+            .await
+            .map_err(|e| CopalError::Blob(format!("probe {path}: {e}")))?;
+        let first = buffer.to_vec();
+        let candidate = master.object_cipher(&salt)?;
+        if crypto::open_frames(&candidate, &first, 0, total_frames).is_ok() {
+            return Ok((candidate, true));
+        }
+        if let Some(fallback) = master.previous_object_cipher(&salt)? {
+            if crypto::open_frames(&fallback, &first, 0, total_frames).is_ok() {
+                return Ok((fallback, false));
+            }
+        }
+        Err(CopalError::Blob(format!("no configured key opens {path}")))
+    }
+
+    /// One rotation sweep pass: re-seal up to `batch` objects that
+    /// only the retiring key opens. Content addressing holds because
+    /// the digest covers plaintext, so a re-sealed object keeps its
+    /// address. Returns how many re-sealed; zero means the sweep has
+    /// drained. A no-op without both keys configured.
+    pub async fn reseal_pass(&self, batch: usize) -> copal_core::Result<usize> {
+        let rotating = self
+            .cipher
+            .as_ref()
+            .is_some_and(crypto::BlobCipher::has_previous);
+        if !rotating || batch == 0 {
+            return Ok(0);
+        }
+        let mut lister = self
+            .op
+            .lister_with("objects/")
+            .recursive(true)
+            .await
+            .map_err(|e| CopalError::Blob(format!("list objects: {e}")))?;
+        let mut resealed = 0usize;
+        while resealed < batch {
+            let entry = match lister.try_next().await {
+                Ok(Some(entry)) => entry,
+                Ok(None) => break,
+                Err(e) => return Err(CopalError::Blob(format!("list objects: {e}"))),
+            };
+            if entry.metadata().mode() != opendal::EntryMode::FILE {
+                continue;
+            }
+            let path = entry.path().to_owned();
+            let disk_len = self
+                .op
+                .stat(&path)
+                .await
+                .map_err(|e| CopalError::Blob(format!("stat {path}: {e}")))?
+                .content_length();
+            let prefix = self.read_prefix(&path, disk_len).await?;
+            if !crypto::is_sealed(&prefix) {
+                continue;
+            }
+            // An object neither key opens is skipped rather than
+            // fatal: the read path reports it loudly, and one bad
+            // object must not stall the rest of the sweep.
+            let Ok((object, current)) = self.opening_cipher(&path, &prefix, disk_len).await else {
+                continue;
+            };
+            if current {
+                continue;
+            }
+            let logical = crypto::plaintext_len(disk_len as usize)? as u64;
+            let stream = self.sealed_stream(&path, object, disk_len, 0, logical)?;
+            let stored = self.put_streamed(stream).await?;
+            if stored.storage_path != path {
+                return Err(CopalError::Blob(format!(
+                    "re-seal of {path} landed at {}: plaintext drifted",
+                    stored.storage_path
+                )));
+            }
+            resealed += 1;
+        }
+        Ok(resealed)
+    }
+
     /// Whether this store seals what it writes.
     pub fn is_encrypted(&self) -> bool {
         self.cipher.is_some()
+    }
+
+    /// Whether a rotation is under way: a retiring key rides beside
+    /// the current one.
+    pub fn is_rotating(&self) -> bool {
+        self.cipher
+            .as_ref()
+            .is_some_and(crypto::BlobCipher::has_previous)
     }
 
     /// Move a finished object onto its address. Filesystem backends
@@ -285,18 +439,11 @@ impl ObjectStore {
     fn sealed_stream(
         &self,
         path: &str,
-        prefix: &[u8],
+        object: crypto::Aes256Gcm,
         disk_len: u64,
         start: u64,
         end: u64,
     ) -> copal_core::Result<ByteStream> {
-        let Some(master) = &self.cipher else {
-            return Err(CopalError::Blob(
-                "object is sealed but no encryption key is configured".into(),
-            ));
-        };
-        let salt = crypto::parse_header(prefix)?;
-        let object = master.object_cipher(&salt)?;
         let logical = crypto::plaintext_len(disk_len as usize)? as u64;
         let total_frames = crypto::frame_count(logical as usize) as u32;
         let frame = crypto::FRAME as u64;
@@ -650,7 +797,8 @@ impl BlobStore for ObjectStore {
         let prefix = self.read_prefix(&path, disk_len).await?;
         if crypto::is_sealed(&prefix) {
             let logical = crypto::plaintext_len(disk_len as usize)? as u64;
-            let stream = self.sealed_stream(&path, &prefix, disk_len, 0, logical)?;
+            let (object, _) = self.opening_cipher(&path, &prefix, disk_len).await?;
+            let stream = self.sealed_stream(&path, object, disk_len, 0, logical)?;
             return Ok((logical, stream));
         }
 
@@ -694,7 +842,8 @@ impl BlobStore for ObjectStore {
                     "range {start}..{end} exceeds object length {logical}",
                 )));
             }
-            let stream = self.sealed_stream(&path, &prefix, disk_len, start, end)?;
+            let (object, _) = self.opening_cipher(&path, &prefix, disk_len).await?;
+            let stream = self.sealed_stream(&path, object, disk_len, start, end)?;
             return Ok((logical, stream));
         }
 
@@ -791,6 +940,7 @@ mod tests {
         let config = BackendConfig::Fs {
             root: root.clone(),
             encryption_key: Some(own_key.clone()),
+            previous_encryption_key: None,
         };
         let store = ObjectStore::open_backend(&config).unwrap();
         assert!(store.is_encrypted(), "the residency key applies");
@@ -808,6 +958,7 @@ mod tests {
         let foreign = ObjectStore::open_backend(&BackendConfig::Fs {
             root,
             encryption_key: Some(other_key),
+            previous_encryption_key: None,
         })
         .unwrap();
         assert!(
@@ -843,5 +994,74 @@ mod tests {
         }"#;
         let config: BackendConfig = serde_json::from_str(raw).unwrap();
         assert!(ObjectStore::open_backend(&config).is_ok());
+    }
+
+    #[tokio::test]
+    async fn rotation_reseals_objects_in_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_str().unwrap().to_owned();
+        let old_key = "a".repeat(64);
+        let new_key = "b".repeat(64);
+
+        // A plaintext object predates encryption; two sealed objects,
+        // one spanning frames, follow under the old key.
+        let plain = ObjectStore::open(&root).unwrap();
+        let bare = plain.put_streamed(body(&[b"never sealed"])).await.unwrap();
+        let old_store = ObjectStore::open_encrypted(&root, &old_key).unwrap();
+        let small = old_store
+            .put_streamed(body(&[b"small secret"]))
+            .await
+            .unwrap();
+        let big_bytes: Vec<u8> = (0..2 * crypto::FRAME + 7)
+            .map(|i| (i % 251) as u8)
+            .collect();
+        let big = old_store
+            .put_streamed(futures::stream::iter(vec![Ok::<_, String>(
+                bytes::Bytes::from(big_bytes.clone()),
+            )]))
+            .await
+            .unwrap();
+
+        // The rotated store opens everything, streams across frame
+        // boundaries, and re-seals exactly the two old-key objects.
+        let rotated = ObjectStore::open_encrypted(&root, &new_key)
+            .unwrap()
+            .with_previous_cipher(&old_key)
+            .unwrap();
+        assert_eq!(
+            rotated.read(&small.digest).await.unwrap(),
+            &b"small secret"[..],
+        );
+        let frame = crypto::FRAME as u64;
+        let (total, stream) = rotated
+            .open_range(&big.digest, frame - 3, frame + 5)
+            .await
+            .unwrap();
+        assert_eq!(total, big_bytes.len() as u64);
+        let window: Vec<u8> = stream.try_collect::<Vec<_>>().await.unwrap().concat();
+        assert_eq!(window, big_bytes[crypto::FRAME - 3..crypto::FRAME + 5]);
+        assert_eq!(rotated.reseal_pass(16).await.unwrap(), 2);
+        assert_eq!(
+            rotated.reseal_pass(16).await.unwrap(),
+            0,
+            "the sweep drains"
+        );
+
+        // The new key alone now opens everything; the plaintext
+        // object was left as it was.
+        let fresh = ObjectStore::open_encrypted(&root, &new_key).unwrap();
+        assert_eq!(
+            fresh.read(&small.digest).await.unwrap(),
+            &b"small secret"[..],
+        );
+        assert_eq!(fresh.read(&big.digest).await.unwrap(), &big_bytes[..]);
+        assert_eq!(
+            fresh.read(&bare.digest).await.unwrap(),
+            &b"never sealed"[..],
+        );
+
+        // The retired key alone no longer can.
+        let stale = ObjectStore::open_encrypted(&root, &old_key).unwrap();
+        assert!(stale.read(&small.digest).await.is_err());
     }
 }

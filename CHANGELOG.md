@@ -98,6 +98,17 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ### Storage and tenancy
 
+- **The blob master key rotates without downtime.** Move the old key
+  to `COPAL_BLOB_ENCRYPTION_KEY_PREVIOUS`, set the new one, restart:
+  reads fall back to the retiring key, database secrets re-seal at
+  boot, and a background sweep re-writes sealed objects under the
+  current key, in place, because digests cover plaintext and the
+  address never moves. `copal_resealed_total` going quiet is the
+  signal to drop the old key. Residencies sealing under their own
+  keys rotate independently through `previous_encryption_key`. The
+  old instruction to re-mint credentials after a rotation is gone;
+  the boot pass carries them over.
+
 - **Schema evolution: boot reconciles the database against the
   code.** `IF NOT EXISTS` created and then never updated, so a
   database from an older release silently lacked every later

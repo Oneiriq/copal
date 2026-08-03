@@ -26,6 +26,10 @@ pub struct Config {
     /// Optional 64-hex master key enabling encryption at rest for new
     /// objects; existing plaintext objects keep serving.
     pub blob_encryption_key: Option<String>,
+    /// The retiring master key during a rotation. Opens fall back to
+    /// it while the re-seal sweep moves everything under the current
+    /// key; nothing seals under it. Unset it once the sweep drains.
+    pub blob_encryption_key_previous: Option<String>,
     /// Upload body ceiling in bytes.
     pub max_upload_bytes: usize,
     /// Upload claim lease TTL; expired claims are stealable and reaped.
@@ -126,6 +130,7 @@ impl Config {
             },
             blob_root: env_or("COPAL_BLOB_ROOT", "./data/blobs"),
             blob_encryption_key: std::env::var("COPAL_BLOB_ENCRYPTION_KEY").ok(),
+            blob_encryption_key_previous: std::env::var("COPAL_BLOB_ENCRYPTION_KEY_PREVIOUS").ok(),
             max_upload_bytes: env_parse("COPAL_MAX_UPLOAD_BYTES", 1 << 30),
             upload_lease_secs: env_parse("COPAL_UPLOAD_LEASE_SECS", 900),
             blocked_extensions: std::env::var("COPAL_BLOCKED_EXTENSIONS").ok(),

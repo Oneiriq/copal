@@ -14,6 +14,7 @@ Every value comes from the environment. Defaults target local development.
 | `COPAL_DB_USER` / `COPAL_DB_PASS` | `root` / `root` | Database credentials. Use a scoped user in deployments. |
 | `COPAL_BLOB_ROOT` | `./data/blobs` | Filesystem blob store root. |
 | `COPAL_BLOB_ENCRYPTION_KEY` | unset | 64-hex master key enabling encryption at rest. New objects seal (chunked AES-256-GCM, per-object derived keys); existing plaintext objects keep serving. Digests stay plaintext digests, so addressing and dedupe are unchanged. |
+| `COPAL_BLOB_ENCRYPTION_KEY_PREVIOUS` | unset | The retiring master key during a rotation. Reads fall back to it while the re-seal sweep moves objects and sealed secrets under the current key; nothing seals under it. Unset it once `copal_resealed_total` goes quiet. See the rotation section. |
 | `COPAL_MAX_UPLOAD_BYTES` | `1073741824` | Upload ceiling, enforced in-stream (413 past it). |
 | `COPAL_UPLOAD_LEASE_SECS` | `900` | Upload claim lease. Expired claims are stealable and reaped. |
 | `COPAL_AUTH_MODE` | `header` | `header` (development) or `keys`. The default flips to `keys` at 1.0. |
@@ -45,7 +46,7 @@ Every value comes from the environment. Defaults target local development.
 | `COPAL_PERSISTED_OPERATIONS` | unset | JSON file of sha256 to document; set, GraphQL runs listed operations only. |
 | `COPAL_MAX_SEMANTIC_DISTANCE` | `0.65` | Cosine distance beyond which a passage is not a semantic match (0 identical, 1 unrelated). Without a floor, nearest-neighbour search answers every query with its nearest results however far away they are. |
 | `COPAL_WEBHOOK_ALLOW_PRIVATE_TARGETS` | `false` | Permit webhook endpoints resolving to private, loopback, or link-local addresses. Off by default: tenant-supplied URLs pointing inside the deployment are server-side request forgery. Turn on only when receivers are genuinely internal and tenants are trusted. |
-| `COPAL_RESIDENCIES` | unset | JSON map of named storage residencies beyond `local`, e.g. `{"eu": {"scheme": "s3", "bucket": "...", "endpoint": "...", "region": "...", "access_key_id": "...", "secret_access_key": "...", "encryption_key": "<64 hex>"}}`. Filesystem residencies use `{"scheme": "fs", "root": "...", "encryption_key": "<64 hex>"}`. `encryption_key` is optional and seals that residency's objects under its own key instead of the master. Names are lowercase alphanumeric. |
+| `COPAL_RESIDENCIES` | unset | JSON map of named storage residencies beyond `local`, e.g. `{"eu": {"scheme": "s3", "bucket": "...", "endpoint": "...", "region": "...", "access_key_id": "...", "secret_access_key": "...", "encryption_key": "<64 hex>"}}`. Filesystem residencies use `{"scheme": "fs", "root": "...", "encryption_key": "<64 hex>"}`. `encryption_key` is optional and seals that residency's objects under its own key instead of the master; `previous_encryption_key` carries that residency's retiring key during a rotation. Names are lowercase alphanumeric. |
 
 
 ## Upgrades and the schema
@@ -100,9 +101,9 @@ master key, returned once at registration, read back only to sign
 deliveries. The webhook surface and its dispatcher exist only when the
 key is configured.
 
-Rotating the blob master key invalidates sealed credentials, webhook
-secrets, and edge keys (they open under the key that sealed them);
-re-mint them as part of any master-key rotation.
+Sealed credentials, webhook secrets, and edge keys survive a master
+key rotation without re-minting: the boot pass re-seals them under
+the current key (see the rotation section below).
 
 Edge keys (`cg2` signing secrets) complete the sealed-secret set:
 minted per tenant, sealed under the master key, returned once for the
@@ -122,6 +123,40 @@ the old value to `COPAL_ADMIN_TOKEN_PREVIOUS`, deploying the new one,
 and unsetting the previous once callers have moved. Audit rows
 are immutable inside the engine; an UPDATE or DELETE against one aborts in
 SurrealDB itself.
+
+## Master key rotation
+
+`COPAL_BLOB_ENCRYPTION_KEY` retires in three motions, with reads
+correct throughout.
+
+1. Set the new key as `COPAL_BLOB_ENCRYPTION_KEY` and move the old
+   one to `COPAL_BLOB_ENCRYPTION_KEY_PREVIOUS`, then restart. New
+   writes seal under the new key; reads probe the current key first
+   and fall back to the retiring one, so nothing sealed earlier goes
+   dark.
+2. Let the sweep drain. Database secrets (S3 credentials, webhook
+   endpoint secrets, edge keys) re-seal once at boot, before traffic.
+   Objects re-seal in the background, a batch per residency every
+   five minutes, counted by `copal_resealed_total`. Content
+   addressing makes the rewrite safe in place: digests cover
+   plaintext, so a re-sealed object keeps its address and its
+   references.
+3. When the counter goes quiet, unset
+   `COPAL_BLOB_ENCRYPTION_KEY_PREVIOUS` and restart. The old key is
+   dead weight from then on and belongs out of custody.
+
+A residency sealing under its own `encryption_key` rotates the same
+way through `previous_encryption_key` in its residency JSON; the
+deployment-level previous key never overrides a residency's own.
+Objects written before encryption was enabled are plaintext, and the
+sweep leaves them as they are; a rotation moves sealed bytes between
+keys and does no first-time sealing. Uploading the content again
+seals it.
+
+The fallback order is strict: every open tries the current key first,
+so a drained rotation costs nothing on the read path, and the sweep
+re-seals exactly the objects whose first frame the current key fails
+to open.
 
 ## Malware scanning
 
@@ -231,7 +266,9 @@ The requirements:
   sharing: writes land under a staging name and rename onto the
   digest.
 - **The same keys**: blob encryption key, engine access key, admin
-  token.
+  token. During a master key rotation, both instances carry the same
+  previous key too, and it stays configured until the sweep drains on
+  every instance's residencies.
 - **One engine.** Leases, claims, and every compare-and-set resolve
   there, which is why round-robin needs no sticky sessions.
 
@@ -435,6 +472,7 @@ tenant-facing network along with key custody.
 | `copal_quota_refusals_total` | Uploads refused for exceeding a tenant ceiling. |
 | `copal_webhook_deliveries_total{outcome}` | Delivery attempts by outcome: delivered, retry, failed. |
 | `copal_blobs_collected_total`, `copal_reaped_uploads_total`, `copal_reaped_runs_total` | Sweep work, accumulated across passes. |
+| `copal_resealed_total`, `copal_secrets_resealed_total` | Rotation progress: objects and database secrets moved under the current master key. Quiet means the rotation has drained. |
 
 Counters are process-local and reset on restart, which is what
 Prometheus expects; the database holds the durable truth for

@@ -19,6 +19,7 @@ pub mod metrics;
 pub mod netguard;
 pub mod pipeline;
 pub mod rate;
+pub mod rotate;
 pub mod s3;
 pub mod serve;
 pub mod session_cache;

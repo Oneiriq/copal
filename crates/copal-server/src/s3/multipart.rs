@@ -165,6 +165,7 @@ pub async fn complete_multipart<B: BlobStore>(
     upload_id: &str,
     manifest: &str,
     headers: &axum::http::HeaderMap,
+    principal: Option<&str>,
 ) -> Response {
     let session = match mpu_repo::fetch_upload(&gateway.app.store, tenant, upload_id).await {
         Ok(Some(session)) => session,
@@ -333,7 +334,7 @@ pub async fn complete_multipart<B: BlobStore>(
         &digest,
         size_bytes,
         &storage_path,
-        "s3",
+        principal.unwrap_or("s3"),
     )
     .await
     {
@@ -523,6 +524,7 @@ pub async fn dispatch<B: BlobStore>(
                 &upload_id,
                 &manifest,
                 &parts.headers,
+                caller.principal.as_deref(),
             )
             .await
         }

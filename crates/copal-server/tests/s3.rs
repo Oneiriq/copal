@@ -1294,3 +1294,121 @@ async fn conditional_writes_answer_on_the_rest_face() {
         "the belief went stale after the replace",
     );
 }
+
+/// S3 credentials answer to principals: uploads attribute to the
+/// actor's handle, and disabling the principal refuses the
+/// credential live, mid-session.
+#[tokio::test]
+async fn s3_credentials_answer_to_their_principal() {
+    let (gateway, admin, _dir, store) = stack_with_store().await;
+
+    // A principal, and a credential minted under it. Principals are
+    // managed on the API admin surface; this suite exercises the S3
+    // one, so the actor is seeded through the repository.
+    let tenant = copal_core::TenantId::parse("acme").unwrap();
+    copal_store::repo::principal::create_principal(
+        &store,
+        &tenant,
+        "uploader-7",
+        "agent",
+        &["read".to_owned(), "write".to_owned()],
+    )
+    .await
+    .unwrap();
+    let mint = Request::builder()
+        .method("POST")
+        .uri("/v1/admin/tenants/acme/s3-credentials")
+        .header("x-copal-admin-token", "root")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::json!({ "principal": "uploader-7" }).to_string(),
+        ))
+        .unwrap();
+    let response = admin.clone().oneshot(mint).await.unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let body = text_body(response).await;
+    let minted: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let access_key = minted["access_key_id"].as_str().unwrap().to_owned();
+    let secret = minted["secret_access_key"].as_str().unwrap().to_owned();
+    assert_eq!(minted["principal"], "uploader-7");
+
+    // An upload through SigV4 attributes to the handle.
+    let put = signed_request(
+        "PUT",
+        "/acme/attributed.txt",
+        "",
+        "UNSIGNED-PAYLOAD",
+        &access_key,
+        &secret,
+        Body::from(b"authored via s3".to_vec()),
+        &[],
+    );
+    assert_eq!(
+        gateway.clone().oneshot(put).await.unwrap().status(),
+        StatusCode::OK
+    );
+    let record = copal_store::repo::file::find_by_path(&store, &tenant, "attributed.txt")
+        .await
+        .unwrap()
+        .expect("uploaded");
+    let file_id = copal_core::FileId::parse(record.id.as_str()).unwrap();
+    let version = copal_store::repo::version::get_version(&store, &tenant, &file_id, 1)
+        .await
+        .unwrap()
+        .expect("version exists");
+    assert_eq!(
+        version.created_by.as_deref(),
+        Some("uploader-7"),
+        "the version names the actor",
+    );
+
+    // Disable the principal: the same credential refuses immediately.
+    assert!(
+        copal_store::repo::principal::disable_principal(&store, &tenant, "uploader-7")
+            .await
+            .unwrap()
+    );
+    let list = signed_request(
+        "GET",
+        "/acme",
+        "list-type=2",
+        "UNSIGNED-PAYLOAD",
+        &access_key,
+        &secret,
+        Body::empty(),
+        &[],
+    );
+    assert_eq!(
+        gateway.clone().oneshot(list).await.unwrap().status(),
+        StatusCode::FORBIDDEN,
+        "a disabled principal refuses its S3 credentials live",
+    );
+}
+
+/// The mint refuses a ceiling that cannot carry the gateway's grant.
+#[tokio::test]
+async fn s3_mint_answers_to_the_ceiling() {
+    let (_gateway, admin, _dir, store) = stack_with_store().await;
+    let tenant = copal_core::TenantId::parse("acme").unwrap();
+    copal_store::repo::principal::create_principal(
+        &store,
+        &tenant,
+        "reader-only",
+        "agent",
+        &["read".to_owned()],
+    )
+    .await
+    .unwrap();
+    let mint = Request::builder()
+        .method("POST")
+        .uri("/v1/admin/tenants/acme/s3-credentials")
+        .header("x-copal-admin-token", "root")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::json!({ "principal": "reader-only" }).to_string(),
+        ))
+        .unwrap();
+    let response = admin.clone().oneshot(mint).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert!(text_body(response).await.contains("read and write"));
+}

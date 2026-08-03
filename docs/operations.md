@@ -324,6 +324,12 @@ GET    /v1/admin/tenants/{tenant}/principals
 DELETE /v1/admin/tenants/{tenant}/principals/{handle}   (disables; the audit trail keeps the name)
 ```
 
+S3 credential minting takes the same optional `principal` in its
+body: the mint refuses when the principal's ceiling cannot carry the
+gateway's read and write grant, uploads through the credential
+record the actor's handle, and disabling the principal refuses every
+one of its S3 credentials live, mid-session.
+
 Key minting takes an optional `principal`. Scopes beyond the
 principal's ceiling refuse at mint time, effective scopes are the
 intersection of key and principal at every authentication, and

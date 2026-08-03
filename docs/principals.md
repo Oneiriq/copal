@@ -131,9 +131,11 @@ is the reason this design exists.
    principal share its budget, so an agent's spend is the agent's
    regardless of how many credentials it rotated through.
 5. `created_by` writes the handle, with the unknown-authorship rule
-   above. **Shipped**: the REST body path records the actor; grant,
-   TUS, and S3 uploads keep their source labels until those carriers
-   learn principals, and every legacy value reads as nobody's.
+   above. **Shipped**: the REST body path records the actor; grant
+   and TUS uploads keep their source labels until those carriers
+   learn principals, and every legacy value reads as nobody's. S3
+   credentials learned principals afterward: uploads through SigV4
+   attribute to the credential's actor.
 
 Slices 1 and 2 are additive: a deployment with no principals behaves
 exactly as it does today, which is the property that lets this land

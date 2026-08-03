@@ -182,7 +182,14 @@ pub(crate) async fn copy_object<B: BlobStore>(
 
     state.settle_reservation(tenant, declared, size_bytes).await;
     match finalize_new_content(
-        state, tenant, &id, &residency, &digest, size_bytes, &store_key, "s3",
+        state,
+        tenant,
+        &id,
+        &residency,
+        &digest,
+        size_bytes,
+        &store_key,
+        caller.principal.as_deref().unwrap_or("s3"),
     )
     .await
     {

@@ -29,6 +29,9 @@ fn cred_rid(access_key_id: &str) -> copal_core::Result<RecordID<()>> {
 pub struct S3CredentialRow {
     pub id: String,
     pub tenant_id: String,
+    /// The principal this credential belongs to, when one does.
+    #[serde(default)]
+    pub principal_id: Option<String>,
     pub secret_sealed: String,
     #[serde(default)]
     pub revoked_at: Option<String>,
@@ -48,11 +51,16 @@ pub async fn create_credential(
     tenant: &TenantId,
     access_key_id: &str,
     secret_sealed: &str,
+    principal_id: Option<&str>,
 ) -> copal_core::Result<S3CredentialRow> {
-    let payload = json!({
+    let mut payload = json!({
         "tenant_id": tenant.as_str(),
         "secret_sealed": secret_sealed,
     });
+    // Absent rather than null: option fields accept NONE, never NULL.
+    if let Some(principal) = principal_id {
+        payload["principal_id"] = json!(principal);
+    }
     let created = create_record(
         store.client(),
         &cred_rid(access_key_id)?.to_string(),

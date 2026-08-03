@@ -79,8 +79,12 @@ pub struct KeyIdentity {
     /// The bare key id, carried as the principal's subject for audit.
     pub key_id: String,
     /// The scopes this key holds, already expanded: an unscoped key
-    /// reads as holding every scope in [`KEY_SCOPES`].
+    /// reads as holding every scope in [`KEY_SCOPES`]. For a key
+    /// under a principal, this is the intersection of the two.
     pub scopes: Vec<String>,
+    /// The named actor this key belongs to, when one does. Guards
+    /// compare actors, so this becomes the subject when present.
+    pub principal: Option<String>,
 }
 
 /// Resolve the request's tenant per the configured mode.
@@ -115,6 +119,7 @@ pub async fn authenticate_with_identity<B: BlobStore>(
                 Some(KeyIdentity {
                     key_id: "trusted-header".to_owned(),
                     scopes: KEY_SCOPES.iter().map(|s| s.to_string()).collect(),
+                    principal: None,
                 }),
             ))
         }
@@ -142,16 +147,36 @@ pub async fn authenticate_with_identity<B: BlobStore>(
                 return Err(refused());
             }
             let tenant = TenantId::parse(&row.tenant_id).map_err(|_| refused())?;
-            let scopes: Vec<String> = if row.scopes.is_empty() {
+            let mut scopes: Vec<String> = if row.scopes.is_empty() {
                 KEY_SCOPES.iter().map(|s| s.to_string()).collect()
             } else {
                 row.scopes.split(',').map(str::to_owned).collect()
             };
+            // A key under a principal answers to it: disabled refuses
+            // every key at once, and the effective scopes are the
+            // intersection, computed here so a principal narrowed
+            // after minting narrows its keys with it.
+            let mut principal_handle = None;
+            if let Some(principal_id) = row.principal_id.as_deref() {
+                let principal =
+                    copal_store::repo::principal::get_by_id(&state.store, &tenant, principal_id)
+                        .await?
+                        .ok_or_else(refused)?;
+                if principal.disabled_at.is_some() {
+                    return Err(refused());
+                }
+                let ceiling = principal.scope_list();
+                if !ceiling.is_empty() {
+                    scopes.retain(|scope| ceiling.contains(scope));
+                }
+                principal_handle = Some(principal.handle);
+            }
             Ok((
                 tenant,
                 Some(KeyIdentity {
                     key_id: row.key_id(),
                     scopes,
+                    principal: principal_handle,
                 }),
             ))
         }

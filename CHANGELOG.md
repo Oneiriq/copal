@@ -210,6 +210,18 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ### Governance
 
+- **Principals: named actors that keys belong to.** The first two
+  slices of the design. A `principal` carries a handle, a kind, a
+  scope ceiling, and a disabled switch; keys mint under one and
+  answer to it. Scopes beyond the ceiling refuse at mint time,
+  effective scopes are the intersection of key and principal computed
+  at every authentication (so narrowing a principal narrows its keys
+  live), and disabling a principal refuses every key it owns at once,
+  which is the operation an incident actually needs. Field guards now
+  compare actors: a key under a principal answers as its handle. A
+  key without a principal behaves exactly as before, which is what
+  makes this adoptable.
+
 - **Retention completes: policy, pruning, the engine clause, and the
   ledger line.** A tenant default stamps every new version at
   creation, computed once and never recomputed, so a policy change

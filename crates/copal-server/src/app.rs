@@ -563,6 +563,14 @@ pub fn admin_router<B: BlobStore + 'static>(state: AppState<B>) -> Router {
             "/v1/admin/tenants/{tenant}/keys/{key_id}",
             axum::routing::delete(revoke_key::<B>),
         )
+        .route(
+            "/v1/admin/tenants/{tenant}/principals",
+            post(create_principal::<B>).get(list_principals::<B>),
+        )
+        .route(
+            "/v1/admin/tenants/{tenant}/principals/{handle}",
+            axum::routing::delete(disable_principal::<B>),
+        )
         .route("/v1/admin/tenants/{tenant}/audit", get(list_audit::<B>))
         .route(
             "/v1/admin/tenants/{tenant}/retention",
@@ -1232,6 +1240,117 @@ struct MintKeyRequest {
     /// Seconds until the key expires; absent means it never does.
     #[serde(default)]
     ttl_secs: Option<u32>,
+    #[serde(default)]
+    principal: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct CreatePrincipalRequest {
+    handle: String,
+    kind: String,
+    #[serde(default)]
+    scopes: Vec<String>,
+}
+
+/// Create a named actor. Keys minted under it answer to its scope
+/// ceiling and to its disabled switch.
+async fn create_principal<B: BlobStore>(
+    State(state): State<AppState<B>>,
+    headers: HeaderMap,
+    Path(tenant): Path<String>,
+    Json(request): Json<CreatePrincipalRequest>,
+) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
+    crate::auth::require_admin(&state, &headers)?;
+    let tenant = TenantId::parse(&tenant)?;
+    if !matches!(request.kind.as_str(), "human" | "service" | "agent") {
+        return Err(CopalError::validation("kind must be human, service, or agent").into());
+    }
+    for scope in &request.scopes {
+        if !crate::auth::KEY_SCOPES.contains(&scope.as_str()) {
+            return Err(CopalError::validation(format!(
+                "unknown scope {scope:?}; scopes are read, write, admin",
+            ))
+            .into());
+        }
+    }
+    let row = copal_store::repo::principal::create_principal(
+        &state.store,
+        &tenant,
+        &request.handle,
+        &request.kind,
+        &request.scopes,
+    )
+    .await?;
+    copal_store::repo::auth::record_audit(
+        &state.store,
+        &tenant,
+        "admin",
+        "principal.created",
+        &row.handle,
+        forwarded_origin(&headers).as_deref(),
+        Some(json!({ "kind": row.kind, "scopes": request.scopes })),
+    )
+    .await?;
+    Ok((
+        StatusCode::CREATED,
+        Json(json!({
+            "handle": row.handle,
+            "kind": row.kind,
+            "scopes": request.scopes,
+            "created_at": row.created_at,
+        })),
+    ))
+}
+
+async fn list_principals<B: BlobStore>(
+    State(state): State<AppState<B>>,
+    headers: HeaderMap,
+    Path(tenant): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    crate::auth::require_admin(&state, &headers)?;
+    let tenant = TenantId::parse(&tenant)?;
+    let rows = copal_store::repo::principal::list_principals(&state.store, &tenant).await?;
+    let items: Vec<_> = rows
+        .iter()
+        .map(|row| {
+            json!({
+                "handle": row.handle,
+                "kind": row.kind,
+                "scopes": row.scope_list(),
+                "disabled_at": row.disabled_at,
+                "created_at": row.created_at,
+            })
+        })
+        .collect();
+    Ok(Json(json!({ "items": items })))
+}
+
+/// Disable a principal: every key under it refuses from this moment.
+/// Disabling rather than deleting, because the audit trail keeps
+/// naming the actor.
+async fn disable_principal<B: BlobStore>(
+    State(state): State<AppState<B>>,
+    headers: HeaderMap,
+    Path((tenant, handle)): Path<(String, String)>,
+) -> Result<StatusCode, ApiError> {
+    crate::auth::require_admin(&state, &headers)?;
+    let tenant = TenantId::parse(&tenant)?;
+    let disabled =
+        copal_store::repo::principal::disable_principal(&state.store, &tenant, &handle).await?;
+    if !disabled {
+        return Err(CopalError::not_found(format!("no live principal {handle:?}")).into());
+    }
+    copal_store::repo::auth::record_audit(
+        &state.store,
+        &tenant,
+        "admin",
+        "principal.disabled",
+        &handle,
+        forwarded_origin(&headers).as_deref(),
+        None,
+    )
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Mint a tenant API key. The bearer token appears exactly once, in
@@ -1255,6 +1374,35 @@ async fn mint_key<B: BlobStore>(
     if request.ttl_secs == Some(0) {
         return Err(CopalError::validation("ttl_secs must be at least 1").into());
     }
+    // A key under a principal answers to its ceiling at mint time
+    // too: scopes beyond it refuse loudly here rather than silently
+    // shrinking at authentication.
+    let principal_id = match request.principal.as_deref() {
+        Some(handle) => {
+            let principal =
+                copal_store::repo::principal::get_by_handle(&state.store, &tenant, handle)
+                    .await?
+                    .ok_or_else(|| CopalError::not_found(format!("no principal {handle:?}")))?;
+            if principal.disabled_at.is_some() {
+                return Err(
+                    CopalError::validation(format!("principal {handle:?} is disabled",)).into(),
+                );
+            }
+            let ceiling = principal.scope_list();
+            if !ceiling.is_empty() {
+                for scope in &request.scopes {
+                    if !ceiling.contains(scope) {
+                        return Err(CopalError::validation(format!(
+                            "scope {scope:?} exceeds principal {handle:?}",
+                        ))
+                        .into());
+                    }
+                }
+            }
+            Some(principal.principal_id())
+        }
+        None => None,
+    };
     let token = copal_sign::ApiKeyToken::mint();
     let row = copal_store::repo::auth::create_key(
         &state.store,
@@ -1263,6 +1411,7 @@ async fn mint_key<B: BlobStore>(
         &token.key_id,
         &token.secret_hash(),
         &request.scopes,
+        principal_id.as_deref(),
     )
     .await?;
     if let Some(ttl) = request.ttl_secs {
@@ -1282,7 +1431,7 @@ async fn mint_key<B: BlobStore>(
         "key.minted",
         &row.key_id(),
         forwarded_origin(&headers).as_deref(),
-        Some(json!({ "name": row.name })),
+        Some(json!({ "name": row.name, "principal": request.principal })),
     )
     .await?;
     Ok((
@@ -1290,6 +1439,7 @@ async fn mint_key<B: BlobStore>(
         Json(json!({
             "key_id": row.key_id(),
             "name": row.name,
+            "principal": request.principal,
             "scopes": request.scopes,
             "expires_in_secs": request.ttl_secs,
             "token": token.encode(),
@@ -2530,7 +2680,11 @@ async fn list_versions<B: BlobStore>(
     // identically instead of drifting apart.
     let mut ctx = janus::runtime::JanusContext::new();
     if let Some(key) = auth.identity {
-        ctx.insert(janus::runtime::Principal::new(key.key_id, key.scopes));
+        // Guards compare actors: a key under a principal answers as
+        // its handle, and the key id stays in the identity for
+        // audit's "using key" half.
+        let subject = key.principal.clone().unwrap_or_else(|| key.key_id.clone());
+        ctx.insert(janus::runtime::Principal::new(subject, key.scopes));
     }
     let hidden = janus::runtime::hidden_fields(
         &crate::contract::contract(),

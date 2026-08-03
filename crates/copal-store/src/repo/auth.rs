@@ -34,6 +34,9 @@ pub struct ApiKeyRow {
     /// Comma-joined scope names; empty means unscoped.
     #[serde(default)]
     pub scopes: String,
+    /// The principal this key belongs to, when one does.
+    #[serde(default)]
+    pub principal_id: Option<String>,
     #[serde(default)]
     pub expires_at: Option<String>,
     #[serde(default)]
@@ -57,16 +60,21 @@ pub async fn create_key(
     key_id: &str,
     key_hash: &str,
     scopes: &[String],
+    principal_id: Option<&str>,
 ) -> copal_core::Result<ApiKeyRow> {
     if name.trim().is_empty() {
         return Err(CopalError::validation("key name must not be empty"));
     }
-    let payload = json!({
+    let mut payload = json!({
         "tenant_id": tenant.as_str(),
         "name": name,
         "key_hash": key_hash,
         "scopes": scopes.join(","),
     });
+    // Absent rather than null: option fields accept NONE, never NULL.
+    if let Some(principal) = principal_id {
+        payload["principal_id"] = json!(principal);
+    }
     let created = create_record(store.client(), &key_rid(key_id)?.to_string(), payload)
         .await
         .map_err(|e| map_store_err("create_key", e))?;

@@ -31,6 +31,10 @@ are good for is comparison between configurations and detecting a
 regression between releases, which is what an operator asking "what
 does the second enforcement layer cost" actually wants to know.
 
+The API face is measured beside the S3 face: search latency and an
+MCP `tools/call`, timed by curl's own instrument because minimal
+images carry no millisecond date.
+
 ## Adding a measurement
 
 `runners/bench.sh` records `name value` lines inside a three-pass

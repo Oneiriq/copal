@@ -31,6 +31,15 @@ named. Run the same command to reproduce the table.
 | multipart_roundtrip_digest | PASS |
 | delete_propagates | PASS |
 
+## mcp: 4/4
+
+| check | result |
+| --- | --- |
+| initialize_speaks_the_protocol | PASS |
+| tools_list_serves_the_manifest | PASS |
+| files_list_sees_the_mirror | PASS |
+| search_finds_extracted_text | PASS |
+
 ## rclone: 5/5
 
 | check | result |

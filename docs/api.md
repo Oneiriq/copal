@@ -260,6 +260,20 @@ source fails the record with the reason, and a 5xx retries on the
 flow engine's budget. When the caller declares no `content_type`,
 the source's served type stands.
 
+## The contract-first REST face
+
+`/v1c` mirrors the JSON surface of `/v1` through janus's runtime
+REST router: the route table derives from the contract, and every
+request runs the same dispatcher chain the GraphQL and MCP faces
+use, so `/v1c/files` exists because the declaration says so and
+refuses the way every declared face refuses. The hand-written `/v1`
+routes stay canonical; they carry REST-specific semantics (201 and
+202 on creation and derivation, byte streaming, headers) the
+generic face does not restate. A parity test holds the two faces to
+the same answers on listings, gets, actions, and queries. The
+long-term line is one face generated from the declaration; `/v1c`
+is that face, proving itself beside the original.
+
 ## The MCP face
 
 `POST /mcp` speaks MCP over JSON-RPC 2.0 with the same bearer keys

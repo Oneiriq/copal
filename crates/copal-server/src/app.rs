@@ -547,6 +547,10 @@ pub fn api_router<B: BlobStore + 'static>(state: AppState<B>) -> Router {
         )
         .route("/v1/files/{id}/transform", post(request_transform::<B>))
         .route("/v1/files/fetch", post(fetch_file::<B>))
+        .route(
+            "/v1c/{*rest}",
+            axum::routing::any(crate::rest_runtime::serve::<B>),
+        )
         .route("/v1/files/{id}/renditions/{spec}", get(get_rendition::<B>))
         .layer(request_deadline)
         .with_state(state.clone())

@@ -176,6 +176,16 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ### Interfaces
 
+- **The contract-first REST face.** Janus grew a runtime REST
+  router: the route table derives from the contract with the
+  OpenAPI path formulas, and requests run the same dispatcher chain
+  as GraphQL and MCP (scopes, validation, rate classes, guards).
+  Copal mounts it under `/v1c`, and a parity test holds the
+  generated face to the hand-written `/v1` answers on listings,
+  gets, actions (a grant issued on `/v1c` redeems on `/v1`), and
+  contract queries. The hand routes stay canonical for
+  REST-specific semantics and the byte faces.
+
 - **The four clients package.** `sdks/` holds one skeleton per
   language and one `VERSION`; `sdks/build.sh` assembles crate
   `oneiriq-copal`, Python `oneiriq-copal`, npm `@oneiriq/copal`, and

@@ -278,20 +278,26 @@ pub(crate) async fn request_store<B: BlobStore>(
                 .to_owned(),
         ))
     })?;
-    let (key_id, scopes) = match identity {
-        Some(key) => (key.key_id.as_str(), key.scopes.clone()),
+    let (key_id, scopes, principal) = match identity {
+        Some(key) => (
+            key.key_id.as_str(),
+            key.scopes.clone(),
+            key.principal.as_deref(),
+        ),
         // Header mode is the full-trust development shape; the engine
         // session mirrors that trust.
         None => (
             "trusted-header",
             KEY_SCOPES.iter().map(|s| (*s).to_owned()).collect(),
+            None,
         ),
     };
-    let cache_key = crate::session_cache::SessionCache::key(tenant.as_str(), key_id, &scopes);
+    let cache_key =
+        crate::session_cache::SessionCache::key(tenant.as_str(), key_id, &scopes, principal);
     if let Some(store) = state.sessions.get(&cache_key) {
         return Ok(store);
     }
-    let token = crate::engine::mint_caller_token(access, tenant, key_id, &scopes);
+    let token = crate::engine::mint_caller_token(access, tenant, key_id, &scopes, principal);
     let store = state.store.caller(&token).await.map_err(ApiError::from)?;
     state.sessions.put(cache_key, store.clone());
     Ok(store)
@@ -307,9 +313,13 @@ pub async fn authenticate_scoped_with_identity<B: BlobStore>(
     units: u64,
 ) -> Result<(TenantId, Option<KeyIdentity>), ApiError> {
     let (tenant, identity) = authenticate_with_identity(state, headers).await?;
+    // Buckets key on the actor: keys under one principal share its
+    // budget, so an agent's spend is the agent's regardless of how
+    // many credentials it rotated through. Principal-less keys keep
+    // their own buckets, as before.
     let subject = identity
         .as_ref()
-        .map(|id| id.key_id.as_str())
+        .map(|id| id.principal.as_deref().unwrap_or(id.key_id.as_str()))
         .unwrap_or("anonymous");
 
     // The same ledger the GraphQL dispatcher charges, keyed the same

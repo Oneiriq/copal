@@ -432,7 +432,7 @@ fn engine_policy_derives_from_the_contract() {
     assert!(policy.field_guards.contains(&(
         "file_version".to_owned(),
         "created_by".to_owned(),
-        "$token.adm = true".to_owned(),
+        "$token.adm = true OR created_by = $token.pr".to_owned(),
     )));
     assert!(policy
         .select_conjuncts
@@ -452,7 +452,7 @@ fn engine_policy_derives_from_the_contract() {
         .unwrap();
     assert_eq!(
         guarded.permissions.as_ref().unwrap().get("select").unwrap(),
-        "$token.adm = true"
+        "$token.adm = true OR created_by = $token.pr"
     );
     let file_table = tables.iter().find(|t| t.name == "file").unwrap();
     let select = file_table
@@ -503,6 +503,7 @@ async fn minted_tokens_open_filtered_sessions() {
         &acme,
         &ulid::Ulid::new().to_string().to_ascii_lowercase(),
         &["read".to_owned()],
+        None,
     );
     let caller = store.caller(&token).await.expect("minted token binds");
     assert!(file_repo::get_file_any(&caller, &theirs.id)

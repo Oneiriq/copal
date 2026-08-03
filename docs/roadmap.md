@@ -10,13 +10,13 @@ an item disappearing from it means the item is done.
    tenant policy stamped at creation with `keep_last` pruning, the
    engine-side delete clause, and retained bytes beside usage.
 
-2. **Principals within tenants, designed.**
-   [principals.md](principals.md) carries the design: keys become
-   credentials belonging to named actors, the token gains a `pr`
-   claim, and ownership becomes expressible in compiled
-   `PERMISSIONS`, which is what lets the engine layer say what the
-   application layer says. The first two slices are additive, so a
-   deployment with no principals behaves exactly as it does today.
+2. **Principals within tenants: built.** All five slices of
+   [principals.md](principals.md) shipped: named actors with scope
+   ceilings and the disabled switch, intersection at every
+   authentication, row-aware ownership guards on both faces with the
+   engine clause saying the same thing, per-principal rate buckets,
+   and authored uploads. Grant, TUS, and S3 carriers keep source
+   labels until they learn principals.
 
 3. **Blob master key rotation.** The engine access key rotates by
    replacement; the content encryption key has no rotation path.

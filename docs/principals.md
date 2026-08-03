@@ -121,10 +121,19 @@ is the reason this design exists.
    disabling a principal refuses every one of its keys live.
 3. The `pr` claim, and ownership expressible in compiled
    `PERMISSIONS`. The first ownership guard ships with it, which is
-   `created_by` visible to its author.
-4. Rate buckets key on the principal.
+   `created_by` visible to its author. **Shipped**: guards see the
+   row now, so the application layer projects per row (the author
+   keeps the value, a stranger loses it, within one listing), the
+   engine clause says the same thing (`$token.adm = true OR
+   created_by = $token.pr`), and a partial viewer cannot filter by
+   the column.
+4. Rate buckets key on the principal. **Shipped**: keys under one
+   principal share its budget, so an agent's spend is the agent's
+   regardless of how many credentials it rotated through.
 5. `created_by` writes the handle, with the unknown-authorship rule
-   above.
+   above. **Shipped**: the REST body path records the actor; grant,
+   TUS, and S3 uploads keep their source labels until those carriers
+   learn principals, and every legacy value reads as nobody's.
 
 Slices 1 and 2 are additive: a deployment with no principals behaves
 exactly as it does today, which is the property that lets this land

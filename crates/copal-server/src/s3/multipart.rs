@@ -318,6 +318,7 @@ pub async fn complete_multipart<B: BlobStore>(
         &digest,
         size_bytes,
         &storage_path,
+        "s3",
     )
     .await
     {

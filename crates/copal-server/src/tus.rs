@@ -335,6 +335,7 @@ async fn append<B: BlobStore>(
             &stored.digest,
             stored.size_bytes,
             &stored.storage_path,
+            "tus",
         )
         .await?;
         // The session reserved its declared length at creation;

@@ -355,12 +355,17 @@ impl S3Caller {
             ));
         };
         let scopes = ["read".to_owned(), "write".to_owned()];
-        let cache_key =
-            crate::session_cache::SessionCache::key(self.tenant.as_str(), &self.key_id, &scopes);
+        let cache_key = crate::session_cache::SessionCache::key(
+            self.tenant.as_str(),
+            &self.key_id,
+            &scopes,
+            None,
+        );
         if let Some(store) = state.sessions.get(&cache_key) {
             return Ok(store);
         }
-        let token = crate::engine::mint_caller_token(access, &self.tenant, &self.key_id, &scopes);
+        let token =
+            crate::engine::mint_caller_token(access, &self.tenant, &self.key_id, &scopes, None);
         let store = state.store.caller(&token).await.map_err(copal_to_s3)?;
         state.sessions.put(cache_key, store.clone());
         Ok(store)
@@ -732,6 +737,7 @@ async fn put_object<B: BlobStore>(
         &digest,
         size_bytes,
         &storage_path,
+        "s3",
     )
     .await
     {

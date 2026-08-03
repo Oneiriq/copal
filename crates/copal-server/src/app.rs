@@ -1915,9 +1915,20 @@ async fn upload_content<B: BlobStore>(
     Path(id): Path<String>,
     request: Request,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let tenant =
-        crate::auth::authenticate_scoped(&state, request.headers(), crate::auth::Scope::Write, 1)
-            .await?;
+    let (tenant, identity) = crate::auth::authenticate_scoped_with_identity(
+        &state,
+        request.headers(),
+        crate::auth::Scope::Write,
+        1,
+    )
+    .await?;
+    // Attribution: the version records the actor. A principal's
+    // handle when one exists; the source label otherwise, so rows
+    // from principal-less keys keep reading as they always did.
+    let actor = identity
+        .as_ref()
+        .and_then(|id| id.principal.clone())
+        .unwrap_or_else(|| "api".to_owned());
     let id = parse_id(&id)?;
     // Optional integrity assertion: the client declares the digest it
     // intends to send, and a mismatch fails the upload after the
@@ -2042,6 +2053,7 @@ async fn upload_content<B: BlobStore>(
         &digest,
         size_bytes,
         &storage_path,
+        &actor,
     )
     .await?;
     Ok(Json(crate::wire::wire_file(&record)))
@@ -2060,6 +2072,7 @@ pub(crate) async fn finalize_new_content<B: BlobStore>(
     digest: &copal_core::ContentDigest,
     size_bytes: u64,
     storage_path: &str,
+    actor: &str,
 ) -> Result<copal_core::FileRecord, ApiError> {
     crate::metrics::incr("copal_uploads_completed_total");
     crate::metrics::add("copal_uploaded_bytes_total", size_bytes);
@@ -2082,7 +2095,7 @@ pub(crate) async fn finalize_new_content<B: BlobStore>(
         residency,
         digest,
         size_bytes,
-        "api",
+        actor,
         final_state,
     )
     .await?;
@@ -2347,6 +2360,9 @@ async fn redeem_upload_grant<B: BlobStore>(
     Path(grant_ref): Path<String>,
     request: Request,
 ) -> Result<Json<serde_json::Value>, ApiError> {
+    // A grant is the authority here; no key, no principal. The
+    // version records the source until grants carry actors.
+    let actor = "grant".to_owned();
     let refused = || CopalError::not_found("unknown or unusable grant");
 
     let token = GrantToken::parse(&grant_ref).map_err(|_| refused())?;
@@ -2447,6 +2463,7 @@ async fn redeem_upload_grant<B: BlobStore>(
         &digest,
         size_bytes,
         &storage_path,
+        &actor,
     )
     .await?;
     Ok(Json(crate::wire::wire_file(&record)))
@@ -2686,15 +2703,14 @@ async fn list_versions<B: BlobStore>(
         let subject = key.principal.clone().unwrap_or_else(|| key.key_id.clone());
         ctx.insert(janus::runtime::Principal::new(subject, key.scopes));
     }
-    let hidden = janus::runtime::hidden_fields(
+    let guarded = janus::runtime::guarded_fields(
         &crate::contract::contract(),
         "files",
         Some("versions"),
         &crate::contract::guards(),
-        &ctx,
     );
     for row in &mut items {
-        janus::runtime::strip_hidden(row, &hidden);
+        janus::runtime::strip_guarded(row, &guarded, &ctx);
     }
     Ok(Json(json!({
         "items": items,

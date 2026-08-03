@@ -336,7 +336,7 @@ async fn authenticate<B: BlobStore>(
     method: &Method,
     uri: &Uri,
     headers: &HeaderMap,
-) -> Result<(TenantId, String), Response> {
+) -> Result<(TenantId, String, Option<String>), Response> {
     let auth = sigv4::parse_authorization(headers)
         .map_err(|e| xml_error(StatusCode::FORBIDDEN, "AccessDenied", &e.to_string()))?;
     let row = s3_repo::fetch_credential(&gateway.app.store, &auth.access_key_id)
@@ -400,7 +400,28 @@ async fn authenticate<B: BlobStore>(
     })?;
     let tenant = TenantId::parse(&row.tenant_id)
         .map_err(|e| xml_error(StatusCode::FORBIDDEN, "AccessDenied", &e.to_string()))?;
-    Ok((tenant, auth.access_key_id))
+    // A credential under a principal answers to it: disabled refuses
+    // every credential at once, and the handle rides the caller so
+    // uploads attribute and the engine token carries pr.
+    let mut principal_handle = None;
+    if let Some(principal_id) = row.principal_id.as_deref() {
+        let principal =
+            copal_store::repo::principal::get_by_id(&gateway.app.store, &tenant, principal_id)
+                .await
+                .map_err(copal_to_s3)?
+                .ok_or_else(|| {
+                    xml_error(StatusCode::FORBIDDEN, "AccessDenied", "credentials refused")
+                })?;
+        if principal.disabled_at.is_some() {
+            return Err(xml_error(
+                StatusCode::FORBIDDEN,
+                "AccessDenied",
+                "credentials refused",
+            ));
+        }
+        principal_handle = Some(principal.handle);
+    }
+    Ok((tenant, auth.access_key_id, principal_handle))
 }
 
 /// What an authorized gateway request carries: the credential's
@@ -415,6 +436,8 @@ async fn authenticate<B: BlobStore>(
 pub(crate) struct S3Caller {
     pub tenant: TenantId,
     key_id: String,
+    /// The named actor this credential belongs to, when one does.
+    pub principal: Option<String>,
 }
 
 impl S3Caller {
@@ -440,13 +463,18 @@ impl S3Caller {
             self.tenant.as_str(),
             &self.key_id,
             &scopes,
-            None,
+            self.principal.as_deref(),
         );
         if let Some(store) = state.sessions.get(&cache_key) {
             return Ok(store);
         }
-        let token =
-            crate::engine::mint_caller_token(access, &self.tenant, &self.key_id, &scopes, None);
+        let token = crate::engine::mint_caller_token(
+            access,
+            &self.tenant,
+            &self.key_id,
+            &scopes,
+            self.principal.as_deref(),
+        );
         let store = state.store.caller(&token).await.map_err(copal_to_s3)?;
         state.sessions.put(cache_key, store.clone());
         Ok(store)
@@ -461,7 +489,7 @@ pub(crate) async fn authorize_bucket<B: BlobStore>(
     headers: &HeaderMap,
     bucket: &str,
 ) -> Result<S3Caller, Response> {
-    let (tenant, key_id) = authenticate(gateway, method, uri, headers).await?;
+    let (tenant, key_id, principal) = authenticate(gateway, method, uri, headers).await?;
     if tenant.as_str() != bucket {
         return Err(xml_error(
             StatusCode::FORBIDDEN,
@@ -469,7 +497,11 @@ pub(crate) async fn authorize_bucket<B: BlobStore>(
             "bucket does not belong to this credential",
         ));
     }
-    Ok(S3Caller { tenant, key_id })
+    Ok(S3Caller {
+        tenant,
+        key_id,
+        principal,
+    })
 }
 
 /// ListBuckets: exactly one bucket, the credential's tenant.
@@ -479,7 +511,8 @@ async fn list_buckets<B: BlobStore>(
     uri: Uri,
     headers: HeaderMap,
 ) -> Response {
-    let (tenant, _key_id) = match authenticate(&gateway, &method, &uri, &headers).await {
+    let (tenant, _key_id, _principal) = match authenticate(&gateway, &method, &uri, &headers).await
+    {
         Ok(identified) => identified,
         Err(response) => return response,
     };
@@ -830,7 +863,7 @@ async fn put_object<B: BlobStore>(
         &digest,
         size_bytes,
         &storage_path,
-        "s3",
+        caller.principal.as_deref().unwrap_or("s3"),
     )
     .await
     {
@@ -1170,21 +1203,65 @@ fn percent_decode(raw: &str) -> String {
 
 /// Mint a credential pair. The secret appears exactly once, here; the
 /// store keeps only its sealed form.
+#[derive(serde::Deserialize, Default)]
+struct MintCredentialRequest {
+    #[serde(default)]
+    principal: Option<String>,
+}
+
 async fn mint_credential<B: BlobStore>(
     State(gateway): State<S3Gateway<B>>,
     headers: HeaderMap,
     Path(tenant): Path<String>,
+    body: Option<axum::Json<MintCredentialRequest>>,
 ) -> Result<(StatusCode, axum::Json<serde_json::Value>), crate::error::ApiError> {
     crate::auth::require_admin(&gateway.app, &headers)?;
     let tenant = TenantId::parse(&tenant)?;
+    let request = body.map(|b| b.0).unwrap_or_default();
+    // A credential under a principal answers to it: the gateway
+    // grants read and write, so the ceiling must allow both, checked
+    // here rather than silently narrowing at request time.
+    let principal_id = match request.principal.as_deref() {
+        Some(handle) => {
+            let principal =
+                copal_store::repo::principal::get_by_handle(&gateway.app.store, &tenant, handle)
+                    .await?
+                    .ok_or_else(|| {
+                        copal_core::CopalError::not_found(format!("no principal {handle:?}"))
+                    })?;
+            if principal.disabled_at.is_some() {
+                return Err(copal_core::CopalError::validation(format!(
+                    "principal {handle:?} is disabled",
+                ))
+                .into());
+            }
+            let ceiling = principal.scope_list();
+            if !ceiling.is_empty()
+                && !(ceiling.iter().any(|s| s == "read") && ceiling.iter().any(|s| s == "write"))
+            {
+                return Err(copal_core::CopalError::validation(format!(
+                    "principal {handle:?} must allow read and write for S3 credentials",
+                ))
+                .into());
+            }
+            Some(principal.principal_id())
+        }
+        None => None,
+    };
     let token = copal_sign::ApiKeyToken::mint();
     let sealed = gateway
         .app
         .require_cipher()?
         .seal(token.secret.as_bytes())?;
     let sealed_b64 = base64::engine::general_purpose::STANDARD.encode(sealed);
-    let row =
-        s3_repo::create_credential(&gateway.app.store, &tenant, &token.key_id, &sealed_b64).await?;
+    let row = s3_repo::create_credential(
+        &gateway.app.store,
+        &tenant,
+        &token.key_id,
+        &sealed_b64,
+        principal_id.as_deref(),
+    )
+    .await?;
     copal_store::repo::auth::record_audit(
         &gateway.app.store,
         &tenant,
@@ -1192,7 +1269,7 @@ async fn mint_credential<B: BlobStore>(
         "s3credential.minted",
         &row.access_key_id(),
         forwarded_origin(&headers).as_deref(),
-        None,
+        Some(serde_json::json!({ "principal": request.principal })),
     )
     .await?;
     Ok((
@@ -1200,6 +1277,7 @@ async fn mint_credential<B: BlobStore>(
         axum::Json(serde_json::json!({
             "access_key_id": row.access_key_id(),
             "secret_access_key": token.secret,
+            "principal": request.principal,
             "created_at": row.created_at,
         })),
     ))

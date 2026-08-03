@@ -54,6 +54,10 @@ fn s3_credential_table() -> TableDefinition {
         .with_fields([
             built(string_field("tenant_id").assertion("$value != ''")),
             built(string_field("secret_sealed").assertion("$value != ''")),
+            // The actor this credential belongs to, when one does. A
+            // credential without one stays a tenant-level identity,
+            // exactly as every credential was before principals.
+            built(string_field("principal_id").nullable(true)),
             built(datetime_field("revoked_at").nullable(true)),
             built(
                 datetime_field("created_at")

@@ -278,6 +278,16 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ### Governance
 
+- **S3 credentials answer to principals.** The last credential type
+  joins the actor model: minting takes an optional `principal`
+  (refused when the ceiling cannot carry the gateway's read and
+  write grant), uploads through SigV4 record the actor's handle in
+  `created_by`, the caller token carries `pr` so engine-side
+  ownership holds on the gateway too, and disabling a principal
+  refuses its S3 credentials live. An agent fleet speaking S3 now
+  has per-agent attribution and one-switch revocation, exactly as it
+  does with keys.
+
 - **Ownership reaches both enforcement layers.** Field guards see
   the row now, so `created_by` is visible to its author, to admins,
   and to nobody else, decided per row within one listing on both

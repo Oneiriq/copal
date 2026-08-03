@@ -232,6 +232,61 @@ pub async fn list_audit(
         .map_err(|e| map_store_err("audit", e))
 }
 
+/// One page of the deployment's audit trail, every tenant, keyset
+/// over `(created_at, id)`, ascending only: an exporter tails
+/// forward from its checkpoint and sees every later event at least
+/// once. `idx_audit_created` carries the scan; an optional tenant
+/// narrows it through `idx_audit_tenant`. Ids come back bare.
+pub async fn export_audit_page(
+    store: &Store,
+    tenant: Option<&str>,
+    limit: i64,
+    cursor: Option<&str>,
+) -> copal_core::Result<Vec<Value>> {
+    let mut query = Query::new()
+        .select(None)
+        .from_table("audit_event")
+        .map_err(|e| map_store_err("audit_export", e))?;
+    if let Some(tenant) = tenant {
+        query = query.where_(eq("tenant_id", tenant));
+    }
+    if let Some(cursor) = cursor {
+        let (at, id) = cursor
+            .split_once('~')
+            .ok_or_else(|| CopalError::validation("malformed cursor"))?;
+        if !at.bytes().all(|b| {
+            b.is_ascii_alphanumeric() || matches!(b, b'-' | b':' | b'.' | b'+' | b'Z' | b'T')
+        }) {
+            return Err(CopalError::validation("malformed cursor"));
+        }
+        let rid = RecordID::<()>::new("audit_event", id)
+            .map_err(|_| CopalError::validation("malformed cursor"))?;
+        query = query.where_str(format!(
+            "(created_at > d'{at}' OR (created_at = d'{at}' AND id > {rid}))",
+        ));
+    }
+    let query = query
+        .order_by("created_at", "ASC")
+        .map_err(|e| map_store_err("audit_export", e))?
+        .order_by("id", "ASC")
+        .map_err(|e| map_store_err("audit_export", e))?
+        .limit(limit)
+        .map_err(|e| map_store_err("audit_export", e))?;
+    let rows: Vec<Value> = query_records(store.client(), &query)
+        .await
+        .map_err(|e| map_store_err("audit_export", e))?;
+    Ok(rows
+        .into_iter()
+        .map(|mut row| {
+            if let Some(id) = row.get("id").and_then(Value::as_str) {
+                let bare = strip_record_prefix(id, "audit_event").to_owned();
+                row["id"] = json!(bare);
+            }
+            row
+        })
+        .collect())
+}
+
 /// Test support: attempt to rewrite an audit event, so integration
 /// tests can prove the engine-level THROW rather than trusting the
 /// schema text. Never called by production code.

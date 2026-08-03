@@ -409,6 +409,41 @@ and every change writes an audit event carrying it. A held or
 retained version keeps its bytes through file deletion; soft delete
 still hides the file, because hiding is not erasing.
 
+## Audit export
+
+The audit trail leaves the deployment through one admin endpoint,
+shaped for SIEM collectors:
+
+```
+GET /v1/admin/audit/export?limit=500&cursor=<checkpoint>&tenant=<optional>
+```
+
+The body is NDJSON, one audit event per line, ascending over
+`(created_at, id)` across every tenant (or one, with `tenant=`). The
+next checkpoint rides the `x-copal-next-cursor` response header on
+every page that carries rows; the body stays pure events, so a
+collector appends it to its pipeline untouched. An empty body with no
+header means the checkpoint is current. Store the header value and
+present it as `cursor=` on the next poll; the walk is keyset-paged,
+so a resume sees every later event at least once and re-reads
+nothing on the happy path. `idx_audit_created` carries the scan.
+
+A minimal collector is a loop:
+
+```sh
+CKPT=$(cat audit.ckpt 2>/dev/null)
+curl -s -D /tmp/h "http://copal:8080/v1/admin/audit/export?limit=500${CKPT:+&cursor=$CKPT}" \
+  -H "x-copal-admin-token: $COPAL_ADMIN_TOKEN" >> audit.ndjson
+NEXT=$(tr -d '\r' < /tmp/h | awk 'tolower($1)=="x-copal-next-cursor:" {print $2}')
+[ -n "$NEXT" ] && printf '%s' "$NEXT" > audit.ckpt
+```
+
+Run it from cron or a vector/fluent-bit exec source; the checkpoint
+file is the only state. Rows are immutable inside the engine (an
+UPDATE or DELETE against one aborts), so an exported line never goes
+stale, and `copal_audit_exported_total` counts what has left through
+this face.
+
 ## Maintenance sweeps
 
 One interval loop runs five failure-isolated passes: expired upload claims to
@@ -473,6 +508,7 @@ tenant-facing network along with key custody.
 | `copal_webhook_deliveries_total{outcome}` | Delivery attempts by outcome: delivered, retry, failed. |
 | `copal_blobs_collected_total`, `copal_reaped_uploads_total`, `copal_reaped_runs_total` | Sweep work, accumulated across passes. |
 | `copal_resealed_total`, `copal_secrets_resealed_total` | Rotation progress: objects and database secrets moved under the current master key. Quiet means the rotation has drained. |
+| `copal_audit_exported_total` | Audit events served through the export face, accumulated across pages. |
 
 Counters are process-local and reset on restart, which is what
 Prometheus expects; the database holds the durable truth for

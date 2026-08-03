@@ -617,3 +617,40 @@ pub async fn force_due_for_test(store: &Store, delivery_id: &str) -> copal_core:
         .map_err(|e| map_store_err("force_due", e))?;
     Ok(())
 }
+
+/// Emit one application-side outbox event. The engine mints file
+/// lifecycle events itself; compliance actions happen in handlers,
+/// so they write here, land in the same feed, and fan out through
+/// the same webhook dispatcher. The record link is set after the
+/// create because links cannot ride a JSON payload.
+pub async fn emit_event(
+    store: &Store,
+    tenant: &TenantId,
+    file: Option<&str>,
+    action: &str,
+    payload: Value,
+) -> copal_core::Result<()> {
+    let id = ulid::Ulid::new().to_string().to_ascii_lowercase();
+    let event_rid = rid(EVENT_TABLE, &id)?;
+    let body = serde_json::json!({
+        "tenant_id": tenant.as_str(),
+        "action": action,
+        "payload": payload,
+    });
+    create_record(store.client(), &event_rid.to_string(), body)
+        .await
+        .map_err(|e| map_store_err("emit_event", e))?;
+    if let Some(file_id) = file {
+        let file_rid = rid("file", file_id)?;
+        let update = Query::new()
+            .update_set(event_rid.to_string())
+            .map_err(|e| map_store_err("emit_event", e))?
+            .set_expr("file", raw(file_rid.to_string()))
+            .map_err(|e| map_store_err("emit_event", e))?
+            .return_after();
+        query_records::<Value>(store.client(), &update)
+            .await
+            .map_err(|e| map_store_err("emit_event", e))?;
+    }
+    Ok(())
+}

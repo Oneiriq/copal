@@ -278,6 +278,13 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ### Governance
 
+- **Compliance actions land in the change feed.** Retention set and
+  cleared, holds applied and released, and version pruning emit
+  outbox events beside the audit trail, so the feed and the webhook
+  dispatcher carry exactly the events compliance watches instead of
+  only file lifecycle. Pruning names how many versions went and the
+  depth that ruled.
+
 - **S3 credentials answer to principals.** The last credential type
   joins the actor model: minting takes an optional `principal`
   (refused when the ceiling cannot carry the gateway's read and

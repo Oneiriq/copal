@@ -656,7 +656,22 @@ pub async fn complete_upload(
                 .await?;
         }
         if let Some(keep) = policy.keep_last {
-            super::version::prune_erasable(store, tenant, id, keep, row.version_count).await?;
+            let pruned =
+                super::version::prune_erasable(store, tenant, id, keep, row.version_count).await?;
+            if pruned > 0 {
+                super::eventing::emit_event(
+                    store,
+                    tenant,
+                    Some(id.as_str()),
+                    "version.pruned",
+                    serde_json::json!({
+                        "removed": pruned,
+                        "kept": keep,
+                        "newest": row.version_count,
+                    }),
+                )
+                .await?;
+            }
         }
     }
 

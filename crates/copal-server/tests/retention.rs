@@ -530,3 +530,87 @@ async fn retained_bytes_ride_beside_usage() {
     let body = json_body(response).await;
     assert_eq!(body["retained_bytes"], payload.len() as i64, "{body:#?}");
 }
+
+/// Compliance actions land in the change feed: a hold, its release,
+/// a retention set, and a prune all appear as events an indexer or
+/// SIEM can replay, beside the lifecycle events the engine mints.
+#[tokio::test]
+async fn compliance_actions_land_in_the_feed() {
+    let (router, admin, _store, _blobs, _dir) = admin_stack().await;
+    let response = admin
+        .clone()
+        .oneshot(admin_req(
+            "PUT",
+            "/v1/admin/tenants/acme/retention",
+            Some(json!({ "keep_last": 1 })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // Two versions under keep_last 1 prunes the first.
+    let create = req(
+        "POST",
+        "/v1/files",
+        Body::from(json!({"path": "feed-watched.txt"}).to_string()),
+    );
+    let response = router.clone().oneshot(create).await.unwrap();
+    let id = json_body(response).await["id"].as_str().unwrap().to_owned();
+    for content in [b"one".as_slice(), b"two"] {
+        let upload = req(
+            "PUT",
+            &format!("/v1/files/{id}/content"),
+            Body::from(content.to_vec()),
+        );
+        assert_eq!(
+            router.clone().oneshot(upload).await.unwrap().status(),
+            StatusCode::OK
+        );
+    }
+
+    let hold = format!("/v1/admin/tenants/acme/files/{id}/versions/2/hold");
+    let response = admin
+        .clone()
+        .oneshot(admin_req("PUT", &hold, Some(json!({ "reason": "case" }))))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    let response = admin
+        .clone()
+        .oneshot(admin_req(
+            "DELETE",
+            &hold,
+            Some(json!({ "reason": "closed" })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    let retention = format!("/v1/admin/tenants/acme/files/{id}/versions/2/retention");
+    let response = admin
+        .clone()
+        .oneshot(admin_req("PUT", &retention, Some(json!({ "seconds": 60 }))))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let list = req("GET", "/v1/events?order=asc&limit=100", Body::empty());
+    let body = json_body(router.clone().oneshot(list).await.unwrap()).await;
+    let actions: Vec<&str> = body["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["action"].as_str().unwrap())
+        .collect();
+    for expected in [
+        "version.pruned",
+        "version.hold_applied",
+        "version.hold_released",
+        "version.retention_set",
+    ] {
+        assert!(
+            actions.contains(&expected),
+            "{expected} missing: {actions:?}"
+        );
+    }
+}

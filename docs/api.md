@@ -288,6 +288,13 @@ GET /v1/events?order=asc&limit=100
 GET /v1/events?order=asc&limit=100&cursor=<next_cursor from the last page>
 ```
 
+Compliance actions ride the same feed: `version.retention_set`,
+`version.retention_cleared`, `version.hold_applied`,
+`version.hold_released`, and `version.pruned` appear beside the
+lifecycle events, so an indexer or SIEM replaying the feed sees
+exactly the events compliance watches. Webhooks fan them out under
+the same action filters.
+
 The cursor is opaque; hand back exactly what the previous page gave.
 Pages never repeat an event, a saved cursor sees every later event
 at least once, and `action=file.ready` narrows the feed to one verb

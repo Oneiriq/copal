@@ -251,6 +251,86 @@ pub async fn list_events(
         .map_err(|e| map_store_err("list_events", e))
 }
 
+/// The cursor one page hands the next: the last row's timestamp and
+/// id, joined opaquely. Outbox rows are minted by an engine event,
+/// which assigns random record ids, so the id alone carries no time
+/// order; the keyset is `(created_at, id)`, with the id breaking
+/// ties inside one timestamp.
+pub fn event_cursor(row: &EventRow) -> String {
+    format!("{}~{}", row.created_at, row.event_id())
+}
+
+/// One page of a tenant's events, keyset-paged over
+/// `(created_at, id)`. Ascending from a cursor replays forward (the
+/// indexer resume); the default descending pages backward through
+/// history. `idx_event_tenant (tenant_id, created_at)` carries the
+/// scan, and a consumer resuming from a saved cursor sees every
+/// later event at least once.
+pub async fn list_events_page(
+    store: &Store,
+    tenant: &TenantId,
+    action: Option<&str>,
+    limit: i64,
+    cursor: Option<&str>,
+    ascending: bool,
+) -> copal_core::Result<Vec<EventRow>> {
+    let mut query = Query::new()
+        .select(None)
+        .from_table(EVENT_TABLE)
+        .map_err(|e| map_store_err("events_page", e))?
+        .where_(eq("tenant_id", tenant.as_str()));
+    if let Some(action) = action {
+        query = query.where_(eq("action", action));
+    }
+    if let Some(cursor) = cursor {
+        let (at, id) = cursor
+            .split_once('~')
+            .ok_or_else(|| CopalError::validation("malformed cursor"))?;
+        if !at.bytes().all(|b| {
+            b.is_ascii_alphanumeric() || matches!(b, b'-' | b':' | b'.' | b'+' | b'Z' | b'T')
+        }) {
+            return Err(CopalError::validation("malformed cursor"));
+        }
+        let rid = RecordID::<()>::new(EVENT_TABLE, id)
+            .map_err(|_| CopalError::validation("malformed cursor"))?;
+        let comparator = if ascending { ">" } else { "<" };
+        query = query.where_str(format!(
+            "(created_at {comparator} d'{at}' OR (created_at = d'{at}' AND id {comparator} {rid}))",
+        ));
+    }
+    let direction = if ascending { "ASC" } else { "DESC" };
+    let query = query
+        .order_by("created_at", direction)
+        .map_err(|e| map_store_err("events_page", e))?
+        .order_by("id", direction)
+        .map_err(|e| map_store_err("events_page", e))?
+        .limit(limit)
+        .map_err(|e| map_store_err("events_page", e))?;
+    query_records(store.client(), &query)
+        .await
+        .map_err(|e| map_store_err("events_page", e))
+}
+
+/// One event by id, tenant-checked.
+pub async fn get_event(
+    store: &Store,
+    tenant: &TenantId,
+    event_id: &str,
+) -> copal_core::Result<Option<EventRow>> {
+    let rid = RecordID::<()>::new(EVENT_TABLE, event_id)
+        .map_err(|_| CopalError::validation("malformed event id"))?;
+    let query = Query::new()
+        .select(None)
+        .from_table(EVENT_TABLE)
+        .map_err(|e| map_store_err("get_event", e))?
+        .where_str(format!("id = {rid}"))
+        .where_(eq("tenant_id", tenant.as_str()));
+    let rows: Vec<EventRow> = query_records(store.client(), &query)
+        .await
+        .map_err(|e| map_store_err("get_event", e))?;
+    Ok(rows.into_iter().next())
+}
+
 /// A live stream of a tenant's events, narrowed to one dotted verb when
 /// `action` is given. The engine applies both conditions, so the tenant
 /// scope is never a check this code can forget.

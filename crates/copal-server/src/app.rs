@@ -517,6 +517,8 @@ pub fn api_router<B: BlobStore + 'static>(state: AppState<B>) -> Router {
             "/v1/files/{id}",
             get(get_file::<B>).delete(delete_file::<B>),
         )
+        .route("/v1/events", get(list_tenant_events::<B>))
+        .route("/v1/events/{id}", get(get_tenant_event::<B>))
         .route("/v1/runs", post(start_run::<B>).get(list_runs::<B>))
         .route("/v1/runs/{id}", get(get_run::<B>))
         .route("/v1/runs/{id}/retry", post(retry_run::<B>))
@@ -2745,6 +2747,92 @@ async fn list_versions<B: BlobStore>(
         "items": items,
         "next_cursor": next_cursor,
     })))
+}
+
+/// One page of the tenant change feed in wire shape, plus the
+/// cursor that resumes it. Shared by the REST handler and the
+/// GraphQL list resolver, so a down indexer resumes from either face
+/// and the rows read identically.
+pub(crate) async fn events_page(
+    store: &copal_store::Store,
+    tenant: &TenantId,
+    action: Option<&str>,
+    limit: i64,
+    cursor: Option<&str>,
+    ascending: bool,
+) -> Result<(Vec<serde_json::Value>, Option<String>), ApiError> {
+    let rows = copal_store::repo::eventing::list_events_page(
+        store, tenant, action, limit, cursor, ascending,
+    )
+    .await?;
+    let next_cursor = if rows.len() as i64 == limit {
+        rows.last().map(copal_store::repo::eventing::event_cursor)
+    } else {
+        None
+    };
+    Ok((
+        rows.iter().map(crate::wire::wire_event).collect(),
+        next_cursor,
+    ))
+}
+
+/// The change feed on the REST face: replay forward from a cursor
+/// with `order=asc`, or page backward through history with the
+/// default newest-first order.
+async fn list_tenant_events<B: BlobStore>(
+    State(state): State<AppState<B>>,
+    headers: HeaderMap,
+    axum::extract::Query(params): axum::extract::Query<EventFeedQuery>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let limit = params.limit.unwrap_or(50).clamp(1, 100);
+    let auth =
+        crate::auth::authorize_scoped(&state, &headers, crate::auth::Scope::Read, limit as u64)
+            .await?;
+    let ascending = match params.order.as_deref() {
+        None | Some("desc") => false,
+        Some("asc") => true,
+        Some(other) => {
+            return Err(CopalError::validation(
+                format!("order must be asc or desc, got {other:?}",),
+            )
+            .into())
+        }
+    };
+    let (items, next_cursor) = events_page(
+        &auth.store,
+        &auth.tenant,
+        params.action.as_deref(),
+        limit,
+        params.cursor.as_deref(),
+        ascending,
+    )
+    .await?;
+    Ok(Json(json!({ "items": items, "next_cursor": next_cursor })))
+}
+
+#[derive(serde::Deserialize)]
+struct EventFeedQuery {
+    #[serde(default)]
+    limit: Option<i64>,
+    #[serde(default)]
+    cursor: Option<String>,
+    #[serde(default)]
+    action: Option<String>,
+    #[serde(default)]
+    order: Option<String>,
+}
+
+/// One event by id.
+async fn get_tenant_event<B: BlobStore>(
+    State(state): State<AppState<B>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let auth = crate::auth::authorize_scoped(&state, &headers, crate::auth::Scope::Read, 1).await?;
+    let row = copal_store::repo::eventing::get_event(&auth.store, &auth.tenant, &id)
+        .await?
+        .ok_or_else(|| CopalError::not_found(format!("event {id}")))?;
+    Ok(Json(crate::wire::wire_event(&row)))
 }
 
 /// One page of a file's history in wire shape, plus the cursor that

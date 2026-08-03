@@ -117,6 +117,17 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ### Interfaces
 
+- **The change feed replays.** The events listing gained keyset
+  pagination over `(created_at, id)`: ascending from a cursor
+  replays forward, so a down indexer resumes from a saved cursor
+  instead of re-listing the world, and the default newest-first
+  order pages backward through history. One core serves both faces,
+  `GET /v1/events` joined the REST router (the OpenAPI document
+  promised it; now a handler answers), and the subscription remains
+  the live half of the same surface. The cursor is opaque because
+  outbox rows carry engine-assigned ids that hold no time order, a
+  fact the first cut of this feature learned the hard way.
+
 - **Conditional writes.** `If-None-Match: *` creates and never
   replaces; `If-Match: <digest>` replaces exactly the content the
   caller believes is current; both answer 412 through every face

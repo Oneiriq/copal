@@ -235,6 +235,25 @@ download: their bytes flow only through issued grants. Listings walk
 the live-path index in key order; `delimiter` collapses shared segments
 into `CommonPrefixes`.
 
+## The change feed
+
+`GET /v1/events` and the GraphQL `events` listing are one cursor
+surface over everything that happened to a tenant's files. The
+default order is newest first for dashboards; `order=asc` with a
+cursor replays forward, which is how an indexer that was down
+resumes from where it stopped instead of re-listing the world:
+
+```
+GET /v1/events?order=asc&limit=100
+GET /v1/events?order=asc&limit=100&cursor=<next_cursor from the last page>
+```
+
+The cursor is opaque; hand back exactly what the previous page gave.
+Pages never repeat an event, a saved cursor sees every later event
+at least once, and `action=file.ready` narrows the feed to one verb
+with the cursor still honored. The `events` subscription is the live
+half of the same surface: catch up with the cursor, then watch.
+
 ## Conditional writes
 
 Writes take the standard preconditions on both faces, and the ETag is

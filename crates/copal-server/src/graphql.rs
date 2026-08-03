@@ -464,17 +464,29 @@ fn dispatcher<B: BlobStore + 'static>(
                 let tenant = tenant_of(&ctx)?;
                 let store = store_of(&ctx, &state.store);
                 let limit = i64::from(args.limit);
-                let action = args.filters.get("action").and_then(|v| v.as_str());
-                let rows = copal_store::repo::eventing::list_events(&store, &tenant, action, limit)
-                    .await
-                    .map_err(to_janus_error)?;
-                Ok(ListOutput {
-                    items: rows.iter().map(wire_event).collect(),
-                    // The outbox listing is newest-first and bounded;
-                    // cursoring it waits for a keyset over created_at
-                    // the way files and runs have.
-                    next_cursor: None,
-                })
+                let action = args
+                    .filters
+                    .get("action")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_owned);
+                // The declared sort decides the direction: ascending
+                // from a cursor replays forward (the indexer resume),
+                // the default descending pages backward.
+                let ascending = matches!(
+                    &args.sort,
+                    Some((column, janus::runtime::SortDirection::Asc)) if column == "created_at"
+                );
+                let (items, next_cursor) = crate::app::events_page(
+                    &store,
+                    &tenant,
+                    action.as_deref(),
+                    limit,
+                    args.cursor.as_deref(),
+                    ascending,
+                )
+                .await
+                .map_err(|e| to_janus_error(e.0))?;
+                Ok(ListOutput { items, next_cursor })
             }
         })
         .watch("events", move |ctx, args| {

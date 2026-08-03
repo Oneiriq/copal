@@ -304,6 +304,15 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ### Governance
 
+- **The audit trail exports to a SIEM.** One admin endpoint serves
+  the whole deployment's audit events as NDJSON, ascending, keyset
+  cursored over `(created_at, id)` with the checkpoint riding the
+  `x-copal-next-cursor` header, so the body stays pure events and a
+  partial page still advances the checkpoint. A collector is a curl
+  loop and a checkpoint file; the operations doc ships one. Optional
+  `tenant=` narrows the stream. Engine immutability means an
+  exported line never goes stale.
+
 - **Compliance actions land in the change feed.** Retention set and
   cleared, holds applied and released, and version pruning emit
   outbox events beside the audit trail, so the feed and the webhook

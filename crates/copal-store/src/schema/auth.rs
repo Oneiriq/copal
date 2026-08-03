@@ -95,7 +95,10 @@ fn audit_event_table() -> TableDefinition {
                     .readonly(true),
             ),
         ])
-        .with_indexes([index("idx_audit_tenant", ["tenant_id", "created_at"])])
+        .with_indexes([
+            index("idx_audit_tenant", ["tenant_id", "created_at"]),
+            index("idx_audit_created", ["created_at"]),
+        ])
         .with_events([event(
             "audit_immutable",
             "$event = 'UPDATE' OR $event = 'DELETE'",

@@ -575,6 +575,7 @@ pub fn admin_router<B: BlobStore + 'static>(state: AppState<B>) -> Router {
             axum::routing::delete(disable_principal::<B>),
         )
         .route("/v1/admin/tenants/{tenant}/audit", get(list_audit::<B>))
+        .route("/v1/admin/audit/export", get(export_audit::<B>))
         .route(
             "/v1/admin/tenants/{tenant}/retention",
             put(set_retention_policy::<B>)
@@ -1560,6 +1561,16 @@ struct AuditListQuery {
     limit: Option<i64>,
 }
 
+#[derive(serde::Deserialize)]
+struct AuditExportQuery {
+    #[serde(default)]
+    cursor: Option<String>,
+    #[serde(default)]
+    limit: Option<i64>,
+    #[serde(default)]
+    tenant: Option<String>,
+}
+
 /// A tenant's audit trail, newest first (admin surface).
 async fn list_audit<B: BlobStore>(
     State(state): State<AppState<B>>,
@@ -1572,6 +1583,56 @@ async fn list_audit<B: BlobStore>(
     let limit = params.limit.unwrap_or(200).clamp(1, 1_000);
     let events = copal_store::repo::auth::list_audit(&state.store, &tenant, limit).await?;
     Ok(Json(json!({ "items": events })))
+}
+
+/// The deployment audit trail as NDJSON, ascending, keyset-cursored:
+/// the SIEM face. The next cursor rides the `x-copal-next-cursor`
+/// header on every page carrying rows, so the body stays pure
+/// line-delimited events and a partial page still advances the
+/// checkpoint. An empty body with no header means the checkpoint is
+/// current.
+async fn export_audit<B: BlobStore>(
+    State(state): State<AppState<B>>,
+    headers: HeaderMap,
+    axum::extract::Query(params): axum::extract::Query<AuditExportQuery>,
+) -> Result<(StatusCode, HeaderMap, String), ApiError> {
+    crate::auth::require_admin(&state, &headers)?;
+    let limit = params.limit.unwrap_or(500).clamp(1, 1_000);
+    let tenant = params.tenant.as_deref().map(TenantId::parse).transpose()?;
+    let rows = copal_store::repo::auth::export_audit_page(
+        &state.store,
+        tenant.as_ref().map(TenantId::as_str),
+        limit,
+        params.cursor.as_deref(),
+    )
+    .await?;
+    let next = rows.last().and_then(|last| {
+        let at = last.get("created_at").and_then(serde_json::Value::as_str)?;
+        let id = last.get("id").and_then(serde_json::Value::as_str)?;
+        Some(format!("{at}~{id}"))
+    });
+    if !rows.is_empty() {
+        crate::metrics::add("copal_audit_exported_total", rows.len() as u64);
+    }
+    let mut body = String::new();
+    for row in &rows {
+        body.push_str(&row.to_string());
+        body.push('\n');
+    }
+    let mut out = HeaderMap::new();
+    out.insert(
+        axum::http::header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static("application/x-ndjson"),
+    );
+    if let Some(next) = next {
+        let value = axum::http::HeaderValue::from_str(&next)
+            .map_err(|_| CopalError::Store("cursor not header-safe".into()))?;
+        out.insert(
+            axum::http::HeaderName::from_static("x-copal-next-cursor"),
+            value,
+        );
+    }
+    Ok((StatusCode::OK, out, body))
 }
 
 /// The proxy-forwarded client origin, first hop only, for audit

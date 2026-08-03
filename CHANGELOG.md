@@ -130,6 +130,17 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ### Interfaces
 
+- **The MCP face.** `POST /mcp` serves agents: `tools/list` is the
+  manifest Janus generates from the contract (every resource's list
+  and get, every action, every query, with scopes and rate classes
+  as annotations), committed as `docs/mcp-tools.json` under the same
+  drift gate as every artifact. `tools/call` dispatches through the
+  same chain as GraphQL, so scopes, budgets, field guards, and
+  caller-bound engine sessions bind agents exactly as they bind
+  everyone, proven by a test where a read-only key's remove call is
+  refused with the scope named. A parity test holds the tool router
+  and the generated manifest to the same names.
+
 - **The change feed replays.** The events listing gained keyset
   pagination over `(created_at, id)`: ascending from a cursor
   replays forward, so a down indexer resumes from a saved cursor

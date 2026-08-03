@@ -114,7 +114,7 @@ fn parse_file_id(raw: &str) -> Result<FileId, JanusError> {
 
 /// Build the Janus dispatcher over this state: the resolvers are thin
 /// closures over the same repositories the REST handlers use.
-fn dispatcher<B: BlobStore + 'static>(
+pub(crate) fn dispatcher<B: BlobStore + 'static>(
     state: AppState<B>,
 ) -> Result<Arc<Dispatcher>, janus::runtime::RuntimeBuildError> {
     let list_state = state.clone();

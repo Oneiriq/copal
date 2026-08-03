@@ -235,6 +235,19 @@ download: their bytes flow only through issued grants. Listings walk
 the live-path index in key order; `delimiter` collapses shared segments
 into `CommonPrefixes`.
 
+## The MCP face
+
+`POST /mcp` speaks MCP over JSON-RPC 2.0 with the same bearer keys
+every other face takes. `tools/list` serves the manifest generated
+from the contract ([mcp-tools.json](mcp-tools.json), a checked-in
+artifact under the same drift gate as the OpenAPI document), and
+`tools/call` dispatches through the same chain as GraphQL: scopes,
+budgets, field guards, and caller-bound engine sessions enforce
+identically whether the caller is a script or an agent's tool call.
+Point an agent at `/mcp` with a key; what it may do is what the key
+may do, and every tool carries its required scopes and rate class as
+annotations the agent can read before calling.
+
 ## Search depth
 
 Search takes `prefix` (keep results whose file path starts with it),

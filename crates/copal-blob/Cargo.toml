@@ -17,6 +17,8 @@ hex = { workspace = true }
 copal-core = { workspace = true }
 serde = { workspace = true }
 opendal = { workspace = true }
+# The cloud services ride the workspace feature set: fs, s3, gcs,
+# azblob.
 tokio = { workspace = true }
 futures = { workspace = true }
 bytes = { workspace = true }

@@ -123,6 +123,16 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ### Storage and tenancy
 
+- **Google Cloud Storage and Azure Blob Storage back residencies.**
+  Two new residency schemes, `gcs` and `azblob`, join `fs` and `s3`
+  behind the same blob port. Everything a residency already carries
+  applies unchanged: per-residency encryption keys, key rotation
+  with `previous_encryption_key`, the re-seal sweep, dedupe scoping,
+  and tenant assignment, because the store speaks OpenDAL and the
+  scheme is connection detail. GCS credentials may be inline
+  (base64 service-account JSON), a path, or absent for the ambient
+  chain, so workload identity works with an empty credential block.
+
 - **The blob master key rotates without downtime.** Move the old key
   to `COPAL_BLOB_ENCRYPTION_KEY_PREVIOUS`, set the new one, restart:
   reads fall back to the retiring key, database secrets re-seal at

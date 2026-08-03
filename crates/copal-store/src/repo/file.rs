@@ -415,6 +415,31 @@ fn with_lease(query: Query, owner: &str, ttl_secs: u32) -> copal_core::Result<Qu
 /// A live claim by anyone (including `owner`) loses with `Conflict`.
 /// A condition a claim carries into its own compare-and-set, so two
 /// writers racing the same key resolve at the engine rather than in
+/// Set the declared content type while the upload is still open. The
+/// fetch worker uses this when the caller declared nothing and the
+/// source answered with a type: the record should never serve under a
+/// default it did not earn. Refuses silently once the file has left
+/// the uploading state.
+pub async fn set_content_type(
+    store: &Store,
+    tenant: &TenantId,
+    id: &FileId,
+    content_type: &str,
+) -> copal_core::Result<()> {
+    let query = Query::new()
+        .update_set(rid(id)?.to_string())
+        .map_err(|e| map_store_err("set_content_type", e))?
+        .set("content_type", serde_json::Value::from(content_type))
+        .map_err(|e| map_store_err("set_content_type", e))?
+        .where_(eq("tenant_id", tenant.as_str()))
+        .where_(eq("state", "uploading"))
+        .return_after();
+    let _: Vec<serde_json::Value> = query_records(store.client(), &query)
+        .await
+        .map_err(|e| map_store_err("set_content_type", e))?;
+    Ok(())
+}
+
 /// a check-then-claim window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ClaimPrecondition<'a> {

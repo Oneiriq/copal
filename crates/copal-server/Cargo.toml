@@ -41,6 +41,7 @@ sha2 = { workspace = true }
 # Webhook delivery.
 reqwest = { version = "0.12", default-features = false, features = [
     "rustls-tls",
+    "stream",
 ] }
 # Rendition decoding and encoding. Decoders cover the common upload
 # formats; renditions encode to jpeg or png.

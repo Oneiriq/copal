@@ -60,6 +60,8 @@ pub struct Limits {
     /// deployment is server-side request forgery. Deployments whose
     /// receivers are genuinely internal turn it on knowingly.
     pub allow_private_webhook_targets: bool,
+    /// Whether URL ingestion may pull from private address space.
+    pub allow_private_fetch_targets: bool,
 }
 
 impl Default for Limits {
@@ -74,6 +76,7 @@ impl Default for Limits {
             subscription_max_secs: 900,
             min_multipart_part_bytes: 5 * 1024 * 1024,
             allow_private_webhook_targets: false,
+            allow_private_fetch_targets: false,
         }
     }
 }
@@ -543,6 +546,8 @@ pub fn api_router<B: BlobStore + 'static>(state: AppState<B>) -> Router {
             post(request_rendition::<B>).get(list_renditions::<B>),
         )
         .route("/v1/files/{id}/transform", post(request_transform::<B>))
+        .route("/v1/files/fetch", post(fetch_file::<B>))
+        .route("/v1/files/{id}/renditions/{spec}", get(get_rendition::<B>))
         .layer(request_deadline)
         .with_state(state.clone())
         .merge(transfer_routes)
@@ -1883,6 +1888,358 @@ fn default_rendition_format() -> String {
 /// path, link it to the source, and enqueue the render. A repeat with
 /// the same parameters returns the existing record instead of a
 /// duplicate, because the rendition path is unique per live file.
+/// Bounds and charset shared by both rendition faces.
+fn validate_rendition_spec(request: &RenditionSpec) -> Result<(), ApiError> {
+    if !(16..=4096).contains(&request.width) || !(16..=4096).contains(&request.height) {
+        return Err(CopalError::validation("width and height must be within 16..=4096").into());
+    }
+    if !matches!(request.format.as_str(), "jpeg" | "png") {
+        return Err(CopalError::validation("format must be jpeg or png").into());
+    }
+    let kind_ok = !request.kind.is_empty()
+        && request.kind.len() <= 32
+        && request
+            .kind
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'));
+    if !kind_ok {
+        return Err(CopalError::validation(
+            "kind must be 1..=32 characters of letters, digits, hyphen, underscore",
+        )
+        .into());
+    }
+    Ok(())
+}
+
+/// The parameter digest and derived path one rendition spec maps to,
+/// shared by the request action and the on-the-fly URL face.
+fn rendition_artifacts(source_path: &str, spec: &RenditionSpec) -> (String, String) {
+    let params = format!("w={}&h={}&f={}", spec.width, spec.height, spec.format);
+    let full_digest = {
+        use sha2::Digest as _;
+        hex::encode(sha2::Sha256::digest(params.as_bytes()))
+    };
+    let path = format!(
+        "{}@{}-{}x{}.{}",
+        source_path, spec.kind, spec.width, spec.height, spec.format
+    );
+    (full_digest[..16].to_owned(), path)
+}
+
+/// Parse the URL segment `{kind}-{width}x{height}.{format}`.
+fn parse_rendition_spec(raw: &str) -> Result<RenditionSpec, ApiError> {
+    let malformed = || {
+        ApiError::from(CopalError::validation(
+            "rendition spec reads kind-WIDTHxHEIGHT.format",
+        ))
+    };
+    let (stem, format) = raw.rsplit_once('.').ok_or_else(malformed)?;
+    let (kind, dims) = stem.rsplit_once('-').ok_or_else(malformed)?;
+    let (w, h) = dims.split_once('x').ok_or_else(malformed)?;
+    let width: u32 = w.parse().map_err(|_| malformed())?;
+    let height: u32 = h.parse().map_err(|_| malformed())?;
+    Ok(RenditionSpec {
+        kind: kind.to_owned(),
+        width,
+        height,
+        format: format.to_owned(),
+    })
+}
+
+/// Serve a derived record under its own access level, the same
+/// enforcement `/content` applies.
+async fn serve_rendition<B: BlobStore>(
+    state: &AppState<B>,
+    headers: &HeaderMap,
+    record: copal_core::FileRecord,
+) -> Result<Response, ApiError> {
+    let cache = match record.access {
+        copal_core::AccessLevel::Public => crate::serve::CacheClass::Public,
+        access => {
+            let tenant =
+                crate::auth::authenticate_scoped(state, headers, crate::auth::Scope::Read, 1)
+                    .await?;
+            if record.tenant_id != tenant {
+                return Err(CopalError::not_found(format!("file {}", record.id)).into());
+            }
+            if access == copal_core::AccessLevel::Grant {
+                return Err(
+                    CopalError::forbidden("file is grant-only; redeem an issued URL").into(),
+                );
+            }
+            crate::serve::CacheClass::Private
+        }
+    };
+    if !record.servable_content() {
+        return Err(CopalError::conflict(format!(
+            "rendition is {} with no servable content",
+            record.state.as_str(),
+        ))
+        .into());
+    }
+    if state.withholds_pending_scan(&record) {
+        return Err(CopalError::conflict("content is awaiting a malware scan").into());
+    }
+    let digest = record
+        .digest
+        .as_ref()
+        .ok_or_else(|| CopalError::Store("servable file without digest".into()))?;
+    let backend = state.backend_for_record(&record)?;
+    crate::serve::serve_blob(
+        &backend,
+        headers,
+        crate::serve::ServeSpec {
+            content_type: &record.content_type,
+            digest,
+            path: &record.path,
+            cache,
+        },
+    )
+    .await
+}
+
+/// Serve a rendition straight from its URL, deriving on first
+/// request. The spec segment reads `{kind}-{width}x{height}.{format}`,
+/// the shape the derived path already carries. An existing rendition
+/// serves under its own access level, so public thumbnails stay
+/// anonymous and cacheable; deriving is a write, needs the write
+/// scope, and belongs to the owning tenant.
+async fn get_rendition<B: BlobStore>(
+    State(state): State<AppState<B>>,
+    headers: HeaderMap,
+    Path((id, spec_raw)): Path<(String, String)>,
+) -> Result<Response, ApiError> {
+    let id = parse_id(&id)?;
+    let spec = parse_rendition_spec(&spec_raw)?;
+    validate_rendition_spec(&spec)?;
+    let source = file_repo::get_file_any(&state.store, &id)
+        .await?
+        .ok_or_else(|| CopalError::not_found(format!("file {id}")))?;
+    let tenant = source.tenant_id.clone();
+    let (params_digest, derived_path) = rendition_artifacts(&source.path, &spec);
+
+    if let Some(existing) = file_repo::find_by_path(&state.store, &tenant, &derived_path).await? {
+        if existing.servable_content() {
+            return serve_rendition(&state, &headers, existing).await;
+        }
+    }
+
+    let caller =
+        crate::auth::authenticate_scoped(&state, &headers, crate::auth::Scope::Write, 1).await?;
+    if caller != tenant {
+        return Err(CopalError::not_found(format!("file {id}")).into());
+    }
+    if source.access == copal_core::AccessLevel::Grant {
+        return Err(CopalError::forbidden("file is grant-only; redeem an issued URL").into());
+    }
+    if !source.servable_content() {
+        return Err(CopalError::conflict("source has no served content").into());
+    }
+    if state.withholds_pending_scan(&source) {
+        return Err(CopalError::conflict("content is awaiting a malware scan").into());
+    }
+    if !source.content_type.starts_with("image/") {
+        return Err(CopalError::validation("renditions require an image source").into());
+    }
+    let source_digest = source
+        .digest
+        .clone()
+        .expect("servable content carries a digest");
+    if source.size_bytes.unwrap_or(0) > crate::pipeline::MAX_DERIVE_SOURCE_BYTES {
+        return Err(CopalError::validation("source exceeds the decode ceiling").into());
+    }
+
+    // Hold the derived path before rendering so racing callers
+    // converge on one record.
+    let file_spec = FileSpec {
+        path: derived_path.clone(),
+        content_type: format!("image/{}", spec.format),
+        access: source.access,
+        metadata: serde_json::Value::Null,
+        idempotency_key: None,
+    };
+    let derived = match file_repo::create_file(&state.store, &tenant, &file_spec, "derive").await {
+        Ok(created) => created.record,
+        Err(CopalError::Conflict(_)) => {
+            let existing = file_repo::find_by_path(&state.store, &tenant, &derived_path)
+                .await?
+                .ok_or_else(|| CopalError::conflict("derivation is in flight; retry shortly"))?;
+            if existing.servable_content() {
+                return serve_rendition(&state, &headers, existing).await;
+            }
+            return Err(CopalError::conflict("derivation is in flight; retry shortly").into());
+        }
+        Err(other) => return Err(other.into()),
+    };
+    file_repo::mark_rendition(
+        &state.store,
+        &tenant,
+        &derived.id,
+        &id,
+        &spec.kind,
+        &params_digest,
+    )
+    .await?;
+
+    let backend = state.backend_for_record(&source)?;
+    let bytes = backend.read(&source_digest).await?;
+    let rendered =
+        match crate::pipeline::render_image(&bytes, spec.width, spec.height, &spec.format) {
+            Ok(rendered) => rendered,
+            Err(reason) => {
+                crate::pipeline::refuse_derived(&state.store, &tenant, &derived.id, reason.clone())
+                    .await?;
+                return Err(CopalError::validation(reason).into());
+            }
+        };
+    let residency = copal_store::repo::tenant::get_residency(&state.store, &tenant).await?;
+    let target = state.residencies.get(&residency)?;
+    let body = futures::stream::iter(vec![Ok::<_, String>(bytes::Bytes::from(rendered))]);
+    let stored = target.put_streamed(body).await?;
+    copal_store::repo::blob::record_sighting(
+        &state.store,
+        &stored.digest,
+        stored.size_bytes,
+        &residency,
+        &stored.storage_path,
+    )
+    .await?;
+    file_repo::claim_upload(&state.store, &tenant, &derived.id, "derive-inline", 900).await?;
+    let finished = file_repo::complete_upload(
+        &state.store,
+        &tenant,
+        &derived.id,
+        &residency,
+        &stored.digest,
+        stored.size_bytes,
+        "derive",
+        copal_core::FileState::Ready,
+    )
+    .await?;
+    crate::metrics::incr("copal_renditions_inline_total");
+    serve_rendition(&state, &headers, finished).await
+}
+
+#[derive(Debug, Deserialize)]
+struct FetchRequest {
+    url: String,
+    path: String,
+    #[serde(default)]
+    content_type: Option<String>,
+    #[serde(default)]
+    access: Option<copal_core::AccessLevel>,
+    #[serde(default)]
+    metadata: serde_json::Value,
+    #[serde(default)]
+    idempotency_key: Option<String>,
+}
+
+async fn fetch_file<B: BlobStore>(
+    State(state): State<AppState<B>>,
+    headers: HeaderMap,
+    Json(request): Json<FetchRequest>,
+) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
+    let tenant =
+        crate::auth::authenticate_scoped(&state, &headers, crate::auth::Scope::Write, 1).await?;
+    let spec = FetchSpec {
+        url: request.url,
+        path: request.path,
+        content_type: request.content_type,
+        access: request.access,
+        metadata: request.metadata,
+        idempotency_key: request.idempotency_key,
+    };
+    let (status, body) = fetch_core(&state, &tenant, &spec).await?;
+    Ok((status, Json(body)))
+}
+
+/// What a fetch request asks for, shared by both faces.
+#[derive(Debug, Clone)]
+pub(crate) struct FetchSpec {
+    pub url: String,
+    pub path: String,
+    pub content_type: Option<String>,
+    pub access: Option<copal_core::AccessLevel>,
+    pub metadata: serde_json::Value,
+    pub idempotency_key: Option<String>,
+}
+
+/// Create the record and enqueue the ingestion, the shared core
+/// behind the REST handler and the GraphQL action resolver. The URL
+/// is tenant-supplied, so the outbound policy gates it here for a
+/// fast refusal and again inside the worker.
+pub(crate) async fn fetch_core<B: BlobStore>(
+    state: &AppState<B>,
+    tenant: &TenantId,
+    request: &FetchSpec,
+) -> Result<(StatusCode, serde_json::Value), ApiError> {
+    if !state.flow.has_workflow(crate::pipeline::FETCH_WORKFLOW) {
+        return Err(CopalError::validation("the ingestion pipeline is not configured").into());
+    }
+    if !(request.url.starts_with("http://") || request.url.starts_with("https://")) {
+        return Err(CopalError::validation("url must be http or https").into());
+    }
+    if request.url.len() > 2048 {
+        return Err(CopalError::validation("url exceeds 2048 characters").into());
+    }
+    if !state.limits.allow_private_fetch_targets {
+        crate::netguard::check_outbound_url(&request.url)
+            .map_err(|e| CopalError::validation(format!("outbound policy: {e}")))?;
+    }
+    if let Some(declared) = request.content_type.as_deref() {
+        if declared.len() > 127 || !declared.contains('/') || !declared.is_ascii() {
+            return Err(
+                CopalError::validation("content_type does not look like a media type").into(),
+            );
+        }
+    }
+
+    let file_spec = FileSpec {
+        path: request.path.clone(),
+        content_type: request
+            .content_type
+            .clone()
+            .unwrap_or_else(|| "application/octet-stream".to_owned()),
+        access: request.access.unwrap_or(copal_core::AccessLevel::Private),
+        metadata: request.metadata.clone(),
+        idempotency_key: request.idempotency_key.clone(),
+    };
+    let created = file_repo::create_file(&state.store, tenant, &file_spec, "fetch").await?;
+    if !created.created {
+        // An idempotency replay: the original enqueue stands.
+        return Ok((StatusCode::OK, crate::wire::wire_file(&created.record)));
+    }
+    let record = created.record;
+    let url_digest = {
+        use sha2::Digest as _;
+        hex::encode(sha2::Sha256::digest(request.url.as_bytes()))
+    };
+    let input = json!({
+        "tenant": tenant.as_str(),
+        "file": record.id.as_str(),
+        "url": request.url,
+        "declared": request.content_type.is_some(),
+    });
+    let (run_id, _) = state
+        .flow
+        .enqueue(
+            tenant,
+            crate::pipeline::FETCH_WORKFLOW,
+            RunSpec {
+                input,
+                subject: Some(record.id.clone()),
+                idempotency_key: Some(crate::pipeline::fetch_run_key(
+                    &record.id,
+                    &url_digest[..16],
+                )),
+            },
+        )
+        .await?;
+    let mut body = crate::wire::wire_file(&record);
+    body["run"] = json!(run_id);
+    Ok((StatusCode::ACCEPTED, body))
+}
+
 async fn request_rendition<B: BlobStore>(
     State(state): State<AppState<B>>,
     headers: HeaderMap,
@@ -2068,24 +2425,7 @@ pub(crate) async fn request_rendition_core<B: BlobStore>(
     if !state.flow.has_workflow(crate::pipeline::DERIVE_WORKFLOW) {
         return Err(CopalError::validation("the derivatives pipeline is not configured").into());
     }
-    if !(16..=4096).contains(&request.width) || !(16..=4096).contains(&request.height) {
-        return Err(CopalError::validation("width and height must be within 16..=4096").into());
-    }
-    if !matches!(request.format.as_str(), "jpeg" | "png") {
-        return Err(CopalError::validation("format must be jpeg or png").into());
-    }
-    let kind_ok = !request.kind.is_empty()
-        && request.kind.len() <= 32
-        && request
-            .kind
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'));
-    if !kind_ok {
-        return Err(CopalError::validation(
-            "kind must be 1..=32 characters of letters, digits, hyphen, underscore",
-        )
-        .into());
-    }
+    validate_rendition_spec(request)?;
 
     let source = file_repo::get_file(&state.store, tenant, id)
         .await?
@@ -2101,19 +2441,8 @@ pub(crate) async fn request_rendition_core<B: BlobStore>(
         .clone()
         .expect("servable content carries a digest");
 
-    let params = format!(
-        "w={}&h={}&f={}",
-        request.width, request.height, request.format
-    );
-    let full_digest = {
-        use sha2::Digest as _;
-        hex::encode(sha2::Sha256::digest(params.as_bytes()))
-    };
-    let params_digest = &full_digest[..16];
-    let rendition_path = format!(
-        "{}@{}-{}x{}.{}",
-        source.path, request.kind, request.width, request.height, request.format
-    );
+    let (params_digest, rendition_path) = rendition_artifacts(&source.path, request);
+    let params_digest = params_digest.as_str();
 
     let spec = FileSpec {
         path: rendition_path.clone(),

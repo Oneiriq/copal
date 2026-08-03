@@ -83,6 +83,22 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
   keys, verifiable at a CDN worker with no database hop.
 - **Image renditions** on the flow engine, with deterministic paths and
   idempotent repeats.
+- **Renditions serve straight from their URL.** `GET
+  /v1/files/{id}/renditions/{kind}-{w}x{h}.{format}` serves an
+  existing rendition under its own access level and derives on a
+  miss, inline, before answering. Deriving is a write, so it needs
+  the write scope and the owning tenant; anonymous callers read what
+  exists. Both faces of the derivatives surface share one render
+  body and one path formula, so the URL face and the request action
+  can never disagree about where a rendition lives.
+- **Ingestion from a URL.** `POST /v1/files/fetch` creates the
+  record and the server pulls the bytes itself, under the outbound
+  policy (tenant-supplied URLs refuse private address space by
+  default) and the upload ceiling, enforced mid-stream against lying
+  Content-Length headers. Fetched content walks the standard sniff,
+  scan, and finalize pipeline, and the source's served content type
+  stands when the caller declares none. Declared in the contract, so
+  agents get `file_fetch` as a tool.
 - **The external transformer seam.** Any operator-run HTTP service
   becomes a derivation step: the transform action ships source bytes
   out and lands whatever comes back through the same claim and

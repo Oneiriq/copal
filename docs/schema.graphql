@@ -132,6 +132,7 @@ type Mutation {
   fileIssueEdgeUrl(id: ID!, ttlSecs: Int): JSON!
   fileRequestRendition(id: ID!, kind: String, width: Int, height: Int, format: String): JSON!
   fileTransform(id: ID!, transformer: String!, params: JSON, contentType: String): JSON!
+  fileFetch(url: String!, path: String!, contentType: String, access: String, metadata: JSON, idempotencyKey: String): JSON!
   fileRemove(id: ID!): Boolean!
   webhookRegister(url: String!, events: JSON): JSON!
   webhookRemove(id: ID!): Boolean!

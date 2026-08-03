@@ -572,6 +572,61 @@
         ]
       }
     },
+    "/v1/files/fetch": {
+      "post": {
+        "description": "Ingest content from a URL the server fetches itself; the fetched bytes walk the standard scan and finalize pipeline.",
+        "operationId": "fetch_files",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "access": {
+                    "type": "string"
+                  },
+                  "content_type": {
+                    "type": "string"
+                  },
+                  "idempotency_key": {
+                    "type": "string"
+                  },
+                  "metadata": {
+                    "type": "object"
+                  },
+                  "path": {
+                    "type": "string"
+                  },
+                  "url": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "url",
+                  "path"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Action result."
+          }
+        },
+        "x-requires-scopes": [
+          "write"
+        ]
+      }
+    },
     "/v1/files/{id}": {
       "delete": {
         "description": "Soft-delete: tombstone the record and free its live path; bytes are reclaimed by garbage collection once nothing references them.",

@@ -249,6 +249,50 @@
       }
     },
     {
+      "name": "file_fetch",
+      "description": "Ingest content from a URL the server fetches itself; the fetched bytes walk the standard scan and finalize pipeline.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string",
+            "description": "http or https source the server pulls; the outbound policy applies."
+          },
+          "path": {
+            "type": "string",
+            "description": "The file's path, unique among the tenant's live files."
+          },
+          "content_type": {
+            "type": "string",
+            "description": "Declared type; unset lets the source's answer stand."
+          },
+          "access": {
+            "type": "string",
+            "description": "public, private, tenant, or grant; defaults to private."
+          },
+          "metadata": {
+            "type": "object",
+            "description": "Caller metadata, stored verbatim."
+          },
+          "idempotency_key": {
+            "type": "string",
+            "description": "Replays return the original record instead of a duplicate."
+          }
+        },
+        "required": [
+          "url",
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "requiredScopes": [
+          "write"
+        ],
+        "rateClass": "mutations"
+      }
+    },
+    {
       "name": "file_remove",
       "description": "Soft-delete: tombstone the record and free its live path; bytes are reclaimed by garbage collection once nothing references them.",
       "inputSchema": {

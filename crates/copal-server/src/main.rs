@@ -92,6 +92,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .clone()
             .map(|addr| (addr, config.embedding_model.clone())),
         config.transformers.clone(),
+        copal_server::pipeline::FetchPolicy {
+            allow_private_targets: config.allow_private_fetch_targets,
+            max_bytes: config.max_upload_bytes as u64,
+        },
     );
     if let Some(addr) = &config.embedding_addr {
         // The index has to exist at the model's width before the
@@ -149,6 +153,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         subscription_max_secs: config.subscription_max_secs,
         min_multipart_part_bytes: copal_server::app::Limits::default().min_multipart_part_bytes,
         allow_private_webhook_targets: config.allow_private_webhook_targets,
+        allow_private_fetch_targets: config.allow_private_fetch_targets,
     };
     if config.allow_private_webhook_targets {
         tracing::warn!(

@@ -124,6 +124,7 @@ pub(crate) fn dispatcher<B: BlobStore + 'static>(
     let upload_url_state = state.clone();
     let rendition_state = state.clone();
     let transform_state = state.clone();
+    let fetch_state = state.clone();
     let edge_url_state = state.clone();
     let hooks_list_state = state.clone();
     let hooks_get_state = state.clone();
@@ -336,6 +337,57 @@ pub(crate) fn dispatcher<B: BlobStore + 'static>(
                         .to_owned(),
                 };
                 crate::app::request_rendition_core(&state, &tenant, &id, &spec)
+                    .await
+                    .map(|(_, body)| Some(body))
+                    .map_err(|e| to_janus_error(e.0))
+            }
+        })
+        .action("files", "fetch", move |ctx, args| {
+            let state = fetch_state.clone();
+            async move {
+                let tenant = tenant_of(&ctx)?;
+                let access = args
+                    .input
+                    .get("access")
+                    .and_then(|v| v.as_str())
+                    .map(|raw| {
+                        serde_json::from_value::<copal_core::AccessLevel>(serde_json::json!(raw))
+                            .map_err(|_| {
+                                to_janus_error(CopalError::validation("unknown access level"))
+                            })
+                    })
+                    .transpose()?;
+                let spec = crate::app::FetchSpec {
+                    url: args
+                        .input
+                        .get("url")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_owned(),
+                    path: args
+                        .input
+                        .get("path")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_owned(),
+                    content_type: args
+                        .input
+                        .get("content_type")
+                        .and_then(|v| v.as_str())
+                        .map(|v| v.to_owned()),
+                    access,
+                    metadata: args
+                        .input
+                        .get("metadata")
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null),
+                    idempotency_key: args
+                        .input
+                        .get("idempotency_key")
+                        .and_then(|v| v.as_str())
+                        .map(|v| v.to_owned()),
+                };
+                crate::app::fetch_core(&state, &tenant, &spec)
                     .await
                     .map(|(_, body)| Some(body))
                     .map_err(|e| to_janus_error(e.0))

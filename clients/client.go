@@ -236,6 +236,14 @@ func (c *Client) TransformFile(id string, input map[string]any) (map[string]any,
 	return out, nil
 }
 
+func (c *Client) FetchFile(input map[string]any) (map[string]any, error) {
+	out := map[string]any{}
+	if err := c.request("POST", "/v1/files/fetch", input, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *Client) RemoveFile(id string) error {
 	return c.request("DELETE", "/v1/files" + "/" + id, nil, nil)
 }

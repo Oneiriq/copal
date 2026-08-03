@@ -15,6 +15,7 @@ Every value comes from the environment. Defaults target local development.
 | `COPAL_BLOB_ROOT` | `./data/blobs` | Filesystem blob store root. |
 | `COPAL_BLOB_ENCRYPTION_KEY` | unset | 64-hex master key enabling encryption at rest. New objects seal (chunked AES-256-GCM, per-object derived keys); existing plaintext objects keep serving. Digests stay plaintext digests, so addressing and dedupe are unchanged. |
 | `COPAL_BLOB_ENCRYPTION_KEY_PREVIOUS` | unset | The retiring master key during a rotation. Reads fall back to it while the re-seal sweep moves objects and sealed secrets under the current key; nothing seals under it. Unset it once `copal_resealed_total` goes quiet. See the rotation section. |
+| `COPAL_FETCH_ALLOW_PRIVATE_TARGETS` | `false` | Whether `POST /v1/files/fetch` may pull from private address space. Tenant-supplied URLs refuse private targets by default, the same policy webhook targets follow. |
 | `COPAL_TRANSFORMERS` | unset | JSON map of named external transformers, e.g. `{"ocr": {"url": "http://ocr:9000/run", "timeout_secs": 120, "secret": "...", "max_source_bytes": 33554432}}`. See the external transformers section. |
 | `COPAL_MAX_UPLOAD_BYTES` | `1073741824` | Upload ceiling, enforced in-stream (413 past it). |
 | `COPAL_UPLOAD_LEASE_SECS` | `900` | Upload claim lease. Expired claims are stealable and reaped. |
@@ -558,6 +559,8 @@ tenant-facing network along with key custody.
 | `copal_resealed_total`, `copal_secrets_resealed_total` | Rotation progress: objects and database secrets moved under the current master key. Quiet means the rotation has drained. |
 | `copal_audit_exported_total` | Audit events served through the export face, accumulated across pages. |
 | `copal_transforms_total`, `copal_transform_refusals_total` | External transform outcomes: derivations that landed, inputs the service refused. |
+| `copal_fetches_total` | URL ingestions that landed content. |
+| `copal_renditions_inline_total` | Renditions derived inline by the on-the-fly URL face. |
 
 Counters are process-local and reset on restart, which is what
 Prometheus expects; the database holds the durable truth for

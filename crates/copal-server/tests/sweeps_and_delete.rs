@@ -389,6 +389,7 @@ async fn a_live_run_shields_its_scanning_file_from_the_stale_sweep() {
         None,
         None,
         std::collections::HashMap::new(),
+        copal_server::pipeline::FetchPolicy::default(),
     );
     let state = copal_server::AppState::new(store.clone(), blobs.clone()).with_flow(registry);
     let engine = state.flow.clone();

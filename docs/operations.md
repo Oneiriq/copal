@@ -9,7 +9,7 @@ Every value comes from the environment. Defaults target local development.
 | `COPAL_BIND` | `127.0.0.1:8080` | Tenant-facing listener. |
 | `COPAL_ADMIN_BIND` | unset | Separate listener for the admin surface. When set, admin routes exist only there. |
 | `COPAL_S3_BIND` | unset | Listener for the S3-compatible gateway (path-style bucket routes at its root). Requires `COPAL_BLOB_ENCRYPTION_KEY`; startup refuses otherwise. |
-| `COPAL_DB_URL` | `ws://127.0.0.1:8000` | SurrealDB endpoint. |
+| `COPAL_DB_URL` | `ws://127.0.0.1:8000` | SurrealDB endpoint. The default build also accepts `surrealkv://<path>` (embedded, durable, single instance) and `mem://` (embedded, ephemeral): the engine runs inside the copal process with no credentials. See the embedded tier section. |
 | `COPAL_DB_NS` / `COPAL_DB_NAME` | `copal` / `copal` | Namespace and database. |
 | `COPAL_DB_USER` / `COPAL_DB_PASS` | `root` / `root` | Database credentials. Use a scoped user in deployments. |
 | `COPAL_BLOB_ROOT` | `./data/blobs` | Filesystem blob store root. |
@@ -50,6 +50,30 @@ Every value comes from the environment. Defaults target local development.
 | `COPAL_WEBHOOK_ALLOW_PRIVATE_TARGETS` | `false` | Permit webhook endpoints resolving to private, loopback, or link-local addresses. Off by default: tenant-supplied URLs pointing inside the deployment are server-side request forgery. Turn on only when receivers are genuinely internal and tenants are trusted. |
 | `COPAL_RESIDENCIES` | unset | JSON map of named storage residencies beyond `local`, e.g. `{"eu": {"scheme": "s3", "bucket": "...", "endpoint": "...", "region": "...", "access_key_id": "...", "secret_access_key": "...", "encryption_key": "<64 hex>"}}`. Filesystem residencies use `{"scheme": "fs", "root": "...", "encryption_key": "<64 hex>"}`; Google Cloud Storage uses `{"scheme": "gcs", "bucket": "...", "credential": "<base64 service-account JSON>"}` (unset credential falls back to the ambient chain, so workload identity needs nothing in the config); Azure Blob Storage uses `{"scheme": "azblob", "container": "...", "endpoint": "https://{account}.blob.core.windows.net", "account_name": "...", "account_key": "..."}`. `encryption_key` is optional and seals that residency's objects under its own key instead of the master; `previous_encryption_key` carries that residency's retiring key during a rotation. Names are lowercase alphanumeric. |
 
+
+## The embedded tier
+
+The default build carries the metadata engine inside the binary. Set
+
+```
+COPAL_DB_URL=surrealkv://./data/db
+```
+
+and copal runs as one process: no SurrealDB to operate, no
+credentials, the database on disk beside the blob root. Everything
+else is identical, because the engine is the same engine: schema
+reconciliation, engine `PERMISSIONS`, caller sessions, the audit
+trail's immutability event, and the retrieval indexes all apply the
+way they do against a server. `mem://` is the ephemeral variant for
+demos and tests.
+
+The embedded engine is single-process by nature, so the two-instance
+topology and its shared-engine requirement stay on the `ws://` form.
+The upgrade path is mechanical: stop copal, start a SurrealDB server
+on the surrealkv directory (the on-disk format is the engine's own),
+point `COPAL_DB_URL` at it, start two instances. Back up the embedded
+tier by including the surrealkv directory in the same snapshot as the
+blob root; the backup doc's ordering rule applies unchanged.
 
 ## Upgrades and the schema
 

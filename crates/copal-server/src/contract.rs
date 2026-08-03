@@ -497,6 +497,31 @@ pub fn contract() -> Contract {
                         required: false,
                         description: Some("Documents to return, 1..=100.".into()),
                     },
+                    ActionField {
+                        name: "prefix".into(),
+                        kind: TypeRef::String,
+                        required: false,
+                        description: Some(
+                            "Keep results whose file path starts with this.".into(),
+                        ),
+                    },
+                    ActionField {
+                        name: "content_type".into(),
+                        kind: TypeRef::String,
+                        required: false,
+                        description: Some(
+                            "Keep results whose file carries this content type.".into(),
+                        ),
+                    },
+                    ActionField {
+                        name: "cursor".into(),
+                        kind: TypeRef::String,
+                        required: false,
+                        description: Some(
+                            "Continue a ranking from the previous page's next_cursor;                              best-effort, since rankings shift as content changes."
+                                .into(),
+                        ),
+                    },
                 ],
                 description: Some(
                     "Retrieval across the tenant's extracted text: engine-selected candidates                      rescored in process, fused across lexical and semantic rankings."

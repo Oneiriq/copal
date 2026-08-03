@@ -217,6 +217,8 @@ pub struct ChunkRow {
     pub id: String,
     #[serde(default)]
     pub file: Option<String>,
+    #[serde(default)]
+    pub digest: String,
     pub ordinal: i64,
     pub body: String,
 }
@@ -311,12 +313,70 @@ const HNSW_EF: i64 = 64;
 /// the HNSW index (EXPLAIN: KnnScan). `Query::vector_search` renders
 /// `<|k,METRIC|>`, which on SurrealDB 3.x scans the whole table
 /// (EXPLAIN: KnnTopK over TableScan).
+/// Narrowing a retrieval to a slice of the corpus. Both legs apply
+/// these at the engine, through the chunk's file link, so a filtered
+/// search never pays to rank passages it must then discard.
+#[derive(Debug, Clone, Default)]
+pub struct SearchFilters {
+    /// Keep passages whose file path starts with this.
+    pub path_prefix: Option<String>,
+    /// Keep passages whose file carries this content type.
+    pub content_type: Option<String>,
+}
+
+impl SearchFilters {
+    fn clauses(&self) -> Vec<String> {
+        let mut clauses = Vec::new();
+        if let Some(prefix) = &self.path_prefix {
+            clauses.push(format!(
+                "string::starts_with(file.path, '{}')",
+                escape_single(prefix),
+            ));
+        }
+        if let Some(content_type) = &self.content_type {
+            clauses.push(format!(
+                "file.content_type = '{}'",
+                escape_single(content_type),
+            ));
+        }
+        clauses
+    }
+}
+
+fn escape_single(raw: &str) -> String {
+    raw.replace('\\', "\\\\").replace('\'', "\\'")
+}
+
+/// Chunks whose vector is absent or was produced by a different
+/// model. The backfill drains this set after a model change, so old
+/// geometry never serves under a new model's index.
+pub async fn stale_chunks(
+    store: &Store,
+    model: &str,
+    batch: i64,
+) -> copal_core::Result<Vec<ChunkRow>> {
+    let query = Query::new()
+        .select(None)
+        .from_table(CHUNK_TABLE)
+        .map_err(|e| map_store_err("stale_chunks", e))?
+        .where_str(format!(
+            "(embedding IS NONE OR embedding_model IS NONE OR embedding_model != '{}')",
+            escape_single(model),
+        ))
+        .limit(batch)
+        .map_err(|e| map_store_err("stale_chunks", e))?;
+    query_records(store.client(), &query)
+        .await
+        .map_err(|e| map_store_err("stale_chunks", e))
+}
+
 pub async fn semantic_search(
     store: &Store,
     tenant: &TenantId,
     embedding: &[f64],
     limit: i64,
     max_distance: f64,
+    filters: &SearchFilters,
 ) -> copal_core::Result<Vec<SearchHit>> {
     if embedding.is_empty() {
         return Err(CopalError::validation("query embedding must not be empty"));
@@ -325,7 +385,7 @@ pub async fn semantic_search(
     // nearest, so a tenant with few passages in a large corpus would
     // see fewer than `limit`; over-fetch and let the limit trim.
     let over_fetch = (limit * 10).clamp(limit, 500);
-    let query = Query::new()
+    let mut query = Query::new()
         .select(Some(vec![
             "file".to_owned(),
             "body".to_owned(),
@@ -335,7 +395,11 @@ pub async fn semantic_search(
         .map_err(|e| map_store_err("semantic_search", e))?
         .where_(eq("tenant_id", tenant.as_str()))
         .vector_search_indexed("embedding", embedding.to_vec(), over_fetch, HNSW_EF)
-        .map_err(|e| map_store_err("semantic_search", e))?
+        .map_err(|e| map_store_err("semantic_search", e))?;
+    for clause in filters.clauses() {
+        query = query.where_str(clause);
+    }
+    let query = query
         .where_str(format!("vector::distance::knn() <= {max_distance}"))
         .limit(limit)
         .map_err(|e| map_store_err("semantic_search", e))?;
@@ -400,6 +464,7 @@ pub async fn search(
     tenant: &TenantId,
     terms: &str,
     limit: i64,
+    filters: &SearchFilters,
 ) -> copal_core::Result<Vec<SearchHit>> {
     if terms.trim().is_empty() {
         return Err(CopalError::validation("search terms must not be empty"));
@@ -411,7 +476,7 @@ pub async fn search(
         .min(RESCORE_WINDOW)
         .max(limit)
         .max(1);
-    let query = Query::new()
+    let mut query = Query::new()
         .select(Some(vec![
             "file".to_owned(),
             "body".to_owned(),
@@ -421,7 +486,11 @@ pub async fn search(
         .map_err(|e| map_store_err("search", e))?
         .where_(eq("tenant_id", tenant.as_str()))
         .fulltext_search("body", 1, terms)
-        .map_err(|e| map_store_err("search", e))?
+        .map_err(|e| map_store_err("search", e))?;
+    for clause in filters.clauses() {
+        query = query.where_str(clause);
+    }
+    let query = query
         .limit(window)
         .map_err(|e| map_store_err("search", e))?;
     let candidates: Vec<SearchHit> = query_records(store.client(), &query)

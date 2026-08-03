@@ -11,6 +11,19 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ### Retrieval
 
+- **Search narrows and pages.** The contract query gained `prefix`,
+  `content_type`, and `cursor`: filters apply at the engine on both
+  retrieval legs through the chunk's file link, so a filtered search
+  never ranks passages it must discard, and the cursor continues a
+  ranking page by page (best-effort by nature, since rankings shift
+  as content changes).
+- **Embeddings heal after a model change.** Chunks record the model
+  that embedded them; a background pass re-embeds any passage whose
+  vector is absent or carries old geometry, so a swapped model
+  drains the stale set without an operator remembering to. The
+  index itself already rebuilds through the schema diff on a
+  dimension change.
+
 - **Search and extracted text answer to the contract.** The
   retrieval surface was REST-only: absent from GraphQL, invisible to
   the differ, and outside the declaration set governing everything

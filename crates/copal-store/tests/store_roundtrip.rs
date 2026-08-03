@@ -448,17 +448,23 @@ async fn extracted_text_is_searchable_and_tenant_scoped() {
     .await;
 
     // The term finds the right document and only this tenant's.
-    let hits = text::search(&store, &acme, "hydraulic", 10).await.unwrap();
+    let hits = text::search(&store, &acme, "hydraulic", 10, &Default::default())
+        .await
+        .unwrap();
     assert_eq!(hits.len(), 1, "one match for this tenant: {hits:?}");
     assert_eq!(hits[0].file_id().as_deref(), Some(manual.id.as_str()));
 
     // The rival's document is invisible here and visible there.
-    let hits = text::search(&store, &rival, "hydraulic", 10).await.unwrap();
+    let hits = text::search(&store, &rival, "hydraulic", 10, &Default::default())
+        .await
+        .unwrap();
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].file_id().as_deref(), Some(theirs.id.as_str()));
 
     // Stemming: the analyzer folds "lubrication" and "lubricate" together.
-    let hits = text::search(&store, &acme, "lubricate", 10).await.unwrap();
+    let hits = text::search(&store, &acme, "lubricate", 10, &Default::default())
+        .await
+        .unwrap();
     assert_eq!(hits.len(), 1, "the analyzer stems: {hits:?}");
 
     // Re-extraction replaces rather than accumulating.
@@ -477,12 +483,14 @@ async fn extracted_text_is_searchable_and_tenant_scoped() {
         .expect("text row");
     assert_eq!(stored.digest, "d9");
     assert_eq!(stored.extractor, "tika");
-    assert!(text::search(&store, &acme, "hydraulic", 10)
-        .await
-        .unwrap()
-        .is_empty());
+    assert!(
+        text::search(&store, &acme, "hydraulic", 10, &Default::default())
+            .await
+            .unwrap()
+            .is_empty()
+    );
     assert_eq!(
-        text::search(&store, &acme, "turbines", 10)
+        text::search(&store, &acme, "turbines", 10, &Default::default())
             .await
             .unwrap()
             .len(),
@@ -490,7 +498,9 @@ async fn extracted_text_is_searchable_and_tenant_scoped() {
     );
 
     // Empty terms refuse rather than matching everything.
-    assert!(text::search(&store, &acme, "  ", 10).await.is_err());
+    assert!(text::search(&store, &acme, "  ", 10, &Default::default())
+        .await
+        .is_err());
 
     // Every matching document comes back, and the limit bounds the
     // page. The ORDER is the engine's full-text scan order (BM25,
@@ -518,12 +528,14 @@ async fn extracted_text_is_searchable_and_tenant_scoped() {
         "native",
     )
     .await;
-    let found = text::search(&store, &acme, "turbine", 10).await.unwrap();
+    let found = text::search(&store, &acme, "turbine", 10, &Default::default())
+        .await
+        .unwrap();
     let ids: Vec<_> = found.iter().filter_map(|h| h.file_id()).collect();
     assert!(ids.contains(&dense.id.to_string()), "{found:?}");
     assert!(ids.contains(&sparse.id.to_string()), "{found:?}");
     assert_eq!(
-        text::search(&store, &acme, "turbine", 1)
+        text::search(&store, &acme, "turbine", 1, &Default::default())
             .await
             .unwrap()
             .len(),

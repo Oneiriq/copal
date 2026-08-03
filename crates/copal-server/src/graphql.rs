@@ -652,9 +652,35 @@ fn dispatcher<B: BlobStore + 'static>(
                     .and_then(|v| v.as_i64())
                     .unwrap_or(20)
                     .clamp(1, 100);
-                crate::app::search_core(&state, &store, &tenant, &q, mode.as_deref(), limit)
-                    .await
-                    .map_err(|e| to_janus_error(e.0))
+                let filters = copal_store::repo::text::SearchFilters {
+                    path_prefix: args
+                        .input
+                        .get("prefix")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_owned),
+                    content_type: args
+                        .input
+                        .get("content_type")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_owned),
+                };
+                let cursor = args
+                    .input
+                    .get("cursor")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_owned);
+                crate::app::search_core(
+                    &state,
+                    &store,
+                    &tenant,
+                    &q,
+                    mode.as_deref(),
+                    limit,
+                    &filters,
+                    cursor.as_deref(),
+                )
+                .await
+                .map_err(|e| to_janus_error(e.0))
             }
         })
         .query("file_text", move |ctx, args| {

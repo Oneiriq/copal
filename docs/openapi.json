@@ -1060,6 +1060,33 @@
             "schema": {
               "type": "integer"
             }
+          },
+          {
+            "description": "Keep results whose file path starts with this.",
+            "in": "query",
+            "name": "prefix",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Keep results whose file carries this content type.",
+            "in": "query",
+            "name": "content_type",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Continue a ranking from the previous page's next_cursor;                              best-effort, since rankings shift as content changes.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {

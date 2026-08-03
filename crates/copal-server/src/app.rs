@@ -662,6 +662,12 @@ struct SearchQuery {
     limit: Option<i64>,
     #[serde(default)]
     mode: Option<String>,
+    #[serde(default)]
+    prefix: Option<String>,
+    #[serde(default)]
+    content_type: Option<String>,
+    #[serde(default)]
+    cursor: Option<String>,
 }
 
 /// Search a tenant's extracted text.
@@ -672,6 +678,7 @@ struct SearchQuery {
 /// zero would read as relevance without being it.
 /// Retrieval, shared by the REST handler and the contract query
 /// resolver so the two faces cannot answer differently.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn search_core<B: BlobStore>(
     state: &AppState<B>,
     store: &copal_store::Store,
@@ -679,7 +686,25 @@ pub(crate) async fn search_core<B: BlobStore>(
     q: &str,
     mode: Option<&str>,
     limit: i64,
+    filters: &copal_store::repo::text::SearchFilters,
+    cursor: Option<&str>,
 ) -> Result<serde_json::Value, ApiError> {
+    // The cursor is a ranking offset, opaque on the wire. Rankings
+    // shift as content changes, so continuation is best-effort: a
+    // page boundary may repeat or skip a result that moved between
+    // requests. The depth cap is the over-fetch envelope both legs
+    // already pay for.
+    let offset = match cursor {
+        Some(raw) => raw
+            .strip_prefix("o:")
+            .and_then(|n| n.parse::<usize>().ok())
+            .filter(|n| *n + limit as usize <= 500)
+            .ok_or_else(|| CopalError::validation("malformed or too-deep cursor"))?,
+        None => 0,
+    };
+    // One past the page, so the ranking can say whether more
+    // remains without a second query.
+    let fetch = (offset as i64 + limit + 1).min(500);
     let requested = mode.unwrap_or("hybrid");
     // Semantic modes need an embedding service; without one, asking
     // for meaning gets words rather than an error, and the response
@@ -700,7 +725,7 @@ pub(crate) async fn search_core<B: BlobStore>(
     };
 
     let lexical = if mode != "semantic" {
-        copal_store::repo::text::search(store, tenant, q, limit).await?
+        copal_store::repo::text::search(store, tenant, q, fetch, filters).await?
     } else {
         Vec::new()
     };
@@ -713,8 +738,9 @@ pub(crate) async fn search_core<B: BlobStore>(
             store,
             tenant,
             &vector,
-            limit,
+            fetch,
             state.limits.max_semantic_distance,
+            filters,
         )
         .await?
     };
@@ -744,8 +770,9 @@ pub(crate) async fn search_core<B: BlobStore>(
         _ => crate::embed::reciprocal_rank_fusion(&[lexical_ids, semantic_ids], 60.0),
     };
 
-    let items: Vec<_> = ordered
+    let page: Vec<_> = ordered
         .iter()
+        .skip(offset)
         .take(limit as usize)
         .filter_map(|id| {
             let (ordinal, body) = bodies.get(id)?;
@@ -757,7 +784,12 @@ pub(crate) async fn search_core<B: BlobStore>(
             }))
         })
         .collect();
-    Ok(json!({ "mode": mode, "items": items }))
+    let next_cursor = if ordered.len() > offset + page.len() && !page.is_empty() {
+        Some(format!("o:{}", offset + page.len()))
+    } else {
+        None
+    };
+    Ok(json!({ "mode": mode, "items": page, "next_cursor": next_cursor }))
 }
 
 async fn search_text<B: BlobStore>(
@@ -769,6 +801,10 @@ async fn search_text<B: BlobStore>(
     let auth =
         crate::auth::authorize_scoped(&state, &headers, crate::auth::Scope::Read, limit as u64)
             .await?;
+    let filters = copal_store::repo::text::SearchFilters {
+        path_prefix: params.prefix.clone(),
+        content_type: params.content_type.clone(),
+    };
     let answer = search_core(
         &state,
         &auth.store,
@@ -776,6 +812,8 @@ async fn search_text<B: BlobStore>(
         &params.q,
         params.mode.as_deref(),
         limit,
+        &filters,
+        params.cursor.as_deref(),
     )
     .await?;
     Ok(Json(answer))

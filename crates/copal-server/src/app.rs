@@ -1054,6 +1054,14 @@ async fn set_version_retention<B: BlobStore>(
         Some(json!({ "seconds": request.seconds, "mode": mode })),
     )
     .await?;
+    copal_store::repo::eventing::emit_event(
+        &state.store,
+        &tenant,
+        Some(file.as_str()),
+        "version.retention_set",
+        json!({ "number": number, "seconds": request.seconds, "mode": mode }),
+    )
+    .await?;
     Ok(Json(json!({ "seconds": request.seconds, "mode": mode })))
 }
 
@@ -1082,6 +1090,14 @@ async fn clear_version_retention<B: BlobStore>(
         &format!("{file}#v{number}"),
         forwarded_origin(&headers).as_deref(),
         None,
+    )
+    .await?;
+    copal_store::repo::eventing::emit_event(
+        &state.store,
+        &tenant,
+        Some(file.as_str()),
+        "version.retention_cleared",
+        json!({ "number": number }),
     )
     .await?;
     Ok(StatusCode::NO_CONTENT)
@@ -1143,18 +1159,27 @@ async fn version_hold<B: BlobStore>(
     let tenant = TenantId::parse(tenant)?;
     let file = parse_id(file)?;
     copal_store::repo::version::set_legal_hold(&state.store, &tenant, &file, number, held).await?;
+    let action = if held {
+        "version.hold_applied"
+    } else {
+        "version.hold_released"
+    };
     copal_store::repo::auth::record_audit(
         &state.store,
         &tenant,
         "admin",
-        if held {
-            "version.hold_applied"
-        } else {
-            "version.hold_released"
-        },
+        action,
         &format!("{file}#v{number}"),
         forwarded_origin(headers).as_deref(),
         Some(json!({ "reason": reason })),
+    )
+    .await?;
+    copal_store::repo::eventing::emit_event(
+        &state.store,
+        &tenant,
+        Some(file.as_str()),
+        action,
+        json!({ "number": number, "reason": reason }),
     )
     .await?;
     Ok(StatusCode::NO_CONTENT)

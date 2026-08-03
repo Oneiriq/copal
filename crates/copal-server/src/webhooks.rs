@@ -65,7 +65,6 @@ pub fn webhook_router<B: BlobStore + 'static>(app: AppState<B>) -> Router {
             "/v1/webhooks/{id}",
             axum::routing::delete(remove_endpoint::<B>),
         )
-        .route("/v1/events", get(list_events::<B>))
         .with_state(state)
 }
 
@@ -200,37 +199,6 @@ struct ListQuery {
     /// sub-collection takes.
     #[serde(default)]
     state: Option<String>,
-    /// Narrow the feed to one dotted verb, the same filter the
-    /// subscription takes.
-    #[serde(default)]
-    action: Option<String>,
-}
-
-/// A tenant's recent file events, newest first.
-async fn list_events<B: BlobStore>(
-    State(state): State<WebhookState<B>>,
-    headers: HeaderMap,
-    axum::extract::Query(params): axum::extract::Query<ListQuery>,
-) -> Result<Json<serde_json::Value>, ApiError> {
-    let limit = params.limit.unwrap_or(100).clamp(1, 1_000);
-    let auth =
-        crate::auth::authorize_scoped(&state.app, &headers, crate::auth::Scope::Read, limit as u64)
-            .await?;
-    let tenant = &auth.tenant;
-    let rows = eventing::list_events(&auth.store, tenant, params.action.as_deref(), limit).await?;
-    let items: Vec<_> = rows
-        .iter()
-        .map(|row| {
-            json!({
-                "id": row.event_id(),
-                "event": row.action,
-                "file": row.file_id(),
-                "payload": row.payload,
-                "created_at": row.created_at,
-            })
-        })
-        .collect();
-    Ok(Json(json!({ "items": items })))
 }
 
 /// A tenant's recent delivery attempts, newest first.

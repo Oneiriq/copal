@@ -121,7 +121,68 @@ pub fn contract() -> Contract {
                     description: Some("Every stored version of this file, newest first.".into()),
                     graphql: None,
                 }],
+                content: Some(janus::ContentFaces {
+                    upload: true,
+                    download: true,
+                }),
                 actions: vec![
+                    Action {
+                        name: "create".into(),
+                        method: "POST".into(),
+                        path: "".into(),
+                        input: vec![
+                            ActionField {
+                                name: "path".into(),
+                                kind: TypeRef::String,
+                                required: true,
+                                description: Some(
+                                    "The file's path, unique among the tenant's live files."
+                                        .into(),
+                                ),
+                            },
+                            ActionField {
+                                name: "content_type".into(),
+                                kind: TypeRef::String,
+                                required: false,
+                                description: Some(
+                                    "Declared type; defaults to application/octet-stream.".into(),
+                                ),
+                            },
+                            ActionField {
+                                name: "access".into(),
+                                kind: TypeRef::String,
+                                required: false,
+                                description: Some(
+                                    "public, private, tenant, or grant; defaults to private."
+                                        .into(),
+                                ),
+                            },
+                            ActionField {
+                                name: "metadata".into(),
+                                kind: TypeRef::Json,
+                                required: false,
+                                description: Some("Caller metadata, stored verbatim.".into()),
+                            },
+                            ActionField {
+                                name: "idempotency_key".into(),
+                                kind: TypeRef::String,
+                                required: false,
+                                description: Some(
+                                    "Replays return the original record instead of a duplicate."
+                                        .into(),
+                                ),
+                            },
+                        ],
+                        output: ActionOutput::Resource,
+                        description: Some(
+                            "Create the file record; bytes follow through the content upload \
+                             or an upload grant."
+                                .into(),
+                        ),
+                        graphql_field: None,
+                        requires: vec!["write".into()],
+                        rate_class: Some("mutations".into()),
+                    },
                     Action {
                         name: "issue_url".into(),
                         method: "POST".into(),
@@ -301,6 +362,7 @@ pub fn contract() -> Contract {
                     description: Some("Delivery attempts to this endpoint, newest first.".into()),
                     graphql: None,
                 }],
+                content: None,
                 actions: vec![
                     Action {
                         name: "register".into(),
@@ -372,6 +434,7 @@ pub fn contract() -> Contract {
                 reads_require: vec!["read".into()],
                 rate_class: Some("reads".into()),
                 sub_resources: vec![],
+                content: None,
                 actions: vec![],
             },
             Resource {
@@ -396,6 +459,7 @@ pub fn contract() -> Contract {
                 reads_require: vec!["read".into()],
                 rate_class: Some("reads".into()),
                 sub_resources: vec![],
+                content: None,
                 actions: vec![
                     Action {
                         name: "start".into(),

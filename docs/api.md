@@ -235,6 +235,17 @@ download: their bytes flow only through issued grants. Listings walk
 the live-path index in key order; `delimiter` collapses shared segments
 into `CommonPrefixes`.
 
+## Ingestion, on the contract
+
+Creation is a declared action: `POST /v1/files` in the OpenAPI
+document, `fileCreate` on GraphQL, `file_create` as an MCP tool, all
+from one declaration, all through the same dispatcher. The byte
+paths are declared content faces, so `PUT` and `GET
+/v1/files/{id}/content` appear in the OpenAPI document with the
+differ governing their presence. An agent's ingest loop is three
+calls: `file_create`, `file_issue_upload_url`, and an HTTP `PUT` of
+the bytes to the grant URL.
+
 ## The MCP face
 
 `POST /mcp` speaks MCP over JSON-RPC 2.0 with the same bearer keys

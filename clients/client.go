@@ -188,6 +188,14 @@ func (c *Client) ListVersionsFiles(id string, limit int, cursor string) (*FileVe
                  	return &page, nil
 }
 
+func (c *Client) CreateFile(input map[string]any) (*File, error) {
+	var out File
+	if err := c.request("POST", "/v1/files", input, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 func (c *Client) IssueUrlFile(id string, input map[string]any) (map[string]any, error) {
 	out := map[string]any{}
 	if err := c.request("POST", "/v1/files" + "/" + id + "/url", input, &out); err != nil {

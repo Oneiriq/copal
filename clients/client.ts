@@ -126,6 +126,10 @@ export class Client {
                      return this.request('GET', `/v1/files/${id}/versions${suffix}`)
   }
 
+  createFile(input: Record<string, unknown>): Promise<File> {
+    return this.request('POST', `/v1/files`, input)
+  }
+
   issueUrlFile(id: string, input: Record<string, unknown>): Promise<Record<string, unknown>> {
     return this.request('POST', `/v1/files/${id}/url`, input)
   }

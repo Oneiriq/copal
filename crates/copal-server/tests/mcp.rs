@@ -183,3 +183,66 @@ async fn scopes_bind_agents_too() {
     .await;
     assert_eq!(body["error"]["code"], -32602, "{body:#?}");
 }
+
+/// The loop the audit found missing: an agent creates a file,
+/// obtains an upload grant, delivers bytes, and reads its own work
+/// back, all through tools plus one grant URL.
+#[tokio::test]
+async fn an_agent_ingests_end_to_end() {
+    let (router, admin, _dir) = stack().await;
+    let token = mint(&admin, &["read", "write"]).await;
+
+    let body = rpc(
+        &router,
+        &token,
+        json!({
+            "jsonrpc": "2.0", "id": 10, "method": "tools/call",
+            "params": { "name": "file_create", "arguments": {
+                "path": "agent-authored.txt",
+                "content_type": "text/plain",
+            } },
+        }),
+    )
+    .await;
+    assert_eq!(body["result"]["isError"], false, "{body:#?}");
+    let record: Value =
+        serde_json::from_str(body["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    let id = record["id"].as_str().unwrap().to_owned();
+
+    let body = rpc(
+        &router,
+        &token,
+        json!({
+            "jsonrpc": "2.0", "id": 11, "method": "tools/call",
+            "params": { "name": "file_issue_upload_url", "arguments": { "id": id } },
+        }),
+    )
+    .await;
+    assert_eq!(body["result"]["isError"], false, "{body:#?}");
+    let grant: Value =
+        serde_json::from_str(body["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    let url = grant["url"].as_str().unwrap().to_owned();
+
+    // The grant URL is the byte path; the agent PUTs to it directly.
+    let put = Request::builder()
+        .method("PUT")
+        .uri(url)
+        .body(Body::from(b"authored by an agent".to_vec()))
+        .unwrap();
+    let response = router.clone().oneshot(put).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK, "the grant accepts bytes");
+
+    let body = rpc(
+        &router,
+        &token,
+        json!({
+            "jsonrpc": "2.0", "id": 12, "method": "tools/call",
+            "params": { "name": "file_get", "arguments": { "id": id } },
+        }),
+    )
+    .await;
+    let fetched: Value =
+        serde_json::from_str(body["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(fetched["state"], "ready", "{fetched:#?}");
+    assert_eq!(fetched["path"], "agent-authored.txt");
+}

@@ -130,6 +130,17 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ### Interfaces
 
+- **Ingestion joined the contract.** Creation was a hand-written
+  REST handler no artifact documented, no differ governed, and no
+  generated client or agent tool reached; the byte paths were
+  likewise invisible. `files` now declares a `create` action and
+  content faces: `POST /v1/files` and the content `PUT`/`GET` appear
+  in the OpenAPI document, `fileCreate` lands on GraphQL, and
+  `file_create` becomes an MCP tool, all dispatching through the
+  same chain. The proof is the agent loop the audit found
+  impossible: create, obtain an upload grant, deliver bytes, read
+  the work back ready, all through tools plus one grant URL.
+
 - **The MCP face.** `POST /mcp` serves agents: `tools/list` is the
   manifest Janus generates from the contract (every resource's list
   and get, every action, every query, with scopes and rate classes

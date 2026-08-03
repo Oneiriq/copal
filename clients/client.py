@@ -137,6 +137,10 @@ class Client:
                        next_cursor=payload.get('next_cursor'),
                      )
 
+  def create_file(self, body: dict[str, Any] | None = None) -> File:
+    item = self._request('POST', f'/v1/files', body or {})
+    return File(**{k: v for k, v in item.items() if k in File.__dataclass_fields__})
+
   def issue_url_file(self, id: str, body: dict[str, Any] | None = None) -> Any:
     return self._request('POST', f'/v1/files/{id}/url', body or {})
 

@@ -55,6 +55,45 @@
       }
     },
     {
+      "name": "file_create",
+      "description": "Create the file record; bytes follow through the content upload or an upload grant.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "The file's path, unique among the tenant's live files."
+          },
+          "content_type": {
+            "type": "string",
+            "description": "Declared type; defaults to application/octet-stream."
+          },
+          "access": {
+            "type": "string",
+            "description": "public, private, tenant, or grant; defaults to private."
+          },
+          "metadata": {
+            "type": "object",
+            "description": "Caller metadata, stored verbatim."
+          },
+          "idempotency_key": {
+            "type": "string",
+            "description": "Replays return the original record instead of a duplicate."
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "requiredScopes": [
+          "write"
+        ],
+        "rateClass": "mutations"
+      }
+    },
+    {
       "name": "file_issue_url",
       "description": "Issue a signed URL for a servable file.",
       "inputSchema": {

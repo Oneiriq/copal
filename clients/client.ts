@@ -146,6 +146,10 @@ export class Client {
     return this.request('POST', `/v1/files/${id}/renditions`, input)
   }
 
+  transformFile(id: string, input: Record<string, unknown>): Promise<Record<string, unknown>> {
+    return this.request('POST', `/v1/files/${id}/transform`, input)
+  }
+
   removeFile(id: string): Promise<void> {
     return this.request('DELETE', `/v1/files/${id}`)
   }

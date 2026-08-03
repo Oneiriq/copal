@@ -30,6 +30,7 @@ async fn pipelined_stack_with(
         None,
         None,
         None,
+        std::collections::HashMap::new(),
     );
     let state = AppState::new(store, blobs).with_flow(registry);
     let engine = state.flow.clone();

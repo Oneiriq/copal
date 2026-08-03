@@ -15,6 +15,7 @@ Every value comes from the environment. Defaults target local development.
 | `COPAL_BLOB_ROOT` | `./data/blobs` | Filesystem blob store root. |
 | `COPAL_BLOB_ENCRYPTION_KEY` | unset | 64-hex master key enabling encryption at rest. New objects seal (chunked AES-256-GCM, per-object derived keys); existing plaintext objects keep serving. Digests stay plaintext digests, so addressing and dedupe are unchanged. |
 | `COPAL_BLOB_ENCRYPTION_KEY_PREVIOUS` | unset | The retiring master key during a rotation. Reads fall back to it while the re-seal sweep moves objects and sealed secrets under the current key; nothing seals under it. Unset it once `copal_resealed_total` goes quiet. See the rotation section. |
+| `COPAL_TRANSFORMERS` | unset | JSON map of named external transformers, e.g. `{"ocr": {"url": "http://ocr:9000/run", "timeout_secs": 120, "secret": "...", "max_source_bytes": 33554432}}`. See the external transformers section. |
 | `COPAL_MAX_UPLOAD_BYTES` | `1073741824` | Upload ceiling, enforced in-stream (413 past it). |
 | `COPAL_UPLOAD_LEASE_SECS` | `900` | Upload claim lease. Expired claims are stealable and reaped. |
 | `COPAL_AUTH_MODE` | `header` | `header` (development) or `keys`. The default flips to `keys` at 1.0. |
@@ -231,6 +232,53 @@ once. Attaching an embedding is guarded on the digest, so a vector
 computed for content that has since been replaced never attaches to
 the new passages, and a retried run embeds only what still lacks a
 vector rather than paying for the whole document again.
+
+## External transformers
+
+Copal's built-in processing covers sniffing, scanning, extraction,
+embedding, and image renditions. Everything else is an operator
+concern, and the transform seam is how it plugs in without forking:
+any HTTP service becomes a derivation step.
+
+```
+POST /v1/files/{id}/transform
+{ "transformer": "ocr", "params": { "lang": "eng" }, "content_type": "application/pdf" }
+```
+
+The request creates a derived record (path `source@name-<params
+digest>`, listed beside renditions) and enqueues a flow run. The
+worker ships the source bytes to the configured URL and finishes the
+derived file with whatever comes back, through the same claim and
+complete path every upload uses, so the output is a real file with a
+digest, versions, retention, and every serving rule intact.
+
+The wire contract for the service:
+
+- Request: `POST <url>?params=<JSON>` with the source bytes as the
+  body, `content-type` set to the source's type, and headers
+  `x-copal-tenant`, `x-copal-source-file`, `x-copal-source-digest`,
+  plus `x-copal-transform-secret` when the configuration carries a
+  secret.
+- Answer `200` with the derived bytes as the body: the derivation
+  lands and the derived file becomes ready.
+- Answer any `4xx` to refuse the input: the derived record fails and
+  the run completes. The response body (first 200 characters) is
+  recorded as the reason.
+- Answer `5xx`, time out, or refuse the connection for
+  infrastructure trouble: the run retries with the flow engine's
+  attempt budget.
+
+Repeating a transform request returns the existing derived record;
+the run key covers source content, transformer name, and parameters,
+so replays never double-derive. The declared `content_type` in the
+request is what the derived file serves as; the operator knows their
+service's output where Copal does not.
+
+Transformer URLs are operator configuration, the same trust class as
+`COPAL_CLAMAV_ADDR` and the extractor address, so the outbound-policy
+guard on tenant-supplied webhook targets does not apply to them.
+`copal_transforms_total` counts derivations that landed and
+`copal_transform_refusals_total` counts refused inputs.
 
 ## Outbound request policy
 
@@ -509,6 +557,7 @@ tenant-facing network along with key custody.
 | `copal_blobs_collected_total`, `copal_reaped_uploads_total`, `copal_reaped_runs_total` | Sweep work, accumulated across passes. |
 | `copal_resealed_total`, `copal_secrets_resealed_total` | Rotation progress: objects and database secrets moved under the current master key. Quiet means the rotation has drained. |
 | `copal_audit_exported_total` | Audit events served through the export face, accumulated across pages. |
+| `copal_transforms_total`, `copal_transform_refusals_total` | External transform outcomes: derivations that landed, inputs the service refused. |
 
 Counters are process-local and reset on restart, which is what
 Prometheus expects; the database holds the durable truth for

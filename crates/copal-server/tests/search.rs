@@ -42,6 +42,7 @@ async fn stack(extractor: Option<String>) -> (axum::Router, FlowEngine, tempfile
         None,
         extractor,
         None,
+        std::collections::HashMap::new(),
     );
     let state = AppState::new(store, blobs).with_flow(registry);
     let engine = state.flow.clone();
@@ -291,6 +292,7 @@ async fn semantic_stack() -> (axum::Router, FlowEngine, tempfile::TempDir) {
         None,
         None,
         embedding.clone(),
+        std::collections::HashMap::new(),
     );
     let state = AppState::new(store, blobs)
         .with_flow(registry)
@@ -640,6 +642,7 @@ async fn the_backfill_drains_stale_embeddings() {
         None,
         None,
         None,
+        std::collections::HashMap::new(),
     );
     let state = AppState::new(store.clone(), blobs).with_flow(registry);
     let engine = state.flow.clone();

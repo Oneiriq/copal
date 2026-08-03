@@ -38,6 +38,25 @@ use copal_store::Store;
 /// The derivatives workflow key.
 pub const DERIVE_WORKFLOW: &str = "derive";
 
+/// The external-transform workflow key.
+pub const TRANSFORM_WORKFLOW: &str = "transform";
+
+/// Default source ceiling for external transforms. Individual
+/// transformers can raise or lower it in their configuration.
+pub const MAX_TRANSFORM_SOURCE_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Deterministic idempotency key for a transform run: one derivation
+/// per derived record per source content, transformer, and parameter
+/// set.
+pub fn transform_run_key(
+    derived: &FileId,
+    source_digest: &ContentDigest,
+    transformer: &str,
+    params: &str,
+) -> String {
+    format!("transform:{derived}:{source_digest}:{transformer}:{params}")
+}
+
 /// Sources past this size are refused for decoding; renditions target
 /// interactive latency, and a decoder is an amplification surface.
 pub const MAX_DERIVE_SOURCE_BYTES: u64 = 32 * 1024 * 1024;
@@ -82,6 +101,7 @@ pub fn standard_registry<B: BlobStore>(
     clamav_addr: Option<String>,
     extractor_addr: Option<String>,
     embedding: Option<(String, String)>,
+    transformers: std::collections::HashMap<String, crate::config::TransformerConfig>,
 ) -> FlowRegistry {
     let embed_store = store.clone();
     let embed_config = embedding;
@@ -92,7 +112,10 @@ pub fn standard_registry<B: BlobStore>(
     let scan_addr = clamav_addr.clone();
     let sniff_residencies = residencies.clone();
     let derive_store = store.clone();
-    let derive_residencies = residencies;
+    let derive_residencies = residencies.clone();
+    let transform_store = store.clone();
+    let transform_residencies = residencies;
+    let transform_map = transformers;
     let finalize_store = store;
 
     FlowRegistry::new()
@@ -321,6 +344,155 @@ pub fn standard_registry<B: BlobStore>(
             3,
         )
         .workflow(DERIVE_WORKFLOW, &["render_rendition"], 3)
+        .activity("transform_external", move |input: Value| {
+            let store = transform_store.clone();
+            let residencies = transform_residencies.clone();
+            let transformers = transform_map.clone();
+            async move { transform_external(&store, &residencies, &transformers, input).await }
+        })
+        .workflow(TRANSFORM_WORKFLOW, &["transform_external"], 3)
+}
+
+/// The external-transform activity body. The derived record exists
+/// before the run, like a rendition's; this ships the source bytes to
+/// the configured service and finishes the derived file with whatever
+/// comes back. A 4xx answer is the service refusing the input (the
+/// derived record fails, the run completes); a 5xx or transport error
+/// is infrastructure and retries.
+async fn transform_external<B: BlobStore>(
+    store: &Store,
+    residencies: &crate::app::Residencies<B>,
+    transformers: &std::collections::HashMap<String, crate::config::TransformerConfig>,
+    input: Value,
+) -> copal_core::Result<Value> {
+    let tenant = TenantId::parse(input["tenant"].as_str().unwrap_or_default())?;
+    let derived = FileId::parse(input["derived_file"].as_str().unwrap_or_default())?;
+    let source_digest = ContentDigest::parse(input["source_digest"].as_str().unwrap_or_default())?;
+    let name = input["transformer"].as_str().unwrap_or_default().to_owned();
+
+    // Replay after success: the derived file already carries content.
+    if let Some(record) = file_repo::get_file(store, &tenant, &derived).await? {
+        if record.state == FileState::Ready && record.digest.is_some() {
+            return Ok(json!({
+                "file": derived.as_str(),
+                "outcome": "already-transformed",
+            }));
+        }
+    }
+
+    // The map is read at run time, so a transformer dropped from the
+    // configuration between enqueue and execution refuses instead of
+    // retrying forever.
+    let Some(config) = transformers.get(&name) else {
+        let reason = format!("transformer {name} is not configured");
+        return refuse_derived(store, &tenant, &derived, reason).await;
+    };
+    let ceiling = config
+        .max_source_bytes
+        .unwrap_or(MAX_TRANSFORM_SOURCE_BYTES);
+    let declared_size = input["source_size"].as_u64().unwrap_or(0);
+    if declared_size > ceiling {
+        let reason = format!("source is {declared_size} bytes; the transform ceiling is {ceiling}");
+        return refuse_derived(store, &tenant, &derived, reason).await;
+    }
+    let source_backend = residencies.get(input["source_residency"].as_str().unwrap_or("local"))?;
+    let source = source_backend.read(&source_digest).await?;
+    if source.len() as u64 > ceiling {
+        let reason = "source exceeds the transform ceiling".to_owned();
+        return refuse_derived(store, &tenant, &derived, reason).await;
+    }
+
+    let timeout = std::time::Duration::from_secs(config.timeout_secs.unwrap_or(60).clamp(1, 600));
+    let client = reqwest::Client::builder()
+        .timeout(timeout)
+        .build()
+        .map_err(|e| CopalError::Blob(format!("transform client: {e}")))?;
+    let params_json = serde_json::to_string(input.get("params").unwrap_or(&Value::Null))
+        .unwrap_or_else(|_| "null".to_owned());
+    let mut request = client
+        .post(&config.url)
+        .query(&[("params", params_json.as_str())])
+        .header(
+            "content-type",
+            input["source_content_type"]
+                .as_str()
+                .unwrap_or("application/octet-stream"),
+        )
+        .header("x-copal-tenant", tenant.as_str())
+        .header(
+            "x-copal-source-file",
+            input["source_file"].as_str().unwrap_or_default(),
+        )
+        .header("x-copal-source-digest", source_digest.as_str())
+        .body(source.to_vec());
+    if let Some(secret) = &config.secret {
+        request = request.header("x-copal-transform-secret", secret);
+    }
+    let response = request
+        .send()
+        .await
+        .map_err(|e| CopalError::Blob(format!("transformer {name}: {e}")))?;
+    let status = response.status();
+    if status.is_client_error() {
+        let reason: String = response
+            .text()
+            .await
+            .unwrap_or_default()
+            .chars()
+            .take(200)
+            .collect();
+        crate::metrics::incr("copal_transform_refusals_total");
+        let reason = format!("transformer {name} refused ({status}): {reason}");
+        return refuse_derived(store, &tenant, &derived, reason).await;
+    }
+    if !status.is_success() {
+        return Err(CopalError::Blob(format!(
+            "transformer {name} answered {status}"
+        )));
+    }
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|e| CopalError::Blob(format!("transformer {name} body: {e}")))?;
+    if bytes.is_empty() {
+        let reason = format!("transformer {name} returned no bytes");
+        return refuse_derived(store, &tenant, &derived, reason).await;
+    }
+
+    // Derived content lands in the tenant's CURRENT residency, like
+    // any other new content.
+    let residency = copal_store::repo::tenant::get_residency(store, &tenant).await?;
+    let target = residencies.get(&residency)?;
+    let size = bytes.len();
+    let body = futures::stream::iter(vec![Ok::<_, String>(bytes::Bytes::from(bytes.to_vec()))]);
+    let stored = target.put_streamed(body).await?;
+    blob_repo::record_sighting(
+        store,
+        &stored.digest,
+        stored.size_bytes,
+        &residency,
+        &stored.storage_path,
+    )
+    .await?;
+    file_repo::claim_upload(store, &tenant, &derived, "transform-worker", 900).await?;
+    file_repo::complete_upload(
+        store,
+        &tenant,
+        &derived,
+        &residency,
+        &stored.digest,
+        stored.size_bytes,
+        "transform",
+        FileState::Ready,
+    )
+    .await?;
+    crate::metrics::incr("copal_transforms_total");
+    Ok(json!({
+        "file": derived.as_str(),
+        "outcome": "transformed",
+        "digest": stored.digest.as_str(),
+        "bytes": size,
+    }))
 }
 
 /// The derivatives activity body. The derived record was created (and
@@ -354,20 +526,20 @@ async fn render_rendition<B: BlobStore>(
         let reason = format!(
             "source is {declared_size} bytes; the decode ceiling is {MAX_DERIVE_SOURCE_BYTES}",
         );
-        return refuse_rendition(store, &tenant, &derived, reason).await;
+        return refuse_derived(store, &tenant, &derived, reason).await;
     }
 
     let source_backend = residencies.get(input["source_residency"].as_str().unwrap_or("local"))?;
     let source = source_backend.read(&source_digest).await?;
     if source.len() as u64 > MAX_DERIVE_SOURCE_BYTES {
         let reason = "source exceeds the decode ceiling".to_owned();
-        return refuse_rendition(store, &tenant, &derived, reason).await;
+        return refuse_derived(store, &tenant, &derived, reason).await;
     }
     let decoded = match decode_bounded(&source) {
         Ok(decoded) => decoded,
         Err(err) => {
             let reason = format!("source does not decode as an image: {err}");
-            return refuse_rendition(store, &tenant, &derived, reason).await;
+            return refuse_derived(store, &tenant, &derived, reason).await;
         }
     };
     let resized = decoded.thumbnail(width, height);
@@ -384,7 +556,7 @@ async fn render_rendition<B: BlobStore>(
     };
     if let Err(err) = writable.write_to(&mut encoded, target) {
         let reason = format!("encoding failed: {err}");
-        return refuse_rendition(store, &tenant, &derived, reason).await;
+        return refuse_derived(store, &tenant, &derived, reason).await;
     }
     let bytes = encoded.into_inner();
 
@@ -527,7 +699,7 @@ async fn extract_text<B: BlobStore>(
 /// A business refusal fails the derived record and completes the run.
 /// The record walks the legal path (a claim, then a failed attempt);
 /// a lost CAS means another path already settled it.
-async fn refuse_rendition(
+async fn refuse_derived(
     store: &Store,
     tenant: &TenantId,
     derived: &FileId,

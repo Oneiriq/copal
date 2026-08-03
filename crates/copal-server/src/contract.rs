@@ -311,6 +311,50 @@ pub fn contract() -> Contract {
                         rate_class: Some("mutations".into()),
                     },
                     Action {
+                        name: "transform".into(),
+                        method: "POST".into(),
+                        path: "/{id}/transform".into(),
+                        input: vec![
+                            ActionField {
+                                name: "transformer".into(),
+                                kind: TypeRef::String,
+                                required: true,
+                                description: Some(
+                                    "Name of a transformer the deployment configures."
+                                        .into(),
+                                ),
+                            },
+                            ActionField {
+                                name: "params".into(),
+                                kind: TypeRef::Json,
+                                required: false,
+                                description: Some(
+                                    "Free-form parameters forwarded to the service.".into(),
+                                ),
+                            },
+                            ActionField {
+                                name: "content_type".into(),
+                                kind: TypeRef::String,
+                                required: false,
+                                description: Some(
+                                    "Declared media type of the derived output (default \
+                                     application/octet-stream)."
+                                        .into(),
+                                ),
+                            },
+                        ],
+                        output: ActionOutput::Json,
+                        description: Some(
+                            "Derive new content through an operator-configured external \
+                             transformer; repeating a request returns the existing \
+                             derivation."
+                                .into(),
+                        ),
+                        graphql_field: None,
+                        requires: vec!["write".into()],
+                        rate_class: Some("mutations".into()),
+                    },
+                    Action {
                         name: "remove".into(),
                         method: "DELETE".into(),
                         path: "/{id}".into(),

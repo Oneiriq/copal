@@ -26,6 +26,10 @@ pub struct Config {
     /// Optional 64-hex master key enabling encryption at rest for new
     /// objects; existing plaintext objects keep serving.
     pub blob_encryption_key: Option<String>,
+    /// Named external transformers: operator-run HTTP services that
+    /// derive new content from stored bytes through the transform
+    /// action. Parsed from `COPAL_TRANSFORMERS` JSON.
+    pub transformers: std::collections::HashMap<String, TransformerConfig>,
     /// The retiring master key during a rotation. Opens fall back to
     /// it while the re-seal sweep moves everything under the current
     /// key; nothing seals under it. Unset it once the sweep drains.
@@ -130,6 +134,16 @@ impl Config {
             },
             blob_root: env_or("COPAL_BLOB_ROOT", "./data/blobs"),
             blob_encryption_key: std::env::var("COPAL_BLOB_ENCRYPTION_KEY").ok(),
+            transformers: std::env::var("COPAL_TRANSFORMERS")
+                .ok()
+                .map(|raw| match serde_json::from_str(&raw) {
+                    Ok(map) => map,
+                    Err(err) => {
+                        tracing::error!(error = %err, "COPAL_TRANSFORMERS does not parse; ignoring");
+                        std::collections::HashMap::new()
+                    }
+                })
+                .unwrap_or_default(),
             blob_encryption_key_previous: std::env::var("COPAL_BLOB_ENCRYPTION_KEY_PREVIOUS").ok(),
             max_upload_bytes: env_parse("COPAL_MAX_UPLOAD_BYTES", 1 << 30),
             upload_lease_secs: env_parse("COPAL_UPLOAD_LEASE_SECS", 900),
@@ -186,4 +200,25 @@ impl Config {
             },
         }
     }
+}
+
+/// One external transformer: an HTTP service receiving source bytes
+/// and answering with derived bytes. Operator-configured, so the URL
+/// is trusted the way `COPAL_CLAMAV_ADDR` and the extractor address
+/// are; the outbound-policy guard on tenant-supplied webhook targets
+/// does not apply here.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct TransformerConfig {
+    /// Endpoint receiving `POST` with the source bytes as the body.
+    pub url: String,
+    /// Request timeout in seconds (default 60, clamped to 1..=600).
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
+    /// Shared secret sent as `x-copal-transform-secret`, so the
+    /// service can refuse calls that are not from this deployment.
+    #[serde(default)]
+    pub secret: Option<String>,
+    /// Source size ceiling in bytes (default 64 MiB).
+    #[serde(default)]
+    pub max_source_bytes: Option<u64>,
 }

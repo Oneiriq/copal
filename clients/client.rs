@@ -193,6 +193,11 @@ impl Client {
         Ok(self.http.post(url).header("x-copal-tenant", &self.tenant).json(&input).send().await?.error_for_status()?.json().await?)
     }
 
+    pub async fn transform_file(&self, id: &str, input: Value) -> Result<Value, Error> {
+        let url = format!("{}/v1/files/{id}/transform", self.base_url);
+        Ok(self.http.post(url).header("x-copal-tenant", &self.tenant).json(&input).send().await?.error_for_status()?.json().await?)
+    }
+
     pub async fn remove_file(&self, id: &str) -> Result<(), Error> {
         let url = format!("{}/v1/files/{id}", self.base_url);
         self.http.delete(url).header("x-copal-tenant", &self.tenant).send().await?.error_for_status()?;

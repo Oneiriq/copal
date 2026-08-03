@@ -153,6 +153,9 @@ class Client:
   def request_rendition_file(self, id: str, body: dict[str, Any] | None = None) -> Any:
     return self._request('POST', f'/v1/files/{id}/renditions', body or {})
 
+  def transform_file(self, id: str, body: dict[str, Any] | None = None) -> Any:
+    return self._request('POST', f'/v1/files/{id}/transform', body or {})
+
   def remove_file(self, id: str) -> None:
     return self._request('DELETE', f'/v1/files/{id}')
 

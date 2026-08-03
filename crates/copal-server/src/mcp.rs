@@ -111,7 +111,11 @@ pub async fn mcp_endpoint<B: BlobStore>(
         return axum::http::StatusCode::ACCEPTED.into_response();
     }
 
+    crate::metrics::incr("copal_mcp_calls_total");
     let result = handle(&state, &headers, &method, request.get("params")).await;
+    if result.is_err() {
+        crate::metrics::incr("copal_mcp_errors_total");
+    }
     let body = match result {
         Ok(value) => json!({ "jsonrpc": "2.0", "id": id, "result": value }),
         Err((code, message)) => json!({

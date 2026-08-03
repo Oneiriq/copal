@@ -247,6 +247,12 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ### Deployment
 
+- **Counters on the newer surfaces.** The `/metrics` scrape gains
+  MCP calls and errors, embedding backfill refreshes, change-feed
+  reads, compliance-mode retention refusals, and conditional-write
+  refusals on both faces, so the operator watching the newest
+  behavior has the same instrument as the oldest.
+
 - **Two instances, proven.** `COPAL_HA=1 ./conformance/run.sh`
   stands up two Copal processes against one engine behind
   round-robin nginx and passes every conformance check for every

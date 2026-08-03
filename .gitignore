@@ -3,3 +3,4 @@ Cargo.lock.orig
 .env
 /data
 sdks/dist/
+__pycache__/

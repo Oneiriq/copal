@@ -8,6 +8,13 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+[features]
+# The embedded tier ships by default: one binary that can run with no
+# external SurrealDB process (`COPAL_DB_URL=surrealkv://...`). Opt out
+# with --no-default-features for a client-only build.
+default = ["embedded"]
+embedded = ["copal-store/embedded"]
+
 [dependencies]
 copal-core = { workspace = true }
 copal-store = { workspace = true }

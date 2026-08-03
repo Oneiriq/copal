@@ -293,6 +293,15 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ### Deployment
 
+- **The embedded tier.** The default build carries the metadata
+  engine in the binary: `COPAL_DB_URL=surrealkv://./data/db` runs
+  copal as one process with the database on disk beside the blobs,
+  and `mem://` runs it ephemeral for demos. Same engine, so schema
+  reconciliation, PERMISSIONS, caller sessions, and audit
+  immutability hold identically; the two-instance topology stays on
+  `ws://`, and moving up is pointing a SurrealDB server at the same
+  directory. Small installs stop operating a database.
+
 - **Counters on the newer surfaces.** The `/metrics` scrape gains
   MCP calls and errors, embedding backfill refreshes, change-feed
   reads, compliance-mode retention refusals, and conditional-write

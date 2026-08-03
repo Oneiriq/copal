@@ -7,15 +7,18 @@
 //! only staging garbage, never a half-written addressed object.
 //!
 //! [`ObjectStore`] speaks any configured OpenDAL backend through one
-//! type: the local filesystem and S3-compatible services today, with
-//! Azure and GCS as further services behind the same port.
+//! type: the local filesystem, S3-compatible services, Google Cloud
+//! Storage, and Azure Blob Storage, all behind the same port.
 
 pub mod crypto;
 
 use futures::Stream;
 use futures::StreamExt as _;
 use futures::TryStreamExt as _;
-use opendal::{services::Fs, services::S3, Operator};
+use opendal::{
+    services::{Azblob, Fs, Gcs, S3},
+    Operator,
+};
 
 use copal_core::{ContentDigest, CopalError, DigestBuilder};
 
@@ -53,15 +56,56 @@ pub enum BackendConfig {
         #[serde(default)]
         previous_encryption_key: Option<String>,
     },
+    /// Google Cloud Storage.
+    Gcs {
+        bucket: String,
+        #[serde(default)]
+        root: Option<String>,
+        /// Base64 of the service-account JSON. Unset falls back to
+        /// `credential_path`, then to the ambient chain (well-known
+        /// paths, the metadata server), so workload identity works
+        /// with no credential in the configuration at all.
+        #[serde(default)]
+        credential: Option<String>,
+        #[serde(default)]
+        credential_path: Option<String>,
+        /// Unset means Google itself; set for fake-gcs-server and
+        /// other compatible targets.
+        #[serde(default)]
+        endpoint: Option<String>,
+        /// Optional 64-hex key sealing this residency's objects.
+        #[serde(default)]
+        encryption_key: Option<String>,
+        /// The retiring key during a rotation; opens only.
+        #[serde(default)]
+        previous_encryption_key: Option<String>,
+    },
+    /// Azure Blob Storage.
+    Azblob {
+        container: String,
+        /// `https://{account}.blob.core.windows.net`, or Azurite.
+        endpoint: String,
+        account_name: String,
+        account_key: String,
+        #[serde(default)]
+        root: Option<String>,
+        /// Optional 64-hex key sealing this residency's objects.
+        #[serde(default)]
+        encryption_key: Option<String>,
+        /// The retiring key during a rotation; opens only.
+        #[serde(default)]
+        previous_encryption_key: Option<String>,
+    },
 }
 
 impl BackendConfig {
     /// The residency's own sealing key, when it carries one.
     pub fn encryption_key(&self) -> Option<&str> {
         match self {
-            Self::Fs { encryption_key, .. } | Self::S3 { encryption_key, .. } => {
-                encryption_key.as_deref()
-            }
+            Self::Fs { encryption_key, .. }
+            | Self::S3 { encryption_key, .. }
+            | Self::Gcs { encryption_key, .. }
+            | Self::Azblob { encryption_key, .. } => encryption_key.as_deref(),
         }
     }
 
@@ -73,6 +117,14 @@ impl BackendConfig {
                 ..
             }
             | Self::S3 {
+                previous_encryption_key,
+                ..
+            }
+            | Self::Gcs {
+                previous_encryption_key,
+                ..
+            }
+            | Self::Azblob {
                 previous_encryption_key,
                 ..
             } => previous_encryption_key.as_deref(),
@@ -250,6 +302,49 @@ impl ObjectStore {
                 }
                 Operator::new(builder)
                     .map_err(|e| CopalError::Blob(format!("open s3 backend: {e}")))?
+            }
+            BackendConfig::Gcs {
+                bucket,
+                root,
+                credential,
+                credential_path,
+                endpoint,
+                ..
+            } => {
+                let mut builder = Gcs::default().bucket(bucket);
+                if let Some(root) = root {
+                    builder = builder.root(root);
+                }
+                if let Some(credential) = credential {
+                    builder = builder.credential(credential);
+                }
+                if let Some(path) = credential_path {
+                    builder = builder.credential_path(path);
+                }
+                if let Some(endpoint) = endpoint {
+                    builder = builder.endpoint(endpoint);
+                }
+                Operator::new(builder)
+                    .map_err(|e| CopalError::Blob(format!("open gcs backend: {e}")))?
+            }
+            BackendConfig::Azblob {
+                container,
+                endpoint,
+                account_name,
+                account_key,
+                root,
+                ..
+            } => {
+                let mut builder = Azblob::default()
+                    .container(container)
+                    .endpoint(endpoint)
+                    .account_name(account_name)
+                    .account_key(account_key);
+                if let Some(root) = root {
+                    builder = builder.root(root);
+                }
+                Operator::new(builder)
+                    .map_err(|e| CopalError::Blob(format!("open azblob backend: {e}")))?
             }
         };
         // A residency's own key seals its objects; deployments
@@ -993,6 +1088,36 @@ mod tests {
             "secret_access_key": "sk"
         }"#;
         let config: BackendConfig = serde_json::from_str(raw).unwrap();
+        assert!(ObjectStore::open_backend(&config).is_ok());
+    }
+
+    #[test]
+    fn gcs_config_parses_and_opens() {
+        let raw = r#"{
+            "scheme": "gcs",
+            "bucket": "tenant-bytes",
+            "root": "copal",
+            "credential": "aGVsbG8=",
+            "encryption_key": "0000000000000000000000000000000000000000000000000000000000000000"
+        }"#;
+        let config: BackendConfig = serde_json::from_str(raw).unwrap();
+        assert_eq!(config.encryption_key().unwrap().len(), 64);
+        assert!(ObjectStore::open_backend(&config).is_ok());
+    }
+
+    #[test]
+    fn azblob_config_parses_and_opens() {
+        let raw = r#"{
+            "scheme": "azblob",
+            "container": "tenant-bytes",
+            "endpoint": "http://127.0.0.1:10000/devstoreaccount1",
+            "account_name": "devstoreaccount1",
+            "account_key": "RGV2IGtleQ==",
+            "previous_encryption_key": "1111111111111111111111111111111111111111111111111111111111111111"
+        }"#;
+        let config: BackendConfig = serde_json::from_str(raw).unwrap();
+        assert!(config.encryption_key().is_none());
+        assert_eq!(config.previous_encryption_key().unwrap().len(), 64);
         assert!(ObjectStore::open_backend(&config).is_ok());
     }
 

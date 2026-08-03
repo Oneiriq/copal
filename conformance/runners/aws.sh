@@ -62,6 +62,32 @@ sync_noop() {
 }
 check sync_noop sync_noop
 
+# Conditional writes, the S3 2024+ semantics agents rely on for safe
+# concurrent writes: create-only refuses over existing content, and
+# replace-if-match refuses a stale belief.
+conditional_create_refuses_existing() {
+    echo conditional > /tmp/cond.txt
+    aws $EP s3api put-object --bucket "$B" --key awssync/cond.txt         --body /tmp/cond.txt > /dev/null 2>&1 || return 1
+    if aws $EP s3api put-object --bucket "$B" --key awssync/cond.txt         --body /tmp/cond.txt --if-none-match '*' > /tmp/cond-err.txt 2>&1; then
+        echo "a second create-only PUT must refuse"
+        return 1
+    fi
+    grep -q "PreconditionFailed" /tmp/cond-err.txt
+}
+check conditional_create_refuses_existing conditional_create_refuses_existing
+
+conditional_replace_needs_the_current_etag() {
+    etag=$(aws $EP s3api head-object --bucket "$B" --key awssync/cond.txt         --query ETag --output text | tr -d '"')
+    echo replaced > /tmp/cond2.txt
+    if aws $EP s3api put-object --bucket "$B" --key awssync/cond.txt         --body /tmp/cond2.txt --if-match "0000000000000000000000000000000000000000000000000000000000000000"         > /tmp/cond-err2.txt 2>&1; then
+        echo "a stale If-Match must refuse"
+        return 1
+    fi
+    grep -q "PreconditionFailed" /tmp/cond-err2.txt || return 1
+    aws $EP s3api put-object --bucket "$B" --key awssync/cond.txt         --body /tmp/cond2.txt --if-match "$etag" > /dev/null 2>&1
+}
+check conditional_replace_needs_the_current_etag conditional_replace_needs_the_current_etag
+
 delete_propagates() {
     aws $EP s3 rm "s3://$B/awssync/reports/q2-summary.md" > /dev/null
     ! aws $EP s3 ls "s3://$B/awssync/reports/" | grep -q q2-summary

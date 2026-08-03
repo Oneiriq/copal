@@ -32,6 +32,12 @@ pub enum CopalError {
     #[error("conflict: {0}")]
     Conflict(String),
 
+    /// A conditional write whose condition the current state does not
+    /// satisfy: If-Match against different content, If-None-Match *
+    /// against existing content.
+    #[error("precondition failed: {0}")]
+    PreconditionFailed(String),
+
     /// The request body exceeds the configured size ceiling.
     #[error("payload too large: {0}")]
     PayloadTooLarge(String),

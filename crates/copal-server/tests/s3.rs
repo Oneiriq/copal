@@ -1131,3 +1131,166 @@ async fn the_gateway_reads_through_caller_sessions() {
         StatusCode::NO_CONTENT
     );
 }
+
+/// Conditional writes on the gateway: If-None-Match * creates and
+/// never replaces, If-Match replaces exactly the content the caller
+/// believes is current. The condition rides the claim's own
+/// compare-and-set, so two racing writers resolve at the engine.
+#[tokio::test]
+async fn conditional_writes_answer_at_the_gateway() {
+    let (gateway, admin, _dir) = stack().await;
+    let (access_key, secret) = mint(&admin, "acme").await;
+
+    let conditional_put = |payload: &'static [u8], headers: Vec<(&'static str, String)>| {
+        let leaked: Vec<(&str, &str)> = headers
+            .into_iter()
+            .map(|(k, v)| (k, &*Box::leak(v.into_boxed_str())))
+            .collect();
+        signed_request(
+            "PUT",
+            "/acme/guarded.txt",
+            "",
+            "UNSIGNED-PAYLOAD",
+            &access_key,
+            &secret,
+            Body::from(payload.to_vec()),
+            &leaked,
+        )
+    };
+
+    // Create-only succeeds on a fresh key.
+    let response = gateway
+        .clone()
+        .oneshot(conditional_put(
+            b"first",
+            vec![("if-none-match", "*".to_owned())],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // Create-only over existing content refuses 412.
+    let response = gateway
+        .clone()
+        .oneshot(conditional_put(
+            b"second",
+            vec![("if-none-match", "*".to_owned())],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::PRECONDITION_FAILED);
+    assert!(text_body(response).await.contains("PreconditionFailed"));
+
+    // Replace with the wrong belief refuses; with the right one lands.
+    let stale = copal_core::ContentDigest::of_bytes(b"never uploaded");
+    let response = gateway
+        .clone()
+        .oneshot(conditional_put(
+            b"third",
+            vec![("if-match", stale.as_str().to_owned())],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::PRECONDITION_FAILED);
+
+    let current = copal_core::ContentDigest::of_bytes(b"first");
+    let response = gateway
+        .clone()
+        .oneshot(conditional_put(
+            b"fourth",
+            vec![("if-match", format!("\"{}\"", current.as_str()))],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // Contradictory conditions are a caller bug, named as one.
+    let response = gateway
+        .clone()
+        .oneshot(conditional_put(
+            b"fifth",
+            vec![
+                ("if-none-match", "*".to_owned()),
+                ("if-match", current.as_str().to_owned()),
+            ],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+/// The REST body path answers the same conditions with the same
+/// discipline: 412 through the shared error vocabulary.
+#[tokio::test]
+async fn conditional_writes_answer_on_the_rest_face() {
+    let (_gateway, _admin, _dir, store) = stack_with_store().await;
+    let dir2 = tempfile::tempdir().unwrap();
+    let blobs = ObjectStore::open(dir2.path().to_str().unwrap()).unwrap();
+    let router = copal_server::build_router(AppState::new(store, blobs));
+
+    let create = Request::builder()
+        .method("POST")
+        .uri("/v1/files")
+        .header("x-copal-tenant", "acme")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::json!({"path": "guarded-rest.txt"}).to_string(),
+        ))
+        .unwrap();
+    let response = router.clone().oneshot(create).await.unwrap();
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    let id = serde_json::from_slice::<serde_json::Value>(&body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let put = |payload: &'static [u8], header: Option<(&'static str, String)>| {
+        let mut builder = Request::builder()
+            .method("PUT")
+            .uri(format!("/v1/files/{id}/content"))
+            .header("x-copal-tenant", "acme");
+        if let Some((name, value)) = header {
+            builder = builder.header(name, value);
+        }
+        builder.body(Body::from(payload.to_vec())).unwrap()
+    };
+
+    // Create-only lands on the empty file, then refuses over content.
+    let response = router
+        .clone()
+        .oneshot(put(b"first", Some(("if-none-match", "*".to_owned()))))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let response = router
+        .clone()
+        .oneshot(put(b"second", Some(("if-none-match", "*".to_owned()))))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::PRECONDITION_FAILED);
+
+    // If-Match replaces exactly the believed content.
+    let current = copal_core::ContentDigest::of_bytes(b"first");
+    let response = router
+        .clone()
+        .oneshot(put(
+            b"third",
+            Some(("if-match", current.as_str().to_owned())),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let response = router
+        .clone()
+        .oneshot(put(
+            b"fourth",
+            Some(("if-match", current.as_str().to_owned())),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::PRECONDITION_FAILED,
+        "the belief went stale after the replace",
+    );
+}

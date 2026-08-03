@@ -28,6 +28,9 @@ impl IntoResponse for ApiError {
             CopalError::Forbidden(_) => (StatusCode::FORBIDDEN, "forbidden"),
             CopalError::NotFound(_) => (StatusCode::NOT_FOUND, "not_found"),
             CopalError::Conflict(_) => (StatusCode::CONFLICT, "conflict"),
+            CopalError::PreconditionFailed(_) => {
+                (StatusCode::PRECONDITION_FAILED, "precondition_failed")
+            }
             CopalError::PayloadTooLarge(_) => (StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large"),
             CopalError::TooManyRequests(_) => (StatusCode::TOO_MANY_REQUESTS, "too_many_requests"),
             CopalError::Store(_) | CopalError::Blob(_) => {

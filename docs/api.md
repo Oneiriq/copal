@@ -235,6 +235,23 @@ download: their bytes flow only through issued grants. Listings walk
 the live-path index in key order; `delimiter` collapses shared segments
 into `CommonPrefixes`.
 
+## Conditional writes
+
+Writes take the standard preconditions on both faces, and the ETag is
+the content digest, so the conditions say exactly what they mean:
+
+- `If-None-Match: *` creates and never replaces: 412 when the key
+  already holds content. Two agents racing to create the same key
+  resolve at the engine; exactly one wins.
+- `If-Match: <digest>` replaces only the content the caller believes
+  is current: 412 on a stale belief. Read, decide, write-if-unchanged
+  is a compare-and-swap.
+
+`PUT /v1/files/{id}/content`, S3 `PutObject`, and S3
+`CompleteMultipartUpload` all honor them. Both headers absent means
+unconditional, as before; both present is a 400, because the pair is
+contradictory.
+
 ## Search
 
 Search and extracted text are contract queries: declared parameters,

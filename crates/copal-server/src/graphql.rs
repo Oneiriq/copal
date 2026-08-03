@@ -90,6 +90,9 @@ fn to_janus_error(err: CopalError) -> JanusError {
         CopalError::Forbidden(m) => JanusError::Forbidden(m),
         CopalError::NotFound(_) => JanusError::NotFound,
         CopalError::Conflict(m) => JanusError::Conflict(m),
+        // The runtime has no 412 vocabulary; a failed write condition
+        // is a conflict with the current state, named as one.
+        CopalError::PreconditionFailed(m) => JanusError::Conflict(m),
         CopalError::PayloadTooLarge(m) => JanusError::PayloadTooLarge(m),
         CopalError::TooManyRequests(m) => JanusError::TooManyRequests(m),
         CopalError::Store(_) | CopalError::Blob(_) => {

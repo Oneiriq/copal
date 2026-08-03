@@ -164,6 +164,7 @@ pub async fn complete_multipart<B: BlobStore>(
     bucket: &str,
     upload_id: &str,
     manifest: &str,
+    headers: &axum::http::HeaderMap,
 ) -> Response {
     let session = match mpu_repo::fetch_upload(&gateway.app.store, tenant, upload_id).await {
         Ok(Some(session)) => session,
@@ -258,16 +259,30 @@ pub async fn complete_multipart<B: BlobStore>(
         Ok(resolved) => resolved,
         Err(err) => return copal_to_s3(err.0),
     };
-    if let Err(err) = file_repo::claim_upload(
+    let precondition = match super::write_precondition(headers) {
+        Ok(precondition) => precondition,
+        Err(message) => {
+            return super::xml_error(StatusCode::BAD_REQUEST, "InvalidRequest", &message)
+        }
+    };
+    let claim = precondition
+        .as_ref()
+        .map(super::WritePrecondition::as_claim)
+        .unwrap_or_default();
+    if let Err(err) = file_repo::claim_upload_if(
         &state.store,
         tenant,
         &id,
         &state.instance_id,
         state.limits.upload_lease_secs,
+        claim,
     )
     .await
     {
-        return copal_to_s3(err);
+        return match &precondition {
+            Some(condition) => super::conditional_refusal(state, tenant, &id, condition, err).await,
+            None => copal_to_s3(err),
+        };
     }
 
     // Assemble: the parts stream in part order into one put, so the
@@ -501,7 +516,15 @@ pub async fn dispatch<B: BlobStore>(
                 Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
                 Err(_) => String::new(),
             };
-            complete_multipart(&gateway, tenant, &bucket, &upload_id, &manifest).await
+            complete_multipart(
+                &gateway,
+                tenant,
+                &bucket,
+                &upload_id,
+                &manifest,
+                &parts.headers,
+            )
+            .await
         }
         axum::http::Method::DELETE => abort_multipart(&gateway, tenant, &upload_id).await,
         axum::http::Method::GET => list_parts(&gateway, tenant, &bucket, &upload_id).await,

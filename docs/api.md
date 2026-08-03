@@ -235,6 +235,22 @@ download: their bytes flow only through issued grants. Listings walk
 the live-path index in key order; `delimiter` collapses shared segments
 into `CommonPrefixes`.
 
+## Search depth
+
+Search takes `prefix` (keep results whose file path starts with it),
+`content_type`, and a `cursor` from the previous page's
+`next_cursor`. Filters apply at the engine on both retrieval legs,
+so a filtered search never ranks passages it must discard. The
+cursor continues a ranking and is best-effort: rankings shift as
+content changes, so a page boundary can repeat or skip a result that
+moved between requests. Depth caps at the over-fetch envelope both
+legs already pay for.
+
+Embeddings heal themselves: when the configured model changes, a
+background pass re-embeds every passage carrying old geometry, batch
+by batch, until nothing stale remains. The vector index itself
+rebuilds through the schema diff when the dimension changes.
+
 ## The change feed
 
 `GET /v1/events` and the GraphQL `events` listing are one cursor

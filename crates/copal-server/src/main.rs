@@ -298,6 +298,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         instance_id,
     ));
 
+    // Embedding backfill: a model change drains old geometry in the
+    // background, batch by batch, until nothing stale remains.
+    if let Some(addr) = config.embedding_addr.clone() {
+        let model = config.embedding_model.clone();
+        let backfill_store = store.clone();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(60));
+            loop {
+                ticker.tick().await;
+                match copal_server::embed::backfill_pass(&backfill_store, &addr, &model, 64).await {
+                    Ok(0) => {}
+                    Ok(refreshed) => {
+                        tracing::info!(refreshed, model = %model, "embedding backfill pass");
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "embedding backfill pass failed");
+                    }
+                }
+            }
+        });
+    }
+
     // Durable execution worker: claims pending runs and executes them
     // over the journal. The production registry starts empty until the
     // processing activities land; the worker idles harmlessly.

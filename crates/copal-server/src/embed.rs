@@ -30,6 +30,37 @@ struct EmbeddingDatum {
     embedding: Vec<f64>,
 }
 
+/// One backfill pass: re-embed a batch of chunks whose vector is
+/// absent or was produced by a different model. Runs beside the
+/// sweeps when an embedding service is configured, so a model change
+/// drains the old geometry without an operator remembering to; the
+/// vector index itself already rebuilds through the schema diff when
+/// the dimension changes.
+pub async fn backfill_pass(
+    store: &copal_store::Store,
+    addr: &str,
+    model: &str,
+    batch: i64,
+) -> copal_core::Result<usize> {
+    let stale = copal_store::repo::text::stale_chunks(store, model, batch).await?;
+    let mut refreshed = 0usize;
+    for chunk in &stale {
+        let vector = embed(addr, model, &chunk.body).await?;
+        if copal_store::repo::text::put_embedding(
+            store,
+            &chunk.chunk_id(),
+            &chunk.digest,
+            &vector,
+            model,
+        )
+        .await?
+        {
+            refreshed += 1;
+        }
+    }
+    Ok(refreshed)
+}
+
 /// Embed one text, returning the vector.
 ///
 /// Failures are errors rather than empty vectors: a document recorded

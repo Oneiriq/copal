@@ -55,7 +55,7 @@ async fn ranked_paths(first: &str, second: &str) -> Vec<String> {
         paths.push((label.to_owned(), body.to_owned()));
     }
 
-    let hits = text::search(&store, &acme, "pressure vessel", 10)
+    let hits = text::search(&store, &acme, "pressure vessel", 10, &Default::default())
         .await
         .unwrap();
     hits.iter()
@@ -106,7 +106,7 @@ async fn a_bounded_search_keeps_the_best_match() {
         .unwrap();
     }
 
-    let hits = text::search(&store, &acme, "pressure vessel", 1)
+    let hits = text::search(&store, &acme, "pressure vessel", 1, &Default::default())
         .await
         .unwrap();
     assert_eq!(hits.len(), 1);
@@ -146,7 +146,9 @@ async fn stemmed_matches_are_scored_the_way_the_index_matched_them() {
         .unwrap();
     }
 
-    let hits = text::search(&store, &acme, "inspecting", 10).await.unwrap();
+    let hits = text::search(&store, &acme, "inspecting", 10, &Default::default())
+        .await
+        .unwrap();
     assert_eq!(hits.len(), 2, "both match through stemming: {hits:?}");
     assert!(
         hits[0].body.starts_with("inspection, inspection"),

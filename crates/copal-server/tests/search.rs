@@ -552,3 +552,144 @@ async fn a_stemmed_match_still_scores() {
     assert_eq!(hits.len(), 1, "the stemmed term matches: {hits:#?}");
     assert!(hits[0]["excerpt"].as_str().unwrap().contains("inspection"));
 }
+
+/// Filters narrow retrieval at the engine: a prefix keeps one
+/// directory's documents, a content type keeps one format, and the
+/// cursor walks a ranking page by page without repeating.
+#[tokio::test]
+async fn filters_and_cursor_narrow_retrieval() {
+    let (router, engine, _dir) = stack(None).await;
+    for (path, body) in [
+        ("contracts/alpha.txt", "the quarterly settlement terms"),
+        ("contracts/beta.txt", "the quarterly renewal terms"),
+        ("reports/gamma.txt", "the quarterly revenue narrative"),
+    ] {
+        let id = upload(&router, path, "text/plain", body.as_bytes()).await;
+        assert!(engine.tick("w").await.unwrap());
+        let _ = id;
+    }
+
+    // Unfiltered: every quarterly document ranks.
+    let all = search(&router, "quarterly").await;
+    assert_eq!(all.len(), 3, "{all:#?}");
+
+    // The prefix keeps the contracts directory.
+    let get = req(
+        "GET",
+        "/v1/search?q=quarterly&prefix=contracts/",
+        Body::empty(),
+    );
+    let body = json_body(router.clone().oneshot(get).await.unwrap()).await;
+    assert_eq!(body["items"].as_array().unwrap().len(), 2, "{body:#?}");
+
+    // A content type nothing carries keeps nothing.
+    let get = req(
+        "GET",
+        "/v1/search?q=quarterly&content_type=application/pdf",
+        Body::empty(),
+    );
+    let body = json_body(router.clone().oneshot(get).await.unwrap()).await;
+    assert_eq!(body["items"].as_array().unwrap().len(), 0, "{body:#?}");
+
+    // The cursor pages the ranking without repeating a document.
+    let get = req("GET", "/v1/search?q=quarterly&limit=2", Body::empty());
+    let body = json_body(router.clone().oneshot(get).await.unwrap()).await;
+    let first: Vec<String> = body["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["file"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(first.len(), 2);
+    let cursor = body["next_cursor"]
+        .as_str()
+        .expect("more remains")
+        .to_owned();
+    let get = req(
+        "GET",
+        &format!("/v1/search?q=quarterly&limit=2&cursor={cursor}"),
+        Body::empty(),
+    );
+    let body = json_body(router.clone().oneshot(get).await.unwrap()).await;
+    let second: Vec<String> = body["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["file"].as_str().unwrap().to_owned())
+        .collect();
+    assert!(!second.is_empty());
+    assert!(
+        second.iter().all(|id| !first.contains(id)),
+        "pages never repeat: {second:?}",
+    );
+}
+
+/// The backfill drains stale geometry: chunks embedded under an old
+/// model re-embed under the current one, and a second pass finds
+/// nothing left to do.
+#[tokio::test]
+async fn the_backfill_drains_stale_embeddings() {
+    let store = Store::connect(StoreConfig::memory()).await.unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let blobs = ObjectStore::open(dir.path().to_str().unwrap()).unwrap();
+    let registry = standard_registry(
+        store.clone(),
+        Residencies::local_only(blobs.clone()),
+        ExtensionPolicy::standard(),
+        false,
+        None,
+        None,
+        None,
+    );
+    let state = AppState::new(store.clone(), blobs).with_flow(registry);
+    let engine = state.flow.clone();
+    let router = build_router(state);
+
+    let (addr, served) = stub_embedder().await;
+    let _id = upload(
+        &router,
+        "embedded.txt",
+        "text/plain",
+        b"a passage worth embedding",
+    )
+    .await;
+    assert!(engine.tick("w").await.unwrap());
+
+    // First pass embeds the vectorless chunks under the new model.
+    let refreshed = copal_server::embed::backfill_pass(&store, &addr, "model-b", 16)
+        .await
+        .unwrap();
+    assert!(refreshed >= 1, "the vectorless chunk embeds");
+    assert!(served.load(std::sync::atomic::Ordering::SeqCst) >= 1);
+
+    // A second pass finds nothing stale.
+    let refreshed = copal_server::embed::backfill_pass(&store, &addr, "model-b", 16)
+        .await
+        .unwrap();
+    assert_eq!(refreshed, 0, "nothing stale remains");
+}
+
+/// A one-route embedding stub speaking the OpenAI-compatible shape.
+async fn stub_embedder() -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    use axum::routing::post;
+    let served = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counter = served.clone();
+    let app = axum::Router::new().route(
+        "/v1/embeddings",
+        post(move || {
+            let counter = counter.clone();
+            async move {
+                counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                axum::Json(json!({
+                    "data": [ { "embedding": [0.1, 0.2, 0.3] } ]
+                }))
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    (addr, served)
+}

@@ -433,8 +433,7 @@ async fn fetch_source<B: BlobStore>(
         .timeout(std::time::Duration::from_secs(120))
         .build()
         .map_err(|e| CopalError::Blob(format!("fetch client: {e}")))?;
-    let response = client
-        .get(&url)
+    let response = crate::trace::inject(client.get(&url))
         .send()
         .await
         .map_err(|e| CopalError::Blob(format!("fetch {url}: {e}")))?;
@@ -618,7 +617,7 @@ async fn transform_external<B: BlobStore>(
     if let Some(secret) = &config.secret {
         request = request.header("x-copal-transform-secret", secret);
     }
-    let response = request
+    let response = crate::trace::inject(request)
         .send()
         .await
         .map_err(|e| CopalError::Blob(format!("transformer {name}: {e}")))?;

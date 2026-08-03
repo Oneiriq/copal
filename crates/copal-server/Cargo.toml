@@ -60,6 +60,10 @@ image = { version = "0.25", default-features = false, features = [
 ] }
 httpdate = "1"
 humantime = "2"
+tracing-opentelemetry = "0.33.0"
+opentelemetry_sdk = { version = "0.32", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.32", default-features = false, features = ["trace", "http-proto", "reqwest-rustls"] }
+opentelemetry = "0.32"
 
 [dev-dependencies]
 base64 = "0.22"

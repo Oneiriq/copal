@@ -456,15 +456,14 @@ async fn attempt_delivery(
     let bytes = serde_json::to_vec(&body).map_err(|_| AttemptOutcome::Retry(None))?;
     let signature = sign_body(&secret, &bytes);
 
-    let response = http
+    let request = http
         .post(&endpoint.target_url)
         .header("content-type", "application/json")
         .header("x-copal-event", event.action.as_str())
         .header("x-copal-delivery", delivery.delivery_id())
         .header("x-copal-signature", signature)
-        .body(bytes)
-        .send()
-        .await;
+        .body(bytes);
+    let response = crate::trace::inject(request).send().await;
     match response {
         Ok(response) => {
             let status = response.status().as_u16() as i64;

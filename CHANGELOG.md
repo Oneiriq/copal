@@ -293,6 +293,14 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ### Deployment
 
+- **Traces export over OTLP.** `COPAL_OTLP_ENDPOINT` turns every
+  served request into a span named by its route template, joined to
+  the caller's `traceparent` and propagated outward on webhook
+  deliveries, transformer calls, and fetches, so one tree shows the
+  request and everything it caused across services. Export is
+  http/protobuf; unset, spans feed the logs and nothing leaves the
+  process.
+
 - **The embedded tier.** The default build carries the metadata
   engine in the binary: `COPAL_DB_URL=surrealkv://./data/db` runs
   copal as one process with the database on disk beside the blobs,

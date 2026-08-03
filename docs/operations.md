@@ -15,6 +15,7 @@ Every value comes from the environment. Defaults target local development.
 | `COPAL_BLOB_ROOT` | `./data/blobs` | Filesystem blob store root. |
 | `COPAL_BLOB_ENCRYPTION_KEY` | unset | 64-hex master key enabling encryption at rest. New objects seal (chunked AES-256-GCM, per-object derived keys); existing plaintext objects keep serving. Digests stay plaintext digests, so addressing and dedupe are unchanged. |
 | `COPAL_BLOB_ENCRYPTION_KEY_PREVIOUS` | unset | The retiring master key during a rotation. Reads fall back to it while the re-seal sweep moves objects and sealed secrets under the current key; nothing seals under it. Unset it once `copal_resealed_total` goes quiet. See the rotation section. |
+| `COPAL_OTLP_ENDPOINT` | unset | OTLP trace collector (http/protobuf), e.g. `http://otel-collector:4318/v1/traces`. Unset, spans feed the logs and nothing leaves the process. See the traces section. |
 | `COPAL_FETCH_ALLOW_PRIVATE_TARGETS` | `false` | Whether `POST /v1/files/fetch` may pull from private address space. Tenant-supplied URLs refuse private targets by default, the same policy webhook targets follow. |
 | `COPAL_TRANSFORMERS` | unset | JSON map of named external transformers, e.g. `{"ocr": {"url": "http://ocr:9000/run", "timeout_secs": 120, "secret": "...", "max_source_bytes": 33554432}}`. See the external transformers section. |
 | `COPAL_MAX_UPLOAD_BYTES` | `1073741824` | Upload ceiling, enforced in-stream (413 past it). |
@@ -589,6 +590,20 @@ tenant-facing network along with key custody.
 Counters are process-local and reset on restart, which is what
 Prometheus expects; the database holds the durable truth for
 everything they summarize.
+
+## Traces
+
+Set `COPAL_OTLP_ENDPOINT` and every served request becomes a span
+(`{method} {route}`, route template so ids stay out of names, status
+recorded on completion) exported over OTLP http/protobuf under
+`service.name=copal`. A caller's `traceparent` header joins its
+trace; the deliveries, transformer calls, and fetches a request
+causes carry the context outward, so the collector shows cause and
+effect as one tree across services.
+
+Spans batch on the SDK's cadence; a hard kill can lose the last
+batch's tail. The log subscriber runs either way, and without the
+endpoint the span layer costs nothing off-process.
 
 ## Health endpoints
 

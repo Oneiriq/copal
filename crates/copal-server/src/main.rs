@@ -6,12 +6,7 @@ use copal_store::Store;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "copal_server=info,copal_store=info".into()),
-        )
-        .init();
+    init_tracing(std::env::var("COPAL_OTLP_ENDPOINT").ok().as_deref());
 
     let config = Config::from_env();
     tracing::info!(bind = %config.bind, db = %config.store.url, "starting copal");
@@ -238,6 +233,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let listener = tokio::net::TcpListener::bind(s3_bind).await?;
         tracing::info!(addr = %listener.local_addr()?, "s3 gateway listening");
         tokio::spawn(async move {
+            let gateway = gateway.layer(axum::middleware::from_fn(copal_server::trace::middleware));
             if let Err(err) = axum::serve(listener, gateway).await {
                 tracing::error!(error = %err, "s3 listener failed");
             }
@@ -304,6 +300,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let listener = tokio::net::TcpListener::bind(admin_bind).await?;
             tracing::info!(addr = %listener.local_addr()?, "admin surface listening");
             tokio::spawn(async move {
+                let admin = admin.layer(axum::middleware::from_fn(copal_server::trace::middleware));
                 if let Err(err) = axum::serve(listener, admin).await {
                     tracing::error!(error = %err, "admin listener failed");
                 }
@@ -382,6 +379,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!(addr = %listener.local_addr()?, "listening");
     // Drain in-flight requests on SIGTERM or ctrl-c. Background tasks
     // stop with the process; their leases make that safe.
+    let router = router.layer(axum::middleware::from_fn(copal_server::trace::middleware));
     axum::serve(listener, router)
         .with_graceful_shutdown(shutdown_signal())
         .await?;
@@ -410,4 +408,53 @@ async fn shutdown_signal() {
         () = terminate => {},
     }
     tracing::info!("shutdown signal received; draining");
+}
+
+/// Log subscriber, and the OTLP trace pipeline when an endpoint is
+/// configured. Without one, spans feed the logs and nothing leaves
+/// the process. The exporter speaks http/protobuf, batched on the
+/// runtime; traces flush on the batch cadence, so a hard kill can
+/// lose the tail of the last batch.
+fn init_tracing(otlp_endpoint: Option<&str>) {
+    use tracing_subscriber::layer::SubscriberExt as _;
+    use tracing_subscriber::util::SubscriberInitExt as _;
+
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| "copal_server=info,copal_store=info".into());
+    let fmt = tracing_subscriber::fmt::layer();
+
+    match otlp_endpoint {
+        Some(endpoint) => {
+            use opentelemetry_otlp::WithExportConfig as _;
+            opentelemetry::global::set_text_map_propagator(
+                opentelemetry_sdk::propagation::TraceContextPropagator::new(),
+            );
+            let exporter = opentelemetry_otlp::SpanExporter::builder()
+                .with_http()
+                .with_protocol(opentelemetry_otlp::Protocol::HttpBinary)
+                .with_endpoint(endpoint)
+                .build()
+                .expect("OTLP exporter builds from COPAL_OTLP_ENDPOINT");
+            let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
+                .with_batch_exporter(exporter)
+                .with_resource(
+                    opentelemetry_sdk::Resource::builder()
+                        .with_service_name("copal")
+                        .build(),
+                )
+                .build();
+            use opentelemetry::trace::TracerProvider as _;
+            let tracer = provider.tracer("copal");
+            opentelemetry::global::set_tracer_provider(provider);
+            tracing_subscriber::registry()
+                .with(filter)
+                .with(fmt)
+                .with(tracing_opentelemetry::layer().with_tracer(tracer))
+                .init();
+            tracing::info!(endpoint = %endpoint, "OTLP trace export enabled");
+        }
+        None => {
+            tracing_subscriber::registry().with(filter).with(fmt).init();
+        }
+    }
 }

@@ -1,0 +1,42 @@
+# Two Copal instances against one engine, behind round-robin. The
+# topology the lease design intends, proven by running the whole
+# conformance scenario through the proxy.
+#
+# The one requirement beyond configuration is the shared blob root:
+# multipart parts stage on the filesystem, and a completion must see
+# parts whichever instance staged them. Both instances therefore
+# mount one volume, which in a real deployment is a shared filesystem
+# or the same mounted device.
+services:
+  copal:
+    volumes:
+      - shared-blobs:/data/blobs
+
+  copal2:
+    build:
+      context: ..
+      secrets:
+        - oneiriq_token
+    depends_on:
+      - surrealdb
+    environment:
+      COPAL_DB_URL: ws://surrealdb:8000
+      COPAL_ADMIN_BIND: 0.0.0.0:8081
+      COPAL_S3_BIND: 0.0.0.0:9000
+      COPAL_BLOB_ENCRYPTION_KEY: "0707070707070707070707070707070707070707070707070707070707070707"
+      COPAL_ADMIN_TOKEN: conformance-admin
+      COPAL_ENGINE_ACCESS_KEY: conformance-engine-key
+      COPAL_ENGINE_SESSIONS: "on"
+    volumes:
+      - shared-blobs:/data/blobs
+
+  gateway:
+    image: nginx:alpine
+    depends_on:
+      - copal
+      - copal2
+    volumes:
+      - ./ha-nginx.conf:/etc/nginx/nginx.conf:ro
+
+volumes:
+  shared-blobs:

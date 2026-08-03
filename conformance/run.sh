@@ -20,7 +20,18 @@ rm -f results/*.txt
 # read PAT.
 export ONEIRIQ_READ_PAT="${ONEIRIQ_READ_PAT:-$(gh auth token 2>/dev/null || true)}"
 
-compose() { docker compose "$@"; }
+# COPAL_HA=1 stands up TWO instances behind round-robin nginx and
+# runs the same scenario through the proxy: the proof that leases,
+# claims, and multipart survive instance hops.
+if [ "${COPAL_HA:-0}" = "1" ]; then
+    COMPOSE_FILES="-f docker-compose.yml -f ha-overlay.yml"
+    TARGET=gateway
+else
+    COMPOSE_FILES="-f docker-compose.yml"
+    TARGET=copal
+fi
+
+compose() { docker compose $COMPOSE_FILES "$@"; }
 
 # A clean slate first. Reusing a running stack mixes states that
 # must not mix: rebuilding the image recreates the Copal container
@@ -33,19 +44,33 @@ compose down -v --remove-orphans > /dev/null 2>&1 || true
 
 echo "== building and starting the stack"
 compose build copal
-compose up -d --force-recreate surrealdb minio copal
+if [ "${COPAL_HA:-0}" = "1" ]; then
+    compose up -d --force-recreate surrealdb minio copal copal2 gateway
+else
+    compose up -d --force-recreate surrealdb minio copal
+fi
 
 echo "== waiting for copal"
-for i in $(seq 1 60); do
-    if compose run --rm curl -c "curl -fsS http://copal:8080/readyz" > /dev/null 2>&1; then
-        break
-    fi
-    sleep 2
+# Round-robin hides a cold instance: the gateway answers while one
+# backend still boots, and the next request 502s. Readiness is every
+# instance ready, asked directly.
+if [ "${COPAL_HA:-0}" = "1" ]; then
+    WAIT_HOSTS="copal copal2"
+else
+    WAIT_HOSTS="copal"
+fi
+for host in $WAIT_HOSTS; do
+    for i in $(seq 1 60); do
+        if compose run --rm curl -c "curl -fsS http://$host:8080/readyz" > /dev/null 2>&1; then
+            break
+        fi
+        sleep 2
+    done
 done
 
 echo "== minting a credential"
 CRED=$(compose run --rm curl -c \
-    "curl -fsS -X POST http://copal:8081/v1/admin/tenants/$TENANT/s3-credentials \
+    "curl -fsS -X POST http://$TARGET:8081/v1/admin/tenants/$TENANT/s3-credentials \
      -H 'x-copal-admin-token: conformance-admin'")
 AK=$(printf '%s' "$CRED" | sed -n 's/.*"access_key_id":"\([^"]*\)".*/\1/p')
 SK=$(printf '%s' "$CRED" | sed -n 's/.*"secret_access_key":"\([^"]*\)".*/\1/p')
@@ -58,6 +83,7 @@ run_client() {
     echo "== running $1"
     compose run --rm \
         -e COPAL_ACCESS_KEY="$AK" -e COPAL_SECRET_KEY="$SK" -e COPAL_TENANT="$TENANT" \
+        -e COPAL_S3_HOST="$TARGET" \
         "$1" "/runners/$1.sh" || true
 }
 run_client mc

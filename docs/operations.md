@@ -215,6 +215,35 @@ before decoding, and the decoder itself carries a 256 MiB allocation
 ceiling, so a small compressed file describing an enormous canvas
 fails the derived record instead of exhausting the host.
 
+## Running two instances
+
+Two Copal processes against one engine is a supported topology, and
+the conformance harness proves it: `COPAL_HA=1 ./conformance/run.sh`
+stands up two instances behind round-robin nginx and passes every
+check for every client through the proxy.
+
+The requirements:
+
+- **A shared blob root.** Multipart parts stage on the filesystem,
+  and a completion must see parts whichever instance staged them, so
+  both processes mount one root (a shared filesystem or the same
+  device). Everything else about content addressing tolerates the
+  sharing: writes land under a staging name and rename onto the
+  digest.
+- **The same keys**: blob encryption key, engine access key, admin
+  token.
+- **One engine.** Leases, claims, and every compare-and-set resolve
+  there, which is why round-robin needs no sticky sessions.
+
+Per-instance and fine that way: the session cache (each process
+holds its own), sweeps (each instance reaps with its own id; a
+crashed instance's leases expire and any other reaps them), and the
+embedding backfill (batches are idempotent).
+
+When probing readiness behind a balancer, ask each instance
+directly: a balancer's 200 proves one backend, and the next request
+may land on a cold one.
+
 ## Storage residencies
 
 A residency is a named backend (filesystem root or S3-compatible

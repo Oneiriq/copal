@@ -216,6 +216,16 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ### Deployment
 
+- **Two instances, proven.** `COPAL_HA=1 ./conformance/run.sh`
+  stands up two Copal processes against one engine behind
+  round-robin nginx and passes every conformance check for every
+  client through the proxy: claims and leases resolve at the engine,
+  multipart completions see parts whichever instance staged them
+  through the shared blob root, and conditional writes hold across
+  hops. The topology requirements are documented (shared blob root,
+  same keys, one engine); session cache, sweeps, and the embedding
+  backfill stay per-instance by design.
+
 - **A performance envelope.** `bench/run.sh` stands the stack up
   twice, with caller-bound engine sessions off and on, and takes the
   same measurements through the S3 gateway both times, so the cost of

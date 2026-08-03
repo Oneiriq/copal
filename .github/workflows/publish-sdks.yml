@@ -1,0 +1,84 @@
+# Publishing is a human decision: this workflow runs only on manual
+# dispatch, and it dry-runs unless told otherwise. The repos are
+# private today, so the real-publish path stays dark until the
+# registry tokens exist and the dispatch flips dry_run off.
+name: Publish SDKs
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run (no registry writes)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: assemble + publish
+    runs-on: [self-hosted, aur0]
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Assemble and validate
+        run: bash sdks/build.sh
+
+      - name: Publish Rust crate
+        working-directory: sdks/dist/rust
+        run: |
+          if [ "${{ inputs.dry_run }}" = "false" ]; then
+            cargo publish --token "$CARGO_REGISTRY_TOKEN"
+          else
+            cargo publish --dry-run --allow-dirty
+          fi
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Publish Python package
+        working-directory: sdks/dist/python
+        run: |
+          python -m pip install --quiet build twine
+          python -m build
+          if [ "${{ inputs.dry_run }}" = "false" ]; then
+            python -m twine upload dist/*
+          else
+            python -m twine check dist/*
+          fi
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
+
+      - name: Publish npm package
+        working-directory: sdks/dist/typescript
+        run: |
+          npm install --no-audit --no-fund
+          npm run build
+          if [ "${{ inputs.dry_run }}" = "false" ]; then
+            npm publish --access public
+          else
+            npm publish --dry-run
+          fi
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Go module note
+        run: |
+          echo "Go modules publish by tag. Cut v$(tr -d ' \r\n' < sdks/VERSION) on the"
+          echo "copal-go mirror once the assembled sdks/dist/go content is pushed there."

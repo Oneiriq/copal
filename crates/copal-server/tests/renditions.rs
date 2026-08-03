@@ -26,6 +26,7 @@ async fn stack() -> (axum::Router, FlowEngine, tempfile::TempDir) {
         None,
         None,
         None,
+        std::collections::HashMap::new(),
     );
     let state = AppState::new(store, blobs).with_flow(registry);
     let engine = state.flow.clone();

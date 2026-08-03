@@ -149,6 +149,9 @@ pub struct AppState<B: BlobStore> {
     /// Embedding service address and model, when semantic retrieval
     /// is configured.
     pub embedding: Option<(String, String)>,
+    /// Named external transformers, by name; the transform action
+    /// validates against this map before enqueueing.
+    pub transformers: std::collections::HashMap<String, crate::config::TransformerConfig>,
     /// The master cipher, when one is configured. Sealed secrets (S3
     /// credentials, webhook signing keys, edge keys) open under it,
     /// and the surfaces that mint them exist only when it does.
@@ -181,6 +184,7 @@ impl<B: BlobStore> AppState<B> {
             auth: crate::auth::AuthConfig::default(),
             scan_gates_serving: false,
             embedding: None,
+            transformers: std::collections::HashMap::new(),
             cipher: None,
             rate_store: std::sync::Arc::new(janus::runtime::MemoryRateStore::new()),
             persisted_operations: None,
@@ -271,6 +275,14 @@ impl<B: BlobStore> AppState<B> {
     }
 
     /// Install a populated activity/workflow registry.
+    pub fn with_transformers(
+        mut self,
+        transformers: std::collections::HashMap<String, crate::config::TransformerConfig>,
+    ) -> Self {
+        self.transformers = transformers;
+        self
+    }
+
     pub fn with_flow(mut self, registry: FlowRegistry) -> Self {
         self.flow = FlowEngine::new(self.store.clone(), registry);
         self
@@ -530,6 +542,7 @@ pub fn api_router<B: BlobStore + 'static>(state: AppState<B>) -> Router {
             "/v1/files/{id}/renditions",
             post(request_rendition::<B>).get(list_renditions::<B>),
         )
+        .route("/v1/files/{id}/transform", post(request_transform::<B>))
         .layer(request_deadline)
         .with_state(state.clone())
         .merge(transfer_routes)
@@ -1887,6 +1900,151 @@ async fn request_rendition<B: BlobStore>(
     };
     let (status, body) = request_rendition_core(&state, &tenant, &id, &spec).await?;
     Ok((status, Json(body)))
+}
+
+#[derive(Debug, Deserialize)]
+struct TransformRequest {
+    transformer: String,
+    #[serde(default)]
+    params: serde_json::Value,
+    #[serde(default)]
+    content_type: Option<String>,
+}
+
+async fn request_transform<B: BlobStore>(
+    State(state): State<AppState<B>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(request): Json<TransformRequest>,
+) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
+    let tenant =
+        crate::auth::authenticate_scoped(&state, &headers, crate::auth::Scope::Write, 1).await?;
+    let id = parse_id(&id)?;
+    let spec = TransformSpec {
+        transformer: request.transformer,
+        params: request.params,
+        content_type: request
+            .content_type
+            .unwrap_or_else(|| "application/octet-stream".to_owned()),
+    };
+    let (status, body) = request_transform_core(&state, &tenant, &id, &spec).await?;
+    Ok((status, Json(body)))
+}
+
+/// What a transform request asks for, shared by both faces.
+#[derive(Debug, Clone)]
+pub(crate) struct TransformSpec {
+    pub transformer: String,
+    pub params: serde_json::Value,
+    pub content_type: String,
+}
+
+/// Create the derived record and enqueue the external transform, the
+/// shared core behind the REST handler and the GraphQL action
+/// resolver. Returns 202 for a fresh derivation and 200 for one that
+/// already exists.
+pub(crate) async fn request_transform_core<B: BlobStore>(
+    state: &AppState<B>,
+    tenant: &TenantId,
+    id: &FileId,
+    request: &TransformSpec,
+) -> Result<(StatusCode, serde_json::Value), ApiError> {
+    if !state.flow.has_workflow(crate::pipeline::TRANSFORM_WORKFLOW) {
+        return Err(CopalError::validation("the transform pipeline is not configured").into());
+    }
+    let name = request.transformer.as_str();
+    let name_ok = !name.is_empty()
+        && name.len() <= 32
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'));
+    if !name_ok {
+        return Err(CopalError::validation(
+            "transformer must be 1..=32 characters of letters, digits, hyphen, underscore",
+        )
+        .into());
+    }
+    if !state.transformers.contains_key(name) {
+        return Err(CopalError::validation(format!("unknown transformer {name:?}")).into());
+    }
+    let type_ok = request.content_type.len() <= 127
+        && request.content_type.contains('/')
+        && request.content_type.is_ascii();
+    if !type_ok {
+        return Err(CopalError::validation("content_type does not look like a media type").into());
+    }
+
+    let source = file_repo::get_file(&state.store, tenant, id)
+        .await?
+        .ok_or_else(|| CopalError::not_found(format!("file {id}")))?;
+    if !source.servable_content() {
+        return Err(CopalError::conflict("source has no served content").into());
+    }
+    let source_digest = source
+        .digest
+        .clone()
+        .expect("servable content carries a digest");
+
+    let params_json = serde_json::to_string(&request.params)
+        .map_err(|_| CopalError::validation("params does not serialize"))?;
+    let full_digest = {
+        use sha2::Digest as _;
+        hex::encode(sha2::Sha256::digest(params_json.as_bytes()))
+    };
+    let params_digest = &full_digest[..16];
+    let derived_path = format!("{}@{}-{}", source.path, name, &full_digest[..8]);
+
+    let spec = FileSpec {
+        path: derived_path.clone(),
+        content_type: request.content_type.clone(),
+        access: source.access,
+        metadata: serde_json::Value::Null,
+        idempotency_key: None,
+    };
+    let derived = match file_repo::create_file(&state.store, tenant, &spec, "transform").await {
+        Ok(created) => created.record,
+        Err(CopalError::Conflict(_)) => {
+            // The path already holds this derivation; return it.
+            let existing = file_repo::find_by_path(&state.store, tenant, &derived_path)
+                .await?
+                .ok_or_else(|| CopalError::conflict("derived path is contended"))?;
+            return Ok((StatusCode::OK, crate::wire::wire_file(&existing)));
+        }
+        Err(other) => return Err(other.into()),
+    };
+    file_repo::mark_rendition(&state.store, tenant, &derived.id, id, name, params_digest).await?;
+
+    let input = json!({
+        "tenant": tenant.as_str(),
+        "derived_file": derived.id.as_str(),
+        "source_file": id.as_str(),
+        "source_residency": source.blob_residency.as_deref().unwrap_or("local"),
+        "source_digest": source_digest.as_str(),
+        "source_size": source.size_bytes,
+        "source_content_type": source.content_type,
+        "transformer": name,
+        "params": request.params,
+    });
+    let (run_id, _) = state
+        .flow
+        .enqueue(
+            tenant,
+            crate::pipeline::TRANSFORM_WORKFLOW,
+            RunSpec {
+                input,
+                subject: Some(derived.id.clone()),
+                idempotency_key: Some(crate::pipeline::transform_run_key(
+                    &derived.id,
+                    &source_digest,
+                    name,
+                    params_digest,
+                )),
+            },
+        )
+        .await?;
+    let mut body = crate::wire::wire_file(&derived);
+    body["run"] = json!(run_id);
+    Ok((StatusCode::ACCEPTED, body))
 }
 
 /// What a rendition request asks for, shared by both faces.

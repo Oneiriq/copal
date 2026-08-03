@@ -83,6 +83,15 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
   keys, verifiable at a CDN worker with no database hop.
 - **Image renditions** on the flow engine, with deterministic paths and
   idempotent repeats.
+- **The external transformer seam.** Any operator-run HTTP service
+  becomes a derivation step: the transform action ships source bytes
+  out and lands whatever comes back through the same claim and
+  complete path uploads use, so outputs are real files with digests,
+  versions, and serving rules intact. A 4xx answer fails the derived
+  record with the service's reason; 5xx and transport trouble retry
+  on the flow engine's budget. Declared in the contract, so the
+  action rides REST, GraphQL, and the MCP manifest alike, and
+  derivations list beside renditions.
 - **Serving correctness**: range requests, conditional requests, and weak
   validator matching.
 

@@ -123,6 +123,7 @@ pub(crate) fn dispatcher<B: BlobStore + 'static>(
     let create_state = state.clone();
     let upload_url_state = state.clone();
     let rendition_state = state.clone();
+    let transform_state = state.clone();
     let edge_url_state = state.clone();
     let hooks_list_state = state.clone();
     let hooks_get_state = state.clone();
@@ -335,6 +336,36 @@ pub(crate) fn dispatcher<B: BlobStore + 'static>(
                         .to_owned(),
                 };
                 crate::app::request_rendition_core(&state, &tenant, &id, &spec)
+                    .await
+                    .map(|(_, body)| Some(body))
+                    .map_err(|e| to_janus_error(e.0))
+            }
+        })
+        .action("files", "transform", move |ctx, args| {
+            let state = transform_state.clone();
+            async move {
+                let tenant = tenant_of(&ctx)?;
+                let id = parse_file_id(args.id.as_deref().unwrap_or_default())?;
+                let spec = crate::app::TransformSpec {
+                    transformer: args
+                        .input
+                        .get("transformer")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default()
+                        .to_owned(),
+                    params: args
+                        .input
+                        .get("params")
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null),
+                    content_type: args
+                        .input
+                        .get("content_type")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("application/octet-stream")
+                        .to_owned(),
+                };
+                crate::app::request_transform_core(&state, &tenant, &id, &spec)
                     .await
                     .map(|(_, body)| Some(body))
                     .map_err(|e| to_janus_error(e.0))

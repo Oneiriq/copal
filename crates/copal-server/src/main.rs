@@ -91,6 +91,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .embedding_addr
             .clone()
             .map(|addr| (addr, config.embedding_model.clone())),
+        config.transformers.clone(),
     );
     if let Some(addr) = &config.embedding_addr {
         // The index has to exist at the model's width before the
@@ -121,6 +122,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_auth(config.auth.clone())
         .with_residencies(residencies.named.clone())
         .with_scan_gate(config.clamav_addr.is_some())
+        .with_transformers(config.transformers.clone())
         .with_cipher(match &config.blob_encryption_key {
             Some(key) => {
                 let cipher = copal_blob::crypto::BlobCipher::from_hex(key)?;

@@ -214,6 +214,41 @@
       }
     },
     {
+      "name": "file_transform",
+      "description": "Derive new content through an operator-configured external transformer; repeating a request returns the existing derivation.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "transformer": {
+            "type": "string",
+            "description": "Name of a transformer the deployment configures."
+          },
+          "params": {
+            "type": "object",
+            "description": "Free-form parameters forwarded to the service."
+          },
+          "content_type": {
+            "type": "string",
+            "description": "Declared media type of the derived output (default application/octet-stream)."
+          }
+        },
+        "required": [
+          "id",
+          "transformer"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "requiredScopes": [
+          "write"
+        ],
+        "rateClass": "mutations"
+      }
+    },
+    {
       "name": "file_remove",
       "description": "Soft-delete: tombstone the record and free its live path; bytes are reclaimed by garbage collection once nothing references them.",
       "inputSchema": {

@@ -818,6 +818,61 @@
         "summary": "One file's extracted text, as the pipeline stored it."
       }
     },
+    "/v1/files/{id}/transform": {
+      "post": {
+        "description": "Derive new content through an operator-configured external transformer; repeating a request returns the existing derivation.",
+        "operationId": "transform_files",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "content_type": {
+                    "type": "string"
+                  },
+                  "params": {
+                    "type": "object"
+                  },
+                  "transformer": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "transformer"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Action result."
+          }
+        },
+        "x-requires-scopes": [
+          "write"
+        ]
+      }
+    },
     "/v1/files/{id}/upload-url": {
       "post": {
         "description": "Issue a single-use write capability, so a browser can upload without holding a tenant key.",

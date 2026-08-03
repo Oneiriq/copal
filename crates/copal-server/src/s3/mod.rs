@@ -215,12 +215,93 @@ pub(crate) async fn claim_refusal<B: BlobStore>(
     response
 }
 
+/// The write precondition a request carries, read from If-None-Match
+/// and If-Match. S3 semantics: If-None-Match takes only `*` (create,
+/// never replace), If-Match takes the ETag the caller believes is
+/// current, which here IS the content digest. Both absent means
+/// unconditional, exactly as before.
+pub(crate) fn write_precondition(headers: &HeaderMap) -> Result<Option<WritePrecondition>, String> {
+    let if_none_match = headers
+        .get("if-none-match")
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim);
+    let if_match = headers
+        .get("if-match")
+        .and_then(|v| v.to_str().ok())
+        .map(|raw| raw.trim().trim_matches('"').to_owned());
+    match (if_none_match, if_match) {
+        (None, None) => Ok(None),
+        (Some(_), Some(_)) => Err("If-Match and If-None-Match together are contradictory".into()),
+        (Some("*"), None) => Ok(Some(WritePrecondition::AbsentContent)),
+        (Some(other), None) => Err(format!("If-None-Match takes only *, got {other:?}")),
+        (None, Some(digest))
+            if digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_hexdigit()) =>
+        {
+            Ok(Some(WritePrecondition::DigestIs(digest)))
+        }
+        (None, Some(other)) => Err(format!(
+            "If-Match must be the content digest ETag, got {other:?}",
+        )),
+    }
+}
+
+/// An owned mirror of the claim precondition, carried from header
+/// parsing to the claim.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum WritePrecondition {
+    AbsentContent,
+    DigestIs(String),
+}
+
+impl WritePrecondition {
+    pub(crate) fn as_claim(&self) -> copal_store::repo::file::ClaimPrecondition<'_> {
+        match self {
+            Self::AbsentContent => copal_store::repo::file::ClaimPrecondition::AbsentContent,
+            Self::DigestIs(digest) => {
+                copal_store::repo::file::ClaimPrecondition::DigestIs(digest.as_str())
+            }
+        }
+    }
+}
+
+/// A refused conditional claim: decide whether the precondition
+/// failed (412) or the key is merely busy (SlowDown). The record is
+/// re-read AFTER the refusal, so the answer names what held at the
+/// moment the claim tried to land.
+pub(crate) async fn conditional_refusal<B: BlobStore>(
+    state: &AppState<B>,
+    tenant: &TenantId,
+    id: &copal_core::FileId,
+    precondition: &WritePrecondition,
+    err: CopalError,
+) -> Response {
+    if let Ok(Some(record)) = file_repo::get_file(&state.store, tenant, id).await {
+        let violated = match precondition {
+            WritePrecondition::AbsentContent => record.digest.is_some(),
+            WritePrecondition::DigestIs(digest) => {
+                record.digest.as_ref().map(|d| d.as_str()) != Some(digest.as_str())
+            }
+        };
+        if violated {
+            return xml_error(
+                StatusCode::PRECONDITION_FAILED,
+                "PreconditionFailed",
+                "the object's current content does not satisfy the write condition",
+            );
+        }
+    }
+    claim_refusal(state, tenant, id, err).await
+}
+
 pub(crate) fn copal_to_s3(err: CopalError) -> Response {
     match err {
         CopalError::NotFound(msg) => xml_error(StatusCode::NOT_FOUND, "NoSuchKey", &msg),
         CopalError::Unauthorized(msg) => xml_error(StatusCode::FORBIDDEN, "AccessDenied", &msg),
         CopalError::Validation(msg) => xml_error(StatusCode::BAD_REQUEST, "InvalidRequest", &msg),
         CopalError::Conflict(msg) => xml_error(StatusCode::CONFLICT, "OperationAborted", &msg),
+        CopalError::PreconditionFailed(msg) => {
+            xml_error(StatusCode::PRECONDITION_FAILED, "PreconditionFailed", &msg)
+        }
         CopalError::PayloadTooLarge(msg) => {
             xml_error(StatusCode::BAD_REQUEST, "EntityTooLarge", &msg)
         }
@@ -635,16 +716,28 @@ async fn put_object<B: BlobStore>(
         Err(err) => return copal_to_s3(err.0),
     };
 
-    if let Err(err) = file_repo::claim_upload(
+    let precondition = match write_precondition(&parts.headers) {
+        Ok(precondition) => precondition,
+        Err(message) => return xml_error(StatusCode::BAD_REQUEST, "InvalidRequest", &message),
+    };
+    let claim = precondition
+        .as_ref()
+        .map(WritePrecondition::as_claim)
+        .unwrap_or_default();
+    if let Err(err) = file_repo::claim_upload_if(
         &state.store,
         tenant,
         &id,
         &state.instance_id,
         state.limits.upload_lease_secs,
+        claim,
     )
     .await
     {
-        return claim_refusal(state, tenant, &id, err).await;
+        return match &precondition {
+            Some(condition) => conditional_refusal(state, tenant, &id, condition, err).await,
+            None => claim_refusal(state, tenant, &id, err).await,
+        };
     }
 
     // Same in-stream ceiling as the REST upload; aws-chunked framing

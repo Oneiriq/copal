@@ -413,6 +413,21 @@ fn with_lease(query: Query, owner: &str, ttl_secs: u32) -> copal_core::Result<Qu
 ///    `ensure_transition`; the guard is the expired lease itself.
 ///
 /// A live claim by anyone (including `owner`) loses with `Conflict`.
+/// A condition a claim carries into its own compare-and-set, so two
+/// writers racing the same key resolve at the engine rather than in
+/// a check-then-claim window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ClaimPrecondition<'a> {
+    /// No condition: today's behavior.
+    #[default]
+    None,
+    /// Claim only a key with no served content yet: If-None-Match *.
+    AbsentContent,
+    /// Claim only while the current content is exactly this digest:
+    /// If-Match.
+    DigestIs(&'a str),
+}
+
 pub async fn claim_upload(
     store: &Store,
     tenant: &TenantId,
@@ -420,11 +435,30 @@ pub async fn claim_upload(
     owner: &str,
     ttl_secs: u32,
 ) -> copal_core::Result<FileRecord> {
+    claim_upload_if(store, tenant, id, owner, ttl_secs, ClaimPrecondition::None).await
+}
+
+/// [`claim_upload`] under a precondition. The condition rides the
+/// transition's WHERE clause, so it holds at the moment the claim
+/// lands rather than at some earlier read.
+pub async fn claim_upload_if(
+    store: &Store,
+    tenant: &TenantId,
+    id: &FileId,
+    owner: &str,
+    ttl_secs: u32,
+    precondition: ClaimPrecondition<'_>,
+) -> copal_core::Result<FileRecord> {
     // Ready is claimable too: a re-upload starts the next version while
     // the previous content keeps serving (servability is digest-based).
     for from in [FileState::Draft, FileState::Failed, FileState::Ready] {
         match transition_with(store, tenant, id, from, FileState::Uploading, |q| {
-            with_lease(q, owner, ttl_secs)
+            let q = with_lease(q, owner, ttl_secs)?;
+            Ok(match precondition {
+                ClaimPrecondition::None => q,
+                ClaimPrecondition::AbsentContent => q.where_(is_none("digest")),
+                ClaimPrecondition::DigestIs(digest) => q.where_(eq("digest", digest)),
+            })
         })
         .await
         {

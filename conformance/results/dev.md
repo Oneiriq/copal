@@ -4,7 +4,7 @@ Produced by `conformance/run.sh`: the stack in
 `docker-compose.yml`, one scenario per client, every check
 named. Run the same command to reproduce the table.
 
-## aws: 7/7
+## aws: 9/9
 
 | check | result |
 | --- | --- |
@@ -14,6 +14,8 @@ named. Run the same command to reproduce the table.
 | multipart_roundtrip_digest | PASS |
 | abort_leaves_no_ghost | PASS |
 | sync_noop | PASS |
+| conditional_create_refuses_existing | PASS |
+| conditional_replace_needs_the_current_etag | PASS |
 | delete_propagates | PASS |
 
 ## mc: 8/8

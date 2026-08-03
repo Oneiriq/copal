@@ -1954,14 +1954,43 @@ async fn upload_content<B: BlobStore>(
 
     let (residency, backend) = state.residency_for(&tenant).await?;
 
-    file_repo::claim_upload(
+    let precondition =
+        crate::s3::write_precondition(request.headers()).map_err(CopalError::validation)?;
+    let claim = precondition
+        .as_ref()
+        .map(crate::s3::WritePrecondition::as_claim)
+        .unwrap_or_default();
+    if let Err(err) = file_repo::claim_upload_if(
         &state.store,
         &tenant,
         &id,
         &state.instance_id,
         state.limits.upload_lease_secs,
+        claim,
     )
-    .await?;
+    .await
+    {
+        // A refused conditional claim answers 412 when the condition
+        // is what failed; a merely busy key keeps its usual answer.
+        if let Some(condition) = &precondition {
+            if let Ok(Some(record)) = file_repo::get_file(&state.store, &tenant, &id).await {
+                let violated = match condition {
+                    crate::s3::WritePrecondition::AbsentContent => record.digest.is_some(),
+                    crate::s3::WritePrecondition::DigestIs(digest) => {
+                        record.digest.as_ref().map(|d| d.as_str()) != Some(digest.as_str())
+                    }
+                };
+                if violated {
+                    return Err(CopalError::PreconditionFailed(
+                        "the file's current content does not satisfy the write condition"
+                            .to_owned(),
+                    )
+                    .into());
+                }
+            }
+        }
+        return Err(err.into());
+    }
 
     // Enforce the ceiling in the stream itself: past the limit the
     // stream yields an error, the writer aborts, and only inert staging

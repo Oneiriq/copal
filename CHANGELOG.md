@@ -117,6 +117,18 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ### Interfaces
 
+- **Conditional writes.** `If-None-Match: *` creates and never
+  replaces; `If-Match: <digest>` replaces exactly the content the
+  caller believes is current; both answer 412 through every face
+  (REST body path, S3 PutObject, S3 CompleteMultipartUpload). The
+  condition rides the upload claim's own compare-and-set, so two
+  racing writers resolve at the engine rather than in a
+  check-then-claim window, and a busy key still answers SlowDown
+  rather than 412 when the condition itself holds. The ETag is the
+  content digest, so If-Match is a digest compare-and-swap, which is
+  what agents coordinating on shared keys actually need. Two named
+  conformance checks pin the semantics through the stock aws CLI.
+
 - **The conformance table is green, and the failures were the
   harness.** The two checks that shipped red came from reusing a
   running stack between runs: rebuilding the image recreates the

@@ -40,7 +40,7 @@ echo "validating rust"
 (cd "$dist/rust" && cargo check --quiet)
 
 echo "validating python"
-python -m py_compile "$dist/python/copal.py"
+PYTHONDONTWRITEBYTECODE=1 python -m py_compile "$dist/python/copal.py"
 (cd "$dist/python" && python -c "import copal")
 
 echo "validating typescript"

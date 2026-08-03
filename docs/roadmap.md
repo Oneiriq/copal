@@ -4,6 +4,12 @@ What is left, ordered by what it blocks. Shipped work lives in
 [CHANGELOG.md](../CHANGELOG.md); this file carries only open items, so
 an item disappearing from it means the item is done.
 
+The second audit's program is complete: retention and principals
+built end to end, conditional writes, the replayable change feed,
+search depth with the embedding backfill, the two-instance proof,
+and the MCP face generated from the contract. What follows is the
+remaining tail, in order.
+
 1. **Retention, legal hold, and WORM: built.** All five slices of
    [retention.md](retention.md) shipped: the erasable predicate at
    the GC, the admin surface with the compliance authority line,

@@ -517,6 +517,7 @@ pub fn api_router<B: BlobStore + 'static>(state: AppState<B>) -> Router {
             "/v1/files/{id}",
             get(get_file::<B>).delete(delete_file::<B>),
         )
+        .route("/mcp", post(crate::mcp::mcp_endpoint::<B>))
         .route("/v1/events", get(list_tenant_events::<B>))
         .route("/v1/events/{id}", get(get_tenant_event::<B>))
         .route("/v1/runs", post(start_run::<B>).get(list_runs::<B>))

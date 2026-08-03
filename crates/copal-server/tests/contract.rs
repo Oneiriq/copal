@@ -35,6 +35,7 @@ fn generated_artifacts_match_the_checked_in_documents() {
         let checked_in_path = match filename.as_str() {
             "openapi.json" => format!("{root}/docs/openapi.json"),
             "schema.graphql" => format!("{root}/docs/schema.graphql"),
+            "mcp-tools.json" => format!("{root}/docs/mcp-tools.json"),
             other => format!("{root}/clients/{other}"),
         };
         if std::env::var("COPAL_BLESS").is_ok() {

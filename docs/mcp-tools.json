@@ -1,0 +1,534 @@
+{
+  "tools": [
+    {
+      "name": "files_list",
+      "description": "List files for the authenticated tenant.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "description": "Rows per page, at most 100."
+          },
+          "cursor": {
+            "type": "string",
+            "description": "Resume from a previous page."
+          },
+          "state": {
+            "type": "string",
+            "description": "Filter by state."
+          },
+          "sort": {
+            "type": "string",
+            "description": "Sort column, one of: created_at. Suffix with :desc for newest first."
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "requiredScopes": [
+          "read"
+        ],
+        "rateClass": "reads"
+      }
+    },
+    {
+      "name": "file_get",
+      "description": "Fetch one of files by id.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "requiredScopes": [
+          "read"
+        ],
+        "rateClass": "reads"
+      }
+    },
+    {
+      "name": "file_issue_url",
+      "description": "Issue a signed URL for a servable file.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "ttl_secs": {
+            "type": "integer",
+            "description": "Seconds until the URL stops working (default 900, max one year)."
+          },
+          "max_uses": {
+            "type": "integer",
+            "description": "Cap on redemptions; one-time links use 1. Unset = unlimited within the TTL."
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "requiredScopes": [
+          "read"
+        ],
+        "rateClass": "mutations"
+      }
+    },
+    {
+      "name": "file_issue_upload_url",
+      "description": "Issue a single-use write capability, so a browser can upload without holding a tenant key.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "ttl_secs": {
+            "type": "integer",
+            "description": "Seconds until the upload URL stops working (default 900, max one day)."
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "requiredScopes": [
+          "write"
+        ],
+        "rateClass": "mutations"
+      }
+    },
+    {
+      "name": "file_issue_edge_url",
+      "description": "Issue a cg2 token a CDN can verify itself, without a database hop.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "ttl_secs": {
+            "type": "integer",
+            "description": "Seconds until the token expires (default 900, max one day). Edge tokens cannot be revoked individually."
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "requiredScopes": [
+          "read"
+        ],
+        "rateClass": "mutations"
+      }
+    },
+    {
+      "name": "file_request_rendition",
+      "description": "Derive an image rendition; repeating a request returns the existing one.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "description": "Rendition label, part of the derived path (default \"thumb\")."
+          },
+          "width": {
+            "type": "integer",
+            "description": "Bounding width, 16..=4096 (default 256)."
+          },
+          "height": {
+            "type": "integer",
+            "description": "Bounding height, 16..=4096 (default 256)."
+          },
+          "format": {
+            "type": "string",
+            "description": "\"jpeg\" (default) or \"png\"."
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "requiredScopes": [
+          "write"
+        ],
+        "rateClass": "mutations"
+      }
+    },
+    {
+      "name": "file_remove",
+      "description": "Soft-delete: tombstone the record and free its live path; bytes are reclaimed by garbage collection once nothing references them.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "requiredScopes": [
+          "write"
+        ],
+        "rateClass": "mutations"
+      }
+    },
+    {
+      "name": "webhooks_list",
+      "description": "List webhooks for the authenticated tenant.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "description": "Rows per page, at most 100."
+          },
+          "cursor": {
+            "type": "string",
+            "description": "Resume from a previous page."
+          },
+          "sort": {
+            "type": "string",
+            "description": "Sort column, one of: created_at. Suffix with :desc for newest first."
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "requiredScopes": [
+          "read"
+        ],
+        "rateClass": "reads"
+      }
+    },
+    {
+      "name": "webhook_get",
+      "description": "Fetch one of webhooks by id.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "requiredScopes": [
+          "read"
+        ],
+        "rateClass": "reads"
+      }
+    },
+    {
+      "name": "webhook_register",
+      "description": "Register an endpoint. The signing secret appears once, here.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string",
+            "description": "Destination, which must resolve to a public address."
+          },
+          "events": {
+            "type": "object",
+            "description": "Dotted actions to deliver; empty means every event."
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "requiredScopes": [
+          "admin"
+        ],
+        "rateClass": "mutations"
+      }
+    },
+    {
+      "name": "webhook_remove",
+      "description": "Deactivate an endpoint; pending deliveries settle as failed.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "requiredScopes": [
+          "admin"
+        ],
+        "rateClass": "mutations"
+      }
+    },
+    {
+      "name": "events_list",
+      "description": "List events for the authenticated tenant.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "description": "Rows per page, at most 100."
+          },
+          "cursor": {
+            "type": "string",
+            "description": "Resume from a previous page."
+          },
+          "action": {
+            "type": "string",
+            "description": "Filter by action."
+          },
+          "sort": {
+            "type": "string",
+            "description": "Sort column, one of: created_at. Suffix with :desc for newest first."
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "requiredScopes": [
+          "read"
+        ],
+        "rateClass": "reads"
+      }
+    },
+    {
+      "name": "event_get",
+      "description": "Fetch one of events by id.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "requiredScopes": [
+          "read"
+        ],
+        "rateClass": "reads"
+      }
+    },
+    {
+      "name": "runs_list",
+      "description": "List runs for the authenticated tenant.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "description": "Rows per page, at most 100."
+          },
+          "cursor": {
+            "type": "string",
+            "description": "Resume from a previous page."
+          },
+          "status": {
+            "type": "string",
+            "description": "Filter by status."
+          },
+          "sort": {
+            "type": "string",
+            "description": "Sort column, one of: created_at. Suffix with :desc for newest first."
+          }
+        },
+        "additionalProperties": false
+      },
+      "annotations": {
+        "requiredScopes": [
+          "read"
+        ],
+        "rateClass": "reads"
+      }
+    },
+    {
+      "name": "run_get",
+      "description": "Fetch one of runs by id.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "requiredScopes": [
+          "read"
+        ],
+        "rateClass": "reads"
+      }
+    },
+    {
+      "name": "run_start",
+      "description": "Start a workflow run.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "workflow": {
+            "type": "string",
+            "description": "Registered workflow key."
+          },
+          "input": {
+            "type": "object",
+            "description": "Workflow input document."
+          },
+          "file": {
+            "type": "string",
+            "description": "Subject file id, when the run concerns one."
+          },
+          "idempotency_key": {
+            "type": "string",
+            "description": "Dedupe key: a retried start returns the original run."
+          },
+          "mode": {
+            "type": "string",
+            "description": "\"async\" (default) enqueues for a worker; \"sync\" executes in-request over the same journal."
+          }
+        },
+        "required": [
+          "workflow"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "requiredScopes": [
+          "write"
+        ],
+        "rateClass": "mutations"
+      }
+    },
+    {
+      "name": "run_retry",
+      "description": "Retry a FAILED run with its journal intact; a failed subject file returns to scanning first, so the pipeline's finalize applies.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "requiredScopes": [
+          "write"
+        ],
+        "rateClass": "mutations"
+      }
+    },
+    {
+      "name": "search",
+      "description": "Retrieval across the tenant's extracted text: engine-selected candidates                      rescored in process, fused across lexical and semantic rankings.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "q": {
+            "type": "string",
+            "description": "The question, in the caller's own words."
+          },
+          "mode": {
+            "type": "string",
+            "description": "lexical, semantic, or hybrid (the default). A deployment without                              an embedding service answers lexically and says so."
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Documents to return, 1..=100."
+          },
+          "prefix": {
+            "type": "string",
+            "description": "Keep results whose file path starts with this."
+          },
+          "content_type": {
+            "type": "string",
+            "description": "Keep results whose file carries this content type."
+          },
+          "cursor": {
+            "type": "string",
+            "description": "Continue a ranking from the previous page's next_cursor;                              best-effort, since rankings shift as content changes."
+          }
+        },
+        "required": [
+          "q"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "requiredScopes": [
+          "read"
+        ],
+        "rateClass": "reads"
+      }
+    },
+    {
+      "name": "file_text",
+      "description": "One file's extracted text, as the pipeline stored it.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The file whose extracted text to read."
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "requiredScopes": [
+          "read"
+        ],
+        "rateClass": "reads"
+      }
+    }
+  ]
+}

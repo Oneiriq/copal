@@ -255,7 +255,7 @@ async fn call_tool<B: BlobStore>(
     }))
 }
 
-async fn seeded_context<B: BlobStore>(
+pub(crate) async fn seeded_context<B: BlobStore>(
     state: &AppState<B>,
     headers: &HeaderMap,
     tenant: &TenantId,

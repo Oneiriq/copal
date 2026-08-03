@@ -283,6 +283,25 @@ sweep recomputes it from the file rows, the same way blob reference
 counts are derived rather than trusted, so any drift a crash leaves
 behind corrects within one interval.
 
+## Principals
+
+Named actors under a tenant that keys belong to. A key without one is
+a tenant-level credential, exactly as every key was before principals
+existed.
+
+```
+POST   /v1/admin/tenants/{tenant}/principals            body: { "handle": "agent-7", "kind": "agent", "scopes": ["read"] }
+GET    /v1/admin/tenants/{tenant}/principals
+DELETE /v1/admin/tenants/{tenant}/principals/{handle}   (disables; the audit trail keeps the name)
+```
+
+Key minting takes an optional `principal`. Scopes beyond the
+principal's ceiling refuse at mint time, effective scopes are the
+intersection of key and principal at every authentication, and
+disabling a principal refuses all of its keys at once. `kind` is
+`human`, `service`, or `agent`, carried for reporting; enforcement
+never branches on it.
+
 ## Retention and legal holds
 
 Retention attaches to versions, and the admin surface is where policy

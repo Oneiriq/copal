@@ -830,7 +830,11 @@ async fn execute<B: BlobStore>(
         // declarations land with the REST-side enforcement helper, so
         // the two faces tighten together rather than drifting apart.
         if let Some(key) = identity {
-            ctx.insert(janus::runtime::Principal::new(key.key_id, key.scopes));
+            // Guards compare actors: a key under a principal answers as
+            // its handle, and the key id stays in the identity for
+            // audit's "using key" half.
+            let subject = key.principal.clone().unwrap_or_else(|| key.key_id.clone());
+            ctx.insert(janus::runtime::Principal::new(subject, key.scopes));
         }
     }
     if let Some(origin) = crate::app::forwarded_origin(&headers) {

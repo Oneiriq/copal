@@ -14,6 +14,7 @@ use surql::schema::{
 /// All tables in this cluster.
 pub fn tables() -> Vec<TableDefinition> {
     vec![
+        principal_table(),
         api_key_table(),
         rate_window_table(),
         s3_credential_table(),
@@ -117,6 +118,39 @@ fn rate_window_table() -> TableDefinition {
         .with_indexes([index("idx_rate_minute", ["minute"])])
 }
 
+/// A named actor under a tenant: a person, a service, or an agent.
+/// Keys are credentials belonging to one; a key without one behaves
+/// as it always has, which is what makes this adoptable.
+fn principal_table() -> TableDefinition {
+    table_schema("principal")
+        .with_mode(TableMode::Schemafull)
+        .with_fields([
+            built(string_field("tenant_id").assertion("$value != ''")),
+            // Stable, unique within the tenant: what audit prints and
+            // what guards compare.
+            built(string_field("handle").assertion("$value != ''")),
+            // Reporting only. Enforcement never branches on kind,
+            // because treating agents differently from people is a
+            // policy a deployment must state, never inherit.
+            built(string_field("kind").assertion("$value INSIDE ['human', 'service', 'agent']")),
+            // The ceiling for keys issued to this principal;
+            // comma-joined, empty means every scope.
+            built(string_field("scopes").default("''")),
+            // Disabling refuses every key at once, which is the
+            // operation an incident actually needs.
+            built(datetime_field("disabled_at").nullable(true)),
+            built(
+                datetime_field("created_at")
+                    .default("time::now()")
+                    .readonly(true),
+            ),
+        ])
+        .with_indexes([unique_index(
+            "uniq_principal_handle",
+            ["tenant_id", "handle"],
+        )])
+}
+
 fn api_key_table() -> TableDefinition {
     table_schema("api_key")
         .with_mode(TableMode::Schemafull)
@@ -130,6 +164,10 @@ fn api_key_table() -> TableDefinition {
             // what every key minted before scoping existed reads as,
             // so an upgrade tightens nothing by surprise.
             built(string_field("scopes").default("''")),
+            // The principal this key belongs to, when one does. A key
+            // without one is a tenant-level credential, exactly as
+            // every key was before principals existed.
+            built(string_field("principal_id").nullable(true)),
             built(datetime_field("expires_at").nullable(true)),
             built(datetime_field("revoked_at").nullable(true)),
             built(

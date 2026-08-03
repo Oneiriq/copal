@@ -112,10 +112,13 @@ is the reason this design exists.
 ## Build order
 
 1. The `principal` table, the `principal_id` column on `api_key`, and
-   the admin surface. Nothing enforces differently yet.
+   the admin surface. Nothing enforces differently yet. **Shipped.**
 2. Authentication resolves the principal, intersects scopes, and
    fills `Principal.subject` with the handle. Audit gains the actor
    half. Guards keep working because `admin_only` reads scopes.
+   **Shipped**: minting also answers to the ceiling, refusing scopes
+   beyond the principal's rather than silently shrinking them, and
+   disabling a principal refuses every one of its keys live.
 3. The `pr` claim, and ownership expressible in compiled
    `PERMISSIONS`. The first ownership guard ships with it, which is
    `created_by` visible to its author.

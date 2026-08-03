@@ -8,6 +8,7 @@ pub mod file;
 pub mod flow;
 pub mod grant;
 pub mod multipart;
+pub mod principal;
 pub mod rate;
 pub mod s3;
 pub mod tenant;

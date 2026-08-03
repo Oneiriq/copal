@@ -62,3 +62,34 @@ jobs:
             curl -fsSL "https://github.com/rustsec/rustsec/releases/download/cargo-audit%2Fv0.22.2/cargo-audit-x86_64-unknown-linux-musl-v0.22.2.tgz"               | tar -xz --strip-components=1 -C "$HOME/.cargo/bin"
           fi
           cargo audit
+
+  sdks:
+    name: assemble + validate SDKs
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, aur0]
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "v1-copal-sdk"
+          workspaces: "sdks/dist/rust"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Assemble and validate the four SDKs
+        run: bash sdks/build.sh

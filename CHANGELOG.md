@@ -176,6 +176,18 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ### Interfaces
 
+- **The four clients package.** `sdks/` holds one skeleton per
+  language and one `VERSION`; `sdks/build.sh` assembles crate
+  `oneiriq-copal`, Python `oneiriq-copal`, npm `@oneiriq/copal`, and
+  `github.com/Oneiriq/copal-go` from the generated clients and
+  validates each (`cargo check`, `py_compile` + import, `tsc
+  --noEmit`, `go build` + `go vet`). CI runs the same script on
+  every push, and a manually dispatched publish workflow dry-runs
+  the release motion until registry tokens exist. The pipeline's
+  first run caught a real bug: the generated Python had an
+  IndentationError in every sub-collection method (janus #13),
+  because nothing had ever compiled the file.
+
 - **The agent face joined the evidence.** A curl-only MCP runner is
   the conformance harness's fourth client: handshake, generated
   manifest, a listing over the mirrored objects, and a search that

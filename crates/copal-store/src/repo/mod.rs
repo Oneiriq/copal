@@ -10,6 +10,7 @@ pub mod grant;
 pub mod multipart;
 pub mod principal;
 pub mod rate;
+pub mod rotate;
 pub mod s3;
 pub mod tenant;
 pub mod text;

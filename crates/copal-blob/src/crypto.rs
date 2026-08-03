@@ -24,7 +24,8 @@
 //! ```
 
 use aes_gcm::aead::{Aead, KeyInit, Payload};
-use aes_gcm::{Aes256Gcm, Nonce};
+pub use aes_gcm::Aes256Gcm;
+use aes_gcm::Nonce;
 use hkdf::Hkdf;
 use rand::RngCore as _;
 use sha2::Sha256;
@@ -46,26 +47,52 @@ pub const SEALED_FRAME: usize = FRAME + TAG;
 #[derive(Clone)]
 pub struct BlobCipher {
     master: [u8; 32],
+    /// The retiring master during a rotation: opens are tried under
+    /// it when the current master cannot decrypt. Nothing seals
+    /// under it.
+    previous: Option<[u8; 32]>,
+}
+
+fn parse_key(raw: &str) -> copal_core::Result<[u8; 32]> {
+    let bytes = hex::decode(raw.trim())
+        .map_err(|_| CopalError::validation("blob encryption key must be hex"))?;
+    bytes
+        .try_into()
+        .map_err(|_| CopalError::validation("blob encryption key must be 32 bytes"))
 }
 
 impl BlobCipher {
     /// Build from a 64-hex master key string.
     pub fn from_hex(raw: &str) -> copal_core::Result<Self> {
-        let bytes = hex::decode(raw.trim())
-            .map_err(|_| CopalError::validation("blob encryption key must be hex"))?;
-        let master: [u8; 32] = bytes
-            .try_into()
-            .map_err(|_| CopalError::validation("blob encryption key must be 32 bytes"))?;
-        Ok(Self { master })
+        Ok(Self {
+            master: parse_key(raw)?,
+            previous: None,
+        })
+    }
+
+    /// Attach the retiring master key for a rotation.
+    pub fn with_previous(mut self, raw: &str) -> copal_core::Result<Self> {
+        self.previous = Some(parse_key(raw)?);
+        Ok(self)
+    }
+
+    /// Whether a retiring key rides along.
+    pub fn has_previous(&self) -> bool {
+        self.previous.is_some()
     }
 
     /// The per-object cipher for a header's salt.
     pub fn object_cipher(&self, salt: &[u8; 16]) -> copal_core::Result<Aes256Gcm> {
-        let hk = Hkdf::<Sha256>::new(Some(salt), &self.master);
-        let mut key = [0u8; 32];
-        hk.expand(b"copal-blob-v1", &mut key)
-            .map_err(|e| CopalError::Blob(format!("key derivation: {e}")))?;
-        Ok(Aes256Gcm::new(&key.into()))
+        derive(&self.master, salt)
+    }
+
+    /// The per-object cipher the retiring key derives, when one rides
+    /// along.
+    pub fn previous_object_cipher(&self, salt: &[u8; 16]) -> copal_core::Result<Option<Aes256Gcm>> {
+        match &self.previous {
+            Some(master) => Ok(Some(derive(master, salt)?)),
+            None => Ok(None),
+        }
     }
 
     /// Seal a whole plaintext into the on-disk format.
@@ -95,8 +122,33 @@ impl BlobCipher {
 
     /// Open a whole sealed object (header included in `sealed`).
     pub fn open(&self, sealed: &[u8]) -> copal_core::Result<Vec<u8>> {
+        match self.open_with(sealed, false) {
+            Err(_) if self.previous.is_some() => self.open_with(sealed, true),
+            outcome => outcome,
+        }
+    }
+
+    /// Re-seal bytes the retiring key sealed: `None` when the current
+    /// key already opens them, the fresh seal when only the retiring
+    /// key does, an error when neither.
+    pub fn reseal(&self, sealed: &[u8]) -> copal_core::Result<Option<Vec<u8>>> {
+        if self.open_with(sealed, false).is_ok() {
+            return Ok(None);
+        }
+        let plaintext = self.open_with(sealed, true)?;
+        Ok(Some(self.seal(&plaintext)?))
+    }
+
+    fn open_with(&self, sealed: &[u8], retiring: bool) -> copal_core::Result<Vec<u8>> {
         let salt = parse_header(sealed)?;
-        let cipher = self.object_cipher(&salt)?;
+        let cipher = if retiring {
+            let master = self.previous.as_ref().ok_or_else(|| {
+                CopalError::Blob("object decryption failed (wrong key or tampered bytes)".into())
+            })?;
+            derive(master, &salt)?
+        } else {
+            self.object_cipher(&salt)?
+        };
         let body = &sealed[HEADER..];
         if body.is_empty() {
             return Err(CopalError::Blob("sealed object has no frames".into()));
@@ -148,6 +200,14 @@ pub fn seal_one(
     plaintext: &[u8],
 ) -> copal_core::Result<Vec<u8>> {
     seal_frame(cipher, index, last, plaintext)
+}
+
+fn derive(master: &[u8; 32], salt: &[u8; 16]) -> copal_core::Result<Aes256Gcm> {
+    let hk = Hkdf::<Sha256>::new(Some(salt), master);
+    let mut key = [0u8; 32];
+    hk.expand(b"copal-blob-v1", &mut key)
+        .map_err(|e| CopalError::Blob(format!("key derivation: {e}")))?;
+    Ok(Aes256Gcm::new(&key.into()))
 }
 
 fn nonce_bytes(index: u32, last: bool) -> [u8; 12] {
@@ -210,6 +270,13 @@ pub fn sealed_len(len: usize) -> usize {
     HEADER + len + frame_count(len) * TAG
 }
 
+/// Sealed length of the frame at `index` for a plaintext of `len`.
+/// Frame zero exists even for an empty object.
+pub fn sealed_frame_len(len: usize, index: usize) -> usize {
+    let start = index * FRAME;
+    len.saturating_sub(start).min(FRAME) + TAG
+}
+
 /// Plaintext length recovered from the on-disk length.
 pub fn plaintext_len(disk_len: usize) -> copal_core::Result<usize> {
     if disk_len < HEADER + TAG {
@@ -229,6 +296,45 @@ mod tests {
 
     fn cipher() -> BlobCipher {
         BlobCipher::from_hex(&"a".repeat(64)).unwrap()
+    }
+
+    #[test]
+    fn open_falls_back_to_the_retiring_key() {
+        let old = cipher();
+        let sealed = old.seal(b"rotate me").unwrap();
+        let new = BlobCipher::from_hex(&"b".repeat(64)).unwrap();
+        assert!(new.open(&sealed).is_err());
+        let rotated = BlobCipher::from_hex(&"b".repeat(64))
+            .unwrap()
+            .with_previous(&"a".repeat(64))
+            .unwrap();
+        assert_eq!(rotated.open(&sealed).unwrap(), b"rotate me");
+    }
+
+    #[test]
+    fn reseal_moves_bytes_to_the_current_key() {
+        let old = cipher();
+        let sealed = old.seal(b"secret").unwrap();
+        let rotated = BlobCipher::from_hex(&"b".repeat(64))
+            .unwrap()
+            .with_previous(&"a".repeat(64))
+            .unwrap();
+        let fresh = rotated.reseal(&sealed).unwrap().expect("needs re-seal");
+        let current = BlobCipher::from_hex(&"b".repeat(64)).unwrap();
+        assert_eq!(current.open(&fresh).unwrap(), b"secret");
+        assert!(rotated.reseal(&fresh).unwrap().is_none());
+        let stranger = old.seal(b"other").unwrap();
+        let unrelated = BlobCipher::from_hex(&"c".repeat(64)).unwrap();
+        assert!(unrelated.reseal(&stranger).is_err());
+    }
+
+    #[test]
+    fn sealed_frame_lengths_cover_the_edges() {
+        assert_eq!(sealed_frame_len(0, 0), TAG);
+        assert_eq!(sealed_frame_len(1, 0), 1 + TAG);
+        assert_eq!(sealed_frame_len(FRAME, 0), SEALED_FRAME);
+        assert_eq!(sealed_frame_len(FRAME + 1, 0), SEALED_FRAME);
+        assert_eq!(sealed_frame_len(FRAME + 1, 1), 1 + TAG);
     }
 
     #[test]

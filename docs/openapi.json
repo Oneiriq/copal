@@ -521,6 +521,55 @@
         "x-requires-scopes": [
           "read"
         ]
+      },
+      "post": {
+        "description": "Create the file record; bytes follow through the content upload or an upload grant.",
+        "operationId": "create_files",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "access": {
+                    "type": "string"
+                  },
+                  "content_type": {
+                    "type": "string"
+                  },
+                  "idempotency_key": {
+                    "type": "string"
+                  },
+                  "metadata": {
+                    "type": "object"
+                  },
+                  "path": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "path"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/File"
+                }
+              }
+            },
+            "description": "The resource."
+          }
+        },
+        "x-requires-scopes": [
+          "write"
+        ]
       }
     },
     "/v1/files/{id}": {
@@ -576,6 +625,65 @@
         "x-requires-scopes": [
           "read"
         ]
+      }
+    },
+    "/v1/files/{id}/content": {
+      "get": {
+        "operationId": "file_download_content",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "the bytes"
+          }
+        },
+        "summary": "Serve the content bytes, with ETag, Range, and conditional requests."
+      },
+      "put": {
+        "operationId": "file_upload_content",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "format": "binary",
+                "type": "string"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "stored"
+          }
+        },
+        "summary": "Upload the content bytes; the stored digest becomes the ETag."
       }
     },
     "/v1/files/{id}/edge-url": {

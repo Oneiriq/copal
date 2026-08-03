@@ -168,6 +168,11 @@ impl Client {
                          Ok(self.http.get(url).header("x-copal-tenant", &self.tenant)                 .send().await?.error_for_status()?.json().await?)
     }
 
+    pub async fn create_file(&self, input: Value) -> Result<File, Error> {
+        let url = format!("{}/v1/files", self.base_url);
+        Ok(self.http.post(url).header("x-copal-tenant", &self.tenant).json(&input).send().await?.error_for_status()?.json().await?)
+    }
+
     pub async fn issue_url_file(&self, id: &str, input: Value) -> Result<Value, Error> {
         let url = format!("{}/v1/files/{id}/url", self.base_url);
         Ok(self.http.post(url).header("x-copal-tenant", &self.tenant).json(&input).send().await?.error_for_status()?.json().await?)

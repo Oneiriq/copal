@@ -120,6 +120,7 @@ pub(crate) fn dispatcher<B: BlobStore + 'static>(
     let list_state = state.clone();
     let get_state = state.clone();
     let url_state = state.clone();
+    let create_state = state.clone();
     let upload_url_state = state.clone();
     let rendition_state = state.clone();
     let edge_url_state = state.clone();
@@ -199,6 +200,25 @@ pub(crate) fn dispatcher<B: BlobStore + 'static>(
                     .await
                     .map_err(to_janus_error)?;
                 Ok(record.as_ref().map(wire_file))
+            }
+        })
+        .action("files", "create", move |ctx, args| {
+            let state = create_state.clone();
+            async move {
+                let tenant = tenant_of(&ctx)?;
+                let store = store_of(&ctx, &state.store);
+                let spec: copal_core::FileSpec = serde_json::from_value(serde_json::Value::Object(
+                    args.input.clone().into_iter().collect(),
+                ))
+                .map_err(|e| JanusError::BadRequest(e.to_string()))?;
+                let actor = ctx
+                    .get::<janus::runtime::Principal>()
+                    .map(|p| p.subject.clone())
+                    .unwrap_or_else(|| "api".to_owned());
+                let created = copal_store::repo::file::create_file(&store, &tenant, &spec, &actor)
+                    .await
+                    .map_err(to_janus_error)?;
+                Ok(Some(crate::wire::wire_file(&created.record)))
             }
         })
         .action("files", "issue_url", move |ctx, args| {

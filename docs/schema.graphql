@@ -126,6 +126,7 @@ type Query {
 }
 
 type Mutation {
+  fileCreate(path: String!, contentType: String, access: String, metadata: JSON, idempotencyKey: String): File!
   fileIssueUrl(id: ID!, ttlSecs: Int, maxUses: Int): JSON!
   fileIssueUploadUrl(id: ID!, ttlSecs: Int): JSON!
   fileIssueEdgeUrl(id: ID!, ttlSecs: Int): JSON!

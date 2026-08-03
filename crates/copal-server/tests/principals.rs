@@ -222,3 +222,89 @@ async fn audit_names_the_principal() {
     assert!(trail.contains("principal.created"), "{trail}");
     assert!(trail.contains("alice"), "{trail}");
 }
+
+fn bearer_body(method: &str, uri: &str, token: &str, payload: &[u8]) -> Request<Body> {
+    Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::from(payload.to_vec()))
+        .unwrap()
+}
+
+/// The ownership loop, end to end: alice's upload records her handle,
+/// she sees her own attribution in the version listing, bob does not,
+/// and an admin sees everything. The unknown-authorship rule rides
+/// the same comparison: rows written by principal-less keys match no
+/// handle and read as nobody's.
+#[tokio::test]
+async fn attribution_shows_authors_their_own_rows() {
+    let (router, admin, _dir) = stack().await;
+    create_principal(&admin, "alice", &["read", "write"]).await;
+    create_principal(&admin, "bob", &["read", "write"]).await;
+    let alice = mint_under(&admin, Some("alice"), &["read", "write"]).await["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let bob = mint_under(&admin, Some("bob"), &["read", "write"]).await["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let operator = mint_under(&admin, None, &["read", "admin"]).await["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    // Alice creates and uploads.
+    let create = Request::builder()
+        .method("POST")
+        .uri("/v1/files")
+        .header("authorization", format!("Bearer {alice}"))
+        .header("content-type", "application/json")
+        .body(Body::from(json!({"path": "authored.txt"}).to_string()))
+        .unwrap();
+    let response = router.clone().oneshot(create).await.unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let id = json_body(response).await["id"].as_str().unwrap().to_owned();
+    let response = router
+        .clone()
+        .oneshot(bearer_body(
+            "PUT",
+            &format!("/v1/files/{id}/content"),
+            &alice,
+            b"authored by alice",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let versions_uri = format!("/v1/files/{id}/versions");
+    let fetch = |token: String| {
+        let router = router.clone();
+        let uri = versions_uri.clone();
+        async move {
+            let response = router
+                .oneshot(bearer_req("GET", &uri, &token))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            json_body(response).await["items"][0].clone()
+        }
+    };
+
+    let row = fetch(alice.clone()).await;
+    assert_eq!(
+        row["created_by"], "alice",
+        "the author sees their own: {row:#?}"
+    );
+    let row = fetch(bob.clone()).await;
+    assert!(
+        row["created_by"].is_null(),
+        "a stranger sees nobody: {row:#?}"
+    );
+    let row = fetch(operator.clone()).await;
+    assert_eq!(
+        row["created_by"], "alice",
+        "admins see everything: {row:#?}"
+    );
+}

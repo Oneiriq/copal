@@ -33,6 +33,12 @@ pub struct EngineAccess {
 fn guard_clause(guard: &str) -> Option<&'static str> {
     match guard {
         "admin_only" => Some("$token.adm = true"),
+        // Ownership at the engine: the author's principal handle
+        // rides the token as `pr`, so the second layer can say what
+        // the application guard says. Tokens without the claim (keys
+        // under no principal) fail the comparison, which is the
+        // unknown-authorship rule again.
+        "owner_or_admin" => Some("$token.adm = true OR created_by = $token.pr"),
         _ => None,
     }
 }
@@ -123,6 +129,7 @@ pub fn mint_caller_token(
     tenant: &TenantId,
     key_id: &str,
     scopes: &[String],
+    principal: Option<&str>,
 ) -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -139,6 +146,7 @@ pub fn mint_caller_token(
         "tn": tenant.as_str(),
         "adm": scopes.iter().any(|s| s == "admin"),
         "sc": scopes,
+        "pr": principal,
     });
     let header = b64(serde_json::json!({ "alg": "HS256", "typ": "JWT" })
         .to_string()
@@ -164,7 +172,13 @@ mod tests {
             database: "db".into(),
         };
         let tenant = TenantId::parse("acme").unwrap();
-        let token = mint_caller_token(&access, &tenant, "01KEY", &["read".into(), "admin".into()]);
+        let token = mint_caller_token(
+            &access,
+            &tenant,
+            "01KEY",
+            &["read".into(), "admin".into()],
+            Some("alice"),
+        );
         let payload = token.split('.').nth(1).unwrap();
         let claims: serde_json::Value = serde_json::from_slice(
             &base64::engine::general_purpose::URL_SAFE_NO_PAD

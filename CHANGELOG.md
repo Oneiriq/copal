@@ -210,6 +210,20 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ### Governance
 
+- **Ownership reaches both enforcement layers.** Field guards see
+  the row now, so `created_by` is visible to its author, to admins,
+  and to nobody else, decided per row within one listing on both
+  faces; a caller who only partially sees the column cannot filter
+  by it. The engine says the same thing: caller tokens carry the
+  principal handle as `pr`, and the compiled clause on the column is
+  `$token.adm = true OR created_by = $token.pr`. Uploads through the
+  REST body path record the actor's handle; rows written before
+  principals existed, and by principal-less keys, match no handle
+  and read as nobody's, because treating unknown authorship as
+  ownership would widen access on upgrade. Rate buckets key on the
+  principal, so an agent's spend is the agent's across every
+  credential it holds.
+
 - **Principals: named actors that keys belong to.** The first two
   slices of the design. A `principal` carries a handle, a kind, a
   scope ceiling, and a disabled switch; keys mint under one and

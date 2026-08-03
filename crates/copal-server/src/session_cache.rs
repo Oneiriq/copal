@@ -49,11 +49,15 @@ impl SessionCache {
         }
     }
 
-    /// The cache key for one minting identity. Scopes ride it because
-    /// they ride the token: the same caller with different scopes is
-    /// a different session.
-    pub fn key(tenant: &str, key_id: &str, scopes: &[String]) -> String {
-        format!("{tenant}|{key_id}|{}", scopes.join(","))
+    /// The cache key for one minting identity. Scopes and the
+    /// principal ride it because they ride the token: the same caller
+    /// with different claims is a different session.
+    pub fn key(tenant: &str, key_id: &str, scopes: &[String], principal: Option<&str>) -> String {
+        format!(
+            "{tenant}|{key_id}|{}|{}",
+            scopes.join(","),
+            principal.unwrap_or(""),
+        )
     }
 
     fn enabled(&self) -> bool {
@@ -134,13 +138,18 @@ mod tests {
     fn the_key_separates_tenants_callers_and_scopes() {
         let read = vec!["read".to_owned()];
         let both = vec!["read".to_owned(), "write".to_owned()];
-        let acme = SessionCache::key("acme", "k1", &read);
-        assert_ne!(acme, SessionCache::key("rival", "k1", &read));
-        assert_ne!(acme, SessionCache::key("acme", "k2", &read));
+        let acme = SessionCache::key("acme", "k1", &read, None);
+        assert_ne!(acme, SessionCache::key("rival", "k1", &read, None));
+        assert_ne!(acme, SessionCache::key("acme", "k2", &read, None));
         assert_ne!(
             acme,
-            SessionCache::key("acme", "k1", &both),
+            SessionCache::key("acme", "k1", &both, None),
             "a scope change must not reuse a session",
+        );
+        assert_ne!(
+            acme,
+            SessionCache::key("acme", "k1", &read, Some("alice")),
+            "a principal change must not reuse a session",
         );
     }
 

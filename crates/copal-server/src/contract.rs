@@ -16,9 +16,22 @@ use janus::{
 /// through them, and the REST handlers strip through the shared
 /// projection API.
 pub fn guards() -> janus::runtime::Guards {
-    janus::runtime::Guards::new().guard("admin_only", |ctx| {
-        ctx.get::<janus::runtime::Principal>()
-            .is_some_and(|principal| principal.has("admin"))
+    janus::runtime::Guards::new().guard("owner_or_admin", |ctx, row| {
+        let Some(principal) = ctx.get::<janus::runtime::Principal>() else {
+            return false;
+        };
+        if principal.has("admin") {
+            return true;
+        }
+        // Per row: the author sees their own attribution. Rows from
+        // before principals existed carry values that match no
+        // handle, so they read as nobody's, which is the safe
+        // default: treating unknown authorship as ownership would
+        // widen access on upgrade. Without a row (the filter and
+        // sort narrowing moment) a partial viewer answers false.
+        row.and_then(|r| r.get("created_by"))
+            .and_then(|v| v.as_str())
+            .is_some_and(|owner| owner == principal.subject)
     })
 }
 
@@ -94,7 +107,7 @@ pub fn contract() -> Contract {
                         // Version attribution is audit data: who
                         // uploaded each revision is for operators, so
                         // distribution keys list history without it.
-                        FieldExposure::column("created_by").with_guard("admin_only"),
+                        FieldExposure::column("created_by").with_guard("owner_or_admin"),
                         FieldExposure::column("created_at"),
                     ],
                     pinned: vec!["tenant_id".into()],

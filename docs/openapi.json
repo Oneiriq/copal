@@ -137,7 +137,7 @@
           },
           "created_by": {
             "type": "string",
-            "x-guard": "admin_only"
+            "x-guard": "owner_or_admin"
           },
           "digest": {
             "type": "string"

@@ -24,6 +24,11 @@ surfaced, so none of them can quietly return:
   phantom key.
 - `second_pass_noop` / `sync_noop` / `diff_empty`: mirrors converge.
 
+A fourth runner proves the agent face with nothing but curl: the
+MCP handshake, the generated manifest, a listing that sees the
+mirrored objects, and a search that finds extracted text, with an
+honest timeout failing the check if extraction never settles.
+
 Results land in `results/<version>.md` and are committed per
 release, which is what the migration guide links. The claim the
 table makes is self-verifiable: run the same command on your own

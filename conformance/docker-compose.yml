@@ -43,6 +43,7 @@ services:
     entrypoint: /bin/sh
     volumes:
       - ./runners:/runners:ro
+      - ./results:/results
 
   mc:
     image: minio/mc:latest

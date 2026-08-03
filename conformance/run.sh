@@ -89,6 +89,8 @@ run_client() {
 run_client mc
 run_client aws
 run_client rclone
+echo "== running mcp"
+compose run --rm -T     -e COPAL_TENANT="$TENANT" -e COPAL_S3_HOST="$TARGET"     curl /runners/mcp.sh || true
 
 # Client output alone cannot say whether a failure is the product or
 # the client; the server's own view of the objects is the other half.

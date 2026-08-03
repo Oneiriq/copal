@@ -14,12 +14,14 @@ machine cannot resolve the difference.
 
 | measurement | sessions off | sessions on | unit |
 | --- | --- | --- | --- |
-| ingest_64mib_ms | 414 (+55) | 420 (+43) | ms |
-| ingest_50_small_ms | 208 (+128) | 212 (+16) | ms |
-| retrieve_64mib_ms | 191 (+28) | 194 (+15) | ms |
-| retrieve_50_small_ms | 101 (+33) | 98 (+34) | ms |
-| listing_ms | 22 (+6) | 19 (+3) | ms |
-| ingest_throughput | 154 | 152 | MiB/s |
-| ingest_small_objects | 240 | 235 | objects/s |
-| retrieve_throughput | 335 | 329 | MiB/s |
-| retrieve_small_objects | 495 | 510 | objects/s |
+| ingest_64mib_ms | 378 (+8) | 380 (+25) | ms |
+| ingest_50_small_ms | 197 (+13) | 200 (+11) | ms |
+| retrieve_64mib_ms | 169 (+11) | 169 (+15) | ms |
+| retrieve_50_small_ms | 125 (+1) | 112 (+16) | ms |
+| listing_ms | 18 (+7) | 18 (+5) | ms |
+| search_ms | 3 | 2 (+1) | ms |
+| mcp_files_list_ms | 4 | 4 | ms |
+| ingest_throughput | 169 | 168 | MiB/s |
+| ingest_small_objects | 253 | 250 | objects/s |
+| retrieve_throughput | 378 | 378 | MiB/s |
+| retrieve_small_objects | 400 | 446 | objects/s |

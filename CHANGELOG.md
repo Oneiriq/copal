@@ -130,6 +130,15 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ### Interfaces
 
+- **The agent face joined the evidence.** A curl-only MCP runner is
+  the conformance harness's fourth client: handshake, generated
+  manifest, a listing over the mirrored objects, and a search that
+  finds extracted text, in the committed table beside mc, the aws
+  CLI, and rclone. The bench gained the retrieval thesis's numbers:
+  search and an MCP tool call, measured through the API face in both
+  session configurations. The newest claims now carry the same
+  runnable proof as the oldest.
+
 - **Ingestion joined the contract.** Creation was a hand-written
   REST handler no artifact documented, no differ governed, and no
   generated client or agent tool reached; the byte paths were

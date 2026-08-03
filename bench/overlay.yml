@@ -17,3 +17,9 @@ services:
 
   curl:
     profiles: [runners]
+    # The curl image runs unprivileged and cannot write the bind
+    # mount; the bench needs its samples recorded.
+    user: "0:0"
+    volumes:
+      - ../bench/runners:/bench:ro
+      - ../bench/results:/results

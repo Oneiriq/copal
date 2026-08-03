@@ -47,6 +47,9 @@ measure() {
     $COMPOSE run --rm -T \
         -e COPAL_ACCESS_KEY="$ak" -e COPAL_SECRET_KEY="$sk" -e COPAL_TENANT="$TENANT" \
         mc /bench/bench.sh
+    $COMPOSE run --rm -T \
+        -e COPAL_TENANT="$TENANT" -e COPAL_API_HOST=copal \
+        curl /bench/bench-api.sh
     mv results/bench.txt "results/sessions-$sessions.txt"
     COPAL_ENGINE_SESSIONS="$sessions" $COMPOSE down -v --remove-orphans > /dev/null 2>&1 || true
 }

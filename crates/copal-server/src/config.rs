@@ -59,6 +59,9 @@ pub struct Config {
     pub residencies: std::collections::HashMap<String, copal_blob::BackendConfig>,
     /// Permit webhook endpoints on private addresses.
     pub allow_private_webhook_targets: bool,
+    /// Whether URL ingestion may pull from private address space.
+    /// The same question webhooks answer, asked of fetch sources.
+    pub allow_private_fetch_targets: bool,
     /// `host:port` of a clamd instance. Set enables malware scanning
     /// in the upload pipeline AND stops content serving while a scan
     /// is outstanding.
@@ -180,6 +183,7 @@ impl Config {
             session_cache_size: env_parse("COPAL_SESSION_CACHE_SIZE", 256),
             persisted_operations: std::env::var("COPAL_PERSISTED_OPERATIONS").ok(),
             allow_private_webhook_targets: env_parse("COPAL_WEBHOOK_ALLOW_PRIVATE_TARGETS", false),
+            allow_private_fetch_targets: env_parse("COPAL_FETCH_ALLOW_PRIVATE_TARGETS", false),
             residencies: std::env::var("COPAL_RESIDENCIES")
                 .ok()
                 .and_then(|raw| match serde_json::from_str(&raw) {

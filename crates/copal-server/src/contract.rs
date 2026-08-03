@@ -355,6 +355,74 @@ pub fn contract() -> Contract {
                         rate_class: Some("mutations".into()),
                     },
                     Action {
+                        name: "fetch".into(),
+                        method: "POST".into(),
+                        path: "/fetch".into(),
+                        input: vec![
+                            ActionField {
+                                name: "url".into(),
+                                kind: TypeRef::String,
+                                required: true,
+                                description: Some(
+                                    "http or https source the server pulls; the outbound \
+                                     policy applies."
+                                        .into(),
+                                ),
+                            },
+                            ActionField {
+                                name: "path".into(),
+                                kind: TypeRef::String,
+                                required: true,
+                                description: Some(
+                                    "The file's path, unique among the tenant's live files."
+                                        .into(),
+                                ),
+                            },
+                            ActionField {
+                                name: "content_type".into(),
+                                kind: TypeRef::String,
+                                required: false,
+                                description: Some(
+                                    "Declared type; unset lets the source's answer stand."
+                                        .into(),
+                                ),
+                            },
+                            ActionField {
+                                name: "access".into(),
+                                kind: TypeRef::String,
+                                required: false,
+                                description: Some(
+                                    "public, private, tenant, or grant; defaults to private."
+                                        .into(),
+                                ),
+                            },
+                            ActionField {
+                                name: "metadata".into(),
+                                kind: TypeRef::Json,
+                                required: false,
+                                description: Some("Caller metadata, stored verbatim.".into()),
+                            },
+                            ActionField {
+                                name: "idempotency_key".into(),
+                                kind: TypeRef::String,
+                                required: false,
+                                description: Some(
+                                    "Replays return the original record instead of a duplicate."
+                                        .into(),
+                                ),
+                            },
+                        ],
+                        output: ActionOutput::Json,
+                        description: Some(
+                            "Ingest content from a URL the server fetches itself; the \
+                             fetched bytes walk the standard scan and finalize pipeline."
+                                .into(),
+                        ),
+                        graphql_field: None,
+                        requires: vec!["write".into()],
+                        rate_class: Some("mutations".into()),
+                    },
+                    Action {
                         name: "remove".into(),
                         method: "DELETE".into(),
                         path: "/{id}".into(),

@@ -31,6 +31,7 @@ async fn pipelined_stack_with(
         None,
         None,
         std::collections::HashMap::new(),
+        copal_server::pipeline::FetchPolicy::default(),
     );
     let state = AppState::new(store, blobs).with_flow(registry);
     let engine = state.flow.clone();

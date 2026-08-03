@@ -150,6 +150,10 @@ export class Client {
     return this.request('POST', `/v1/files/${id}/transform`, input)
   }
 
+  fetchFile(input: Record<string, unknown>): Promise<Record<string, unknown>> {
+    return this.request('POST', `/v1/files/fetch`, input)
+  }
+
   removeFile(id: string): Promise<void> {
     return this.request('DELETE', `/v1/files/${id}`)
   }

@@ -246,6 +246,20 @@ differ governing their presence. An agent's ingest loop is three
 calls: `file_create`, `file_issue_upload_url`, and an HTTP `PUT` of
 the bytes to the grant URL.
 
+When the bytes live behind a URL, one call replaces all three:
+`POST /v1/files/fetch` (`file_fetch` on the other faces) takes `url`
+and `path` plus the usual `content_type`, `access`, `metadata`, and
+`idempotency_key`, creates the record, and the server pulls the
+bytes itself. Fetched content walks the standard pipeline (sniff,
+policy, scan, extract, embed, finalize), so a fetched file is
+indistinguishable from an uploaded one by the time it serves. The
+URL is tenant-supplied, so the outbound policy applies (private
+address space refuses unless `COPAL_FETCH_ALLOW_PRIVATE_TARGETS` is
+set), the upload ceiling caps the body mid-stream, a 4xx from the
+source fails the record with the reason, and a 5xx retries on the
+flow engine's budget. When the caller declares no `content_type`,
+the source's served type stands.
+
 ## The MCP face
 
 `POST /mcp` speaks MCP over JSON-RPC 2.0 with the same bearer keys
@@ -393,6 +407,15 @@ id; the render finishes it to `ready` through the standard claim and
 complete path, so a rendition is a real file with a digest, versions,
 grants, and every serving rule intact. `GET /v1/files/{id}/renditions`
 lists them.
+
+A rendition also serves straight from its URL:
+`GET /v1/files/{id}/renditions/{kind}-{width}x{height}.{format}`. An
+existing rendition serves under its own access level, so public
+thumbnails stay anonymous and hard-cacheable. A miss derives inline
+before serving: that is a write, so it needs the write scope and the
+owning tenant, and anonymous callers get 404 for renditions nobody
+has derived. Racing first requests converge on one record through
+the path's uniqueness.
 
 Renditions live at a deterministic path,
 `{source_path}@{kind}-{w}x{h}.{format}`, and repeating a request

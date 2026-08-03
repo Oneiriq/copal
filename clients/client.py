@@ -156,6 +156,9 @@ class Client:
   def transform_file(self, id: str, body: dict[str, Any] | None = None) -> Any:
     return self._request('POST', f'/v1/files/{id}/transform', body or {})
 
+  def fetch_file(self, body: dict[str, Any] | None = None) -> Any:
+    return self._request('POST', f'/v1/files/fetch', body or {})
+
   def remove_file(self, id: str) -> None:
     return self._request('DELETE', f'/v1/files/{id}')
 

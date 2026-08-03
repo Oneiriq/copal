@@ -283,6 +283,7 @@ pub(crate) async fn conditional_refusal<B: BlobStore>(
             }
         };
         if violated {
+            crate::metrics::incr("copal_precondition_refusals_total");
             return xml_error(
                 StatusCode::PRECONDITION_FAILED,
                 "PreconditionFailed",

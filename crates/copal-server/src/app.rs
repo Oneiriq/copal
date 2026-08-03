@@ -1040,6 +1040,7 @@ async fn set_version_retention<B: BlobStore>(
     )
     .await?;
     if !applied {
+        crate::metrics::incr("copal_retention_refusals_total");
         return Err(
             CopalError::conflict("compliance retention only extends; wait for the clock").into(),
         );
@@ -1078,6 +1079,7 @@ async fn clear_version_retention<B: BlobStore>(
     let applied =
         copal_store::repo::version::clear_retention(&state.store, &tenant, &file, number).await?;
     if !applied {
+        crate::metrics::incr("copal_retention_refusals_total");
         return Err(
             CopalError::conflict("compliance retention only extends; wait for the clock").into(),
         );
@@ -2047,6 +2049,7 @@ async fn upload_content<B: BlobStore>(
                     }
                 };
                 if violated {
+                    crate::metrics::incr("copal_precondition_refusals_total");
                     return Err(CopalError::PreconditionFailed(
                         "the file's current content does not satisfy the write condition"
                             .to_owned(),
@@ -2852,6 +2855,7 @@ async fn list_tenant_events<B: BlobStore>(
     let auth =
         crate::auth::authorize_scoped(&state, &headers, crate::auth::Scope::Read, limit as u64)
             .await?;
+    crate::metrics::incr("copal_feed_reads_total");
     let ascending = match params.order.as_deref() {
         None | Some("desc") => false,
         Some("asc") => true,

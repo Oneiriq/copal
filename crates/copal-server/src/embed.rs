@@ -58,6 +58,9 @@ pub async fn backfill_pass(
             refreshed += 1;
         }
     }
+    if refreshed > 0 {
+        crate::metrics::add("copal_backfill_refreshed_total", refreshed as u64);
+    }
     Ok(refreshed)
 }
 

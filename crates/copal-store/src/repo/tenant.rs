@@ -130,6 +130,25 @@ pub async fn usage(store: &Store, tenant: &TenantId) -> copal_core::Result<(i64,
     Ok((bytes, files))
 }
 
+/// Every tenant that has stored anything, with file counts and
+/// bytes: the console's deployment view. Grouped at the engine, so
+/// the walk costs one query however many tenants exist.
+pub async fn known_tenants(store: &Store) -> copal_core::Result<Vec<Value>> {
+    let query = Query::new()
+        .select(Some(vec![
+            "tenant_id".to_owned(),
+            "count() AS files".to_owned(),
+            "math::sum(size_bytes ?? 0) AS bytes".to_owned(),
+        ]))
+        .from_table("file")
+        .map_err(|e| map_store_err("known_tenants", e))?
+        .where_str("deleted_at IS NONE")
+        .group_by(["tenant_id"]);
+    query_records(store.client(), &query)
+        .await
+        .map_err(|e| map_store_err("known_tenants", e))
+}
+
 /// The tenant's quota ceiling in bytes; `None` means unlimited.
 pub async fn get_quota(store: &Store, tenant: &TenantId) -> copal_core::Result<Option<i64>> {
     let query = Query::new()

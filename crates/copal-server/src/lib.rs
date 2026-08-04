@@ -7,6 +7,7 @@ pub mod app;
 pub mod auth;
 pub mod clamav;
 pub mod config;
+pub mod console;
 pub mod contract;
 pub mod edge;
 pub mod embed;

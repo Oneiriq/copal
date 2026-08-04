@@ -176,6 +176,16 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ### Interfaces
 
+- **The operator console, rendered from the declaration.** Janus
+  grew a console renderer (janus #15): contract-driven pages over
+  the same dispatcher every face uses. Copal mounts it at
+  `/admin/console` behind HTTP Basic with the admin token as the
+  password, adds the deployment home (tenants, audit tail), and
+  scopes each tenant's pages through an operator context, so the
+  console shows and refuses exactly what the API does. Plain HTML,
+  no JavaScript, no external assets; it works air-gapped. The
+  sixth face from one declaration.
+
 - **The contract-first REST face.** Janus grew a runtime REST
   router: the route table derives from the contract with the
   OpenAPI path formulas, and requests run the same dispatcher chain

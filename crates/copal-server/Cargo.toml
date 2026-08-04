@@ -38,7 +38,11 @@ bytes = { workspace = true }
 # this crate's repositories through Janus middleware.
 oneiriq-janus = { git = "ssh://git@github.com/Oneiriq/janus.git", branch = "main", features = [
     "graphql",
+    "console",
 ] }
+maud = "0.27"
+serde_urlencoded = "0.7"
+
 async-graphql = { version = "7", features = ["dynamic-schema"] }
 tower-http = { version = "0.6", features = ["timeout", "cors"] }
 base64 = "0.22"

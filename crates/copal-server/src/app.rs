@@ -595,6 +595,13 @@ pub fn admin_router<B: BlobStore + 'static>(state: AppState<B>) -> Router {
             "/admin/console/t/{tenant}",
             axum::routing::any(crate::console::tenant_home::<B>),
         )
+        // A trailing slash is what a browser produces from a bare
+        // base, and a wildcard route matches no empty segment, so the
+        // overview answers under both spellings.
+        .route(
+            "/admin/console/t/{tenant}/",
+            axum::routing::any(crate::console::tenant_home::<B>),
+        )
         .route(
             "/admin/console/t/{tenant}/{*rest}",
             axum::routing::any(crate::console::tenant_pages::<B>),

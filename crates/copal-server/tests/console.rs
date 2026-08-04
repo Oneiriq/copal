@@ -167,8 +167,11 @@ async fn the_tenant_console_serves_the_contract_pages() {
     assert!(html.contains("/a/issue_url"), "actions become forms");
 }
 
+/// An action whose answer is the point shows that answer. A grant is
+/// unrecoverable once the page is gone, so the console must not throw
+/// it away on a redirect.
 #[tokio::test]
-async fn a_console_form_dispatches_and_redirects() {
+async fn a_console_form_shows_what_the_action_answered() {
     let (router, _dir) = stack().await;
     let id = seed(&router).await;
 
@@ -180,18 +183,15 @@ async fn a_console_form_dispatches_and_redirects() {
         .body(Body::from("ttl_secs=60"))
         .unwrap();
     let response = router.clone().oneshot(submit).await.unwrap();
-    assert_eq!(response.status(), StatusCode::SEE_OTHER);
-    let target = response
-        .headers()
-        .get("location")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or_default()
-        .to_owned();
+    assert_eq!(response.status(), StatusCode::OK);
+    let html = text(response).await;
     assert!(
-        target.contains(&format!(
-            "/admin/console/t/acme/r/files/{id}?done=issue_url"
-        )),
-        "the redirect returns to the instance: {target}",
+        html.contains("/v1/grants/cg1."),
+        "the issued URL is on the page the operator lands on",
+    );
+    assert!(
+        html.contains(&format!("/admin/console/t/acme/r/files/{id}")),
+        "with a way back to the instance",
     );
 }
 
@@ -239,4 +239,62 @@ async fn the_fleet_view_gates_on_configuration_and_names_its_limits() {
         html.contains("needs a remote engine"),
         "an unwalkable engine is named, never faked",
     );
+}
+
+/// The link the deployment home actually emits must reach the tenant.
+/// The earlier tests requested a URL they built themselves, which is
+/// how a dead link survived them.
+#[tokio::test]
+async fn every_link_the_home_emits_resolves() {
+    let (router, _dir) = stack().await;
+    seed(&router).await;
+
+    let home = Request::builder()
+        .uri("/admin/console")
+        .header("authorization", basic())
+        .body(Body::empty())
+        .unwrap();
+    let html = text(router.clone().oneshot(home).await.unwrap()).await;
+
+    let links: Vec<String> = html
+        .split("href=\"")
+        .skip(1)
+        .filter_map(|rest| rest.split('"').next())
+        .filter(|href| href.starts_with('/'))
+        .map(str::to_owned)
+        .collect();
+    assert!(
+        links.iter().any(|href| href.contains("/t/acme")),
+        "the home links its tenants",
+    );
+
+    for href in links {
+        let request = Request::builder()
+            .uri(&href)
+            .header("authorization", basic())
+            .body(Body::empty())
+            .unwrap();
+        let status = router.clone().oneshot(request).await.unwrap().status();
+        assert!(
+            status.is_success(),
+            "the home emits {href}, which answers {status}",
+        );
+    }
+}
+
+/// A bare base with a trailing slash is what a browser makes of a
+/// link to the tenant overview, so it answers.
+#[tokio::test]
+async fn the_tenant_overview_answers_under_both_spellings() {
+    let (router, _dir) = stack().await;
+    seed(&router).await;
+    for uri in ["/admin/console/t/acme", "/admin/console/t/acme/"] {
+        let request = Request::builder()
+            .uri(uri)
+            .header("authorization", basic())
+            .body(Body::empty())
+            .unwrap();
+        let status = router.clone().oneshot(request).await.unwrap().status();
+        assert_eq!(status, StatusCode::OK, "{uri} must answer");
+    }
 }

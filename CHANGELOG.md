@@ -113,6 +113,18 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ### Safety and processing
 
+- **The sniffer knows media and columnar formats.** Audio and video
+  containers, HEIC and AVIF stills, TIFF, parquet, and the modern
+  compressors join the signature table. Formats that name themselves
+  past their opening bytes are read where they actually declare
+  themselves: RIFF says whether it is a wav, an avi, or a webp at
+  byte eight, and ISO base media declares a brand there that
+  separates video from audio from a still image inside one container
+  shape. Matroska and WebM part on a DocType that sits at no fixed
+  offset. A signature that is also ordinary prose is guarded against
+  swallowing it: text opening with `ID3` stays text unless a version
+  byte says otherwise.
+
 - **Malware scanning** through a clamd seam, with content withheld until the
   digest that was scanned matches the digest being served.
 - **The durable execution journal** (`copal-flow`) and the standard post-upload
@@ -175,6 +187,16 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
   collector that refuses to collect a resurrected blob.
 
 ### Interfaces
+
+- **A worked ffmpeg transformer.**
+  `examples/transformers/ffmpeg` carries a hundred-line service with
+  recipes for video thumbnails, audio tracks, short previews, and
+  `ffprobe` metadata, plus the wire contract stated in full. It maps
+  ffmpeg's own failures to 4xx, which is what tells Copal an input
+  was unusable rather than the service being down. The operations
+  guide gained a media and large files section: what streams, what
+  the ceilings are, why ranged reads stay fast on sealed objects, and
+  the two ceilings a deployment holding media has to raise.
 
 - **The root answers.** `GET /` was a 404, so a person who typed the
   host into a browser found a dead end and a program probing the root

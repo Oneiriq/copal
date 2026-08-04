@@ -186,6 +186,37 @@ so a drained rotation costs nothing on the read path, and the sweep
 re-seals exactly the objects whose first frame the current key fails
 to open.
 
+## Media and large files
+
+The blob plane is content-agnostic: bytes go to a content address and
+the type is metadata, so any format stores and serves without special
+handling. Uploads stream, so size costs disk rather than memory, and
+the ceiling (`COPAL_MAX_UPLOAD_BYTES`, 1 GiB by default) is enforced
+mid-stream and surfaces as 413. Past a single request there is
+resumable upload at `/v1/tus` and multipart on the S3 gateway.
+
+Ranged reads work on sealed objects without decrypting the whole
+file, because encryption frames at 64 KiB and a range touches only the
+frames covering it. That is what makes a video player scrubbing a
+large encrypted file behave: a read from deep inside a 256 MiB object
+answers in tens of milliseconds. Sealing costs a 20-byte header plus
+16 bytes per frame, which is 0.024% on a 256 MiB file.
+
+Type-specific behavior lives only in the layers above the bytes:
+
+| Layer | Covers |
+| --- | --- |
+| Sniffing | Documents, images, archives, and the common audio and video containers, including formats that name themselves past their first bytes (RIFF at byte eight, ISO base media brands at byte eight). Anything unrecognised reads as unverifiable and never blocks. |
+| Extraction | Text and JSON natively; other documents through `COPAL_EXTRACTOR_ADDR`. Media carries no transcription. |
+| Renditions | Images, to jpeg or png. |
+| Transformers | Everything else, through the seam. |
+
+Two operational notes for deployments holding media. A scanner has its
+own ceiling: clamd's `StreamMaxLength` defaults to 25 MB, so large
+files fail the scan step until that is raised to match
+`COPAL_MAX_UPLOAD_BYTES`. And media is findable by path and metadata
+rather than by content, unless a transformer produces text for it.
+
 ## Malware scanning
 
 With `COPAL_CLAMAV_ADDR` set, the upload pipeline scans content
@@ -306,6 +337,17 @@ Transformer URLs are operator configuration, the same trust class as
 guard on tenant-supplied webhook targets does not apply to them.
 `copal_transforms_total` counts derivations that landed and
 `copal_transform_refusals_total` counts refused inputs.
+
+Derived content completes straight to `ready` without walking the
+post-upload pipeline, so a transform's output is not sniffed, not
+scanned, and not extracted. Output that should be searchable has to
+be uploaded as its own file.
+
+A worked example lives in
+[`examples/transformers/ffmpeg`](../examples/transformers/ffmpeg):
+a hundred-line service wrapping ffmpeg, with recipes for video
+thumbnails, audio tracks, short previews, and `ffprobe` metadata. It
+is also the shortest complete statement of the wire contract.
 
 ## Outbound request policy
 

@@ -560,8 +560,14 @@ async fn transform_external<B: BlobStore>(
     let name = input["transformer"].as_str().unwrap_or_default().to_owned();
 
     // Replay after success: the derived file already carries content.
+    // The check reads the digest rather than a single state, because a
+    // finished transform hands its output to the post-upload pipeline
+    // and so passes through `scanning` on its way to `ready`.
     if let Some(record) = file_repo::get_file(store, &tenant, &derived).await? {
-        if record.state == FileState::Ready && record.digest.is_some() {
+        if record.digest.is_some()
+            && record.state != FileState::Draft
+            && record.state != FileState::Failed
+        {
             return Ok(json!({
                 "file": derived.as_str(),
                 "outcome": "already-transformed",
@@ -664,7 +670,12 @@ async fn transform_external<B: BlobStore>(
     )
     .await?;
     file_repo::claim_upload(store, &tenant, &derived, "transform-worker", 900).await?;
-    file_repo::complete_upload(
+    // These bytes came from another process, so they get the same
+    // scrutiny an upload gets: sniffed, checked against policy,
+    // scanned, and extracted. Extraction is the point for a
+    // transformer that produces text, since a transcript nobody
+    // indexed is a transcript nobody can find.
+    let record = file_repo::complete_upload(
         store,
         &tenant,
         &derived,
@@ -672,7 +683,24 @@ async fn transform_external<B: BlobStore>(
         &stored.digest,
         stored.size_bytes,
         "transform",
-        FileState::Ready,
+        FileState::Scanning,
+    )
+    .await?;
+    let post_input = json!({
+        "tenant": tenant.as_str(),
+        "file": derived.as_str(),
+        "residency": residency,
+        "digest": stored.digest.as_str(),
+        "declared_type": record.content_type,
+        "path": record.path,
+    });
+    copal_store::repo::flow::enqueue(
+        store,
+        &tenant,
+        UPLOAD_WORKFLOW,
+        post_input,
+        Some(&derived),
+        Some(&upload_run_key(&derived, &stored.digest)),
     )
     .await?;
     crate::metrics::incr("copal_transforms_total");

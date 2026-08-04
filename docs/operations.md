@@ -207,15 +207,15 @@ Type-specific behavior lives only in the layers above the bytes:
 | Layer | Covers |
 | --- | --- |
 | Sniffing | Documents, images, archives, and the common audio and video containers, including formats that name themselves past their first bytes (RIFF at byte eight, ISO base media brands at byte eight). Anything unrecognised reads as unverifiable and never blocks. |
-| Extraction | Text and JSON natively; other documents through `COPAL_EXTRACTOR_ADDR`. Media carries no transcription. |
+| Extraction | Text and JSON natively; other documents through `COPAL_EXTRACTOR_ADDR`. Media carries no transcription of its own, though a transformer that produces one lands searchable text. |
 | Renditions | Images, to jpeg or png. |
 | Transformers | Everything else, through the seam. |
 
-Two operational notes for deployments holding media. A scanner has its
-own ceiling: clamd's `StreamMaxLength` defaults to 25 MB, so large
+One operational note for deployments holding media: a scanner has its
+own ceiling. clamd's `StreamMaxLength` defaults to 25 MB, so large
 files fail the scan step until that is raised to match
-`COPAL_MAX_UPLOAD_BYTES`. And media is findable by path and metadata
-rather than by content, unless a transformer produces text for it.
+`COPAL_MAX_UPLOAD_BYTES`, and it now applies to derived content too,
+since that walks the pipeline as well.
 
 ## Malware scanning
 
@@ -338,10 +338,13 @@ guard on tenant-supplied webhook targets does not apply to them.
 `copal_transforms_total` counts derivations that landed and
 `copal_transform_refusals_total` counts refused inputs.
 
-Derived content completes straight to `ready` without walking the
-post-upload pipeline, so a transform's output is not sniffed, not
-scanned, and not extracted. Output that should be searchable has to
-be uploaded as its own file.
+Derived bytes came from another process, so they walk the same
+pipeline an upload does: sniffed, checked against the extension
+policy, scanned, and extracted, passing through `scanning` on the way
+to `ready`. A transformer that produces text therefore produces
+searchable text, which is what makes transcription and OCR worth
+wiring up. Image renditions are generated in process from content
+that already passed its own pipeline, so they land ready directly.
 
 A worked example lives in
 [`examples/transformers/ffmpeg`](../examples/transformers/ffmpeg):

@@ -176,6 +176,15 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ### Interfaces
 
+- **The console sees the fleet.** `COPAL_CONSOLE_FLEET=1` adds a
+  read-only walk of the shared engine's sibling namespaces to the
+  deployment home: databases, tables, and row counts per namespace,
+  through self-addressing compound queries on a private connection
+  that never touches copal's own session. Table and namespace names
+  are shape-checked before any query includes them, counts refuse
+  quietly rather than guess, and an embedded engine names its lack
+  of siblings instead of faking an answer.
+
 - **copalctl.** The service from a terminal: files (create, upload,
   download, list, remove), search, status, and the admin surface
   (tenant population, audit tail with cursor resume, key custody).

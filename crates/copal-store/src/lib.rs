@@ -9,6 +9,7 @@
 //! call that applies generated DDL.
 
 mod dto;
+pub mod fleet;
 pub mod repo;
 pub mod schema;
 mod store;

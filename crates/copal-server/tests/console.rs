@@ -194,3 +194,49 @@ async fn a_console_form_dispatches_and_redirects() {
         "the redirect returns to the instance: {target}",
     );
 }
+
+#[tokio::test]
+async fn the_fleet_view_gates_on_configuration_and_names_its_limits() {
+    // Off by default: no fleet section at all.
+    let (router, _dir) = stack().await;
+    let home = Request::builder()
+        .uri("/admin/console")
+        .header("authorization", basic())
+        .body(Body::empty())
+        .unwrap();
+    let response = router.clone().oneshot(home).await.unwrap();
+    let html = text(response).await;
+    assert!(
+        !html.contains(">fleet<"),
+        "no fleet section unless configured"
+    );
+
+    // Configured against an embedded engine, the walk refuses with
+    // its reason instead of pretending.
+    let store = Store::connect(StoreConfig::memory()).await.unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let blobs = ObjectStore::open(dir.path().to_str().unwrap()).unwrap();
+    let state = AppState::new(store, blobs)
+        .with_auth(AuthConfig {
+            mode: AuthMode::ApiKeys,
+            admin_token: Some(ADMIN.into()),
+            admin_token_previous: None,
+        })
+        .with_fleet(Some(StoreConfig::memory()));
+    let router = build_router(state);
+    let home = Request::builder()
+        .uri("/admin/console")
+        .header("authorization", basic())
+        .body(Body::empty())
+        .unwrap();
+    let response = router.clone().oneshot(home).await.unwrap();
+    let html = text(response).await;
+    assert!(
+        html.contains(">fleet<"),
+        "the section renders when configured"
+    );
+    assert!(
+        html.contains("needs a remote engine"),
+        "an unwalkable engine is named, never faked",
+    );
+}

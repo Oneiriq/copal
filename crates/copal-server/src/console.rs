@@ -135,6 +135,14 @@ pub async fn home<B: BlobStore>(State(state): State<AppState<B>>, headers: Heade
     let audit = copal_store::repo::auth::export_audit_page(&state.store, None, 25, None)
         .await
         .unwrap_or_default();
+    let fleet = match &state.fleet {
+        Some(cfg) => Some(
+            copal_store::fleet::overview(cfg, 12)
+                .await
+                .map_err(|e| e.to_string()),
+        ),
+        None => None,
+    };
     let body = html! {
         h1 { "deployment" }
         h2 { "tenants" }
@@ -153,6 +161,37 @@ pub async fn home<B: BlobStore>(State(state): State<AppState<B>>, headers: Heade
                         td { (row.get("bytes").and_then(|v| v.as_i64()).unwrap_or(0)) }
                     }
                 }
+            }
+        }
+        @if let Some(fleet) = &fleet {
+            h2 { "fleet" }
+            @match fleet {
+                Ok(namespaces) => {
+                    @for ns in namespaces {
+                        h2.dim { "ns " (ns.name) }
+                        @for db in &ns.databases {
+                            table {
+                                thead {
+                                    tr { th { (ns.name) "/" (db.name) } th { "rows" } }
+                                }
+                                tbody {
+                                    @for table in &db.tables {
+                                        tr {
+                                            td { (table.name) }
+                                            td {
+                                                @match table.rows {
+                                                    Some(rows) => (rows),
+                                                    None => span.dim { "·" },
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(reason) => { p.dim { (reason) } }
             }
         }
         h2 { "audit tail" }

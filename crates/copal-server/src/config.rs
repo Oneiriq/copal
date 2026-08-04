@@ -62,6 +62,11 @@ pub struct Config {
     /// Whether URL ingestion may pull from private address space.
     /// The same question webhooks answer, asked of fetch sources.
     pub allow_private_fetch_targets: bool,
+    /// Whether the console shows the fleet view: sibling namespaces
+    /// on the shared engine, read-only. Off by default because root
+    /// reach over the engine is a deployment property the operator
+    /// asserts, never one copal assumes.
+    pub console_fleet: bool,
     /// `host:port` of a clamd instance. Set enables malware scanning
     /// in the upload pipeline AND stops content serving while a scan
     /// is outstanding.
@@ -184,6 +189,7 @@ impl Config {
             persisted_operations: std::env::var("COPAL_PERSISTED_OPERATIONS").ok(),
             allow_private_webhook_targets: env_parse("COPAL_WEBHOOK_ALLOW_PRIVATE_TARGETS", false),
             allow_private_fetch_targets: env_parse("COPAL_FETCH_ALLOW_PRIVATE_TARGETS", false),
+            console_fleet: env_parse("COPAL_CONSOLE_FLEET", false),
             residencies: std::env::var("COPAL_RESIDENCIES")
                 .ok()
                 .and_then(|raw| match serde_json::from_str(&raw) {

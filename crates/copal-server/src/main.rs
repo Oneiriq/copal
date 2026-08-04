@@ -122,6 +122,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_residencies(residencies.named.clone())
         .with_scan_gate(config.clamav_addr.is_some())
         .with_transformers(config.transformers.clone())
+        .with_fleet(config.console_fleet.then(|| config.store.clone()))
         .with_cipher(match &config.blob_encryption_key {
             Some(key) => {
                 let cipher = copal_blob::crypto::BlobCipher::from_hex(key)?;

@@ -155,6 +155,9 @@ pub struct AppState<B: BlobStore> {
     /// Named external transformers, by name; the transform action
     /// validates against this map before enqueueing.
     pub transformers: std::collections::HashMap<String, crate::config::TransformerConfig>,
+    /// Store configuration for the console's fleet walk; present only
+    /// when the operator turned the fleet view on.
+    pub fleet: Option<copal_store::StoreConfig>,
     /// The master cipher, when one is configured. Sealed secrets (S3
     /// credentials, webhook signing keys, edge keys) open under it,
     /// and the surfaces that mint them exist only when it does.
@@ -188,6 +191,7 @@ impl<B: BlobStore> AppState<B> {
             scan_gates_serving: false,
             embedding: None,
             transformers: std::collections::HashMap::new(),
+            fleet: None,
             cipher: None,
             rate_store: std::sync::Arc::new(janus::runtime::MemoryRateStore::new()),
             persisted_operations: None,
@@ -278,6 +282,11 @@ impl<B: BlobStore> AppState<B> {
     }
 
     /// Install a populated activity/workflow registry.
+    pub fn with_fleet(mut self, fleet: Option<copal_store::StoreConfig>) -> Self {
+        self.fleet = fleet;
+        self
+    }
+
     pub fn with_transformers(
         mut self,
         transformers: std::collections::HashMap<String, crate::config::TransformerConfig>,

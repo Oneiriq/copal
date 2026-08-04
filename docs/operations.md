@@ -15,6 +15,7 @@ Every value comes from the environment. Defaults target local development.
 | `COPAL_BLOB_ROOT` | `./data/blobs` | Filesystem blob store root. |
 | `COPAL_BLOB_ENCRYPTION_KEY` | unset | 64-hex master key enabling encryption at rest. New objects seal (chunked AES-256-GCM, per-object derived keys); existing plaintext objects keep serving. Digests stay plaintext digests, so addressing and dedupe are unchanged. |
 | `COPAL_BLOB_ENCRYPTION_KEY_PREVIOUS` | unset | The retiring master key during a rotation. Reads fall back to it while the re-seal sweep moves objects and sealed secrets under the current key; nothing seals under it. Unset it once `copal_resealed_total` goes quiet. See the rotation section. |
+| `COPAL_CONSOLE_FLEET` | `false` | Console fleet view: sibling namespaces on the shared engine, read-only (namespaces, databases, tables, row counts). Needs a remote engine and credentials with root reach; the walk refuses on an embedded engine and says so. |
 | `COPAL_OTLP_ENDPOINT` | unset | OTLP trace collector (http/protobuf), e.g. `http://otel-collector:4318/v1/traces`. Unset, spans feed the logs and nothing leaves the process. See the traces section. |
 | `COPAL_FETCH_ALLOW_PRIVATE_TARGETS` | `false` | Whether `POST /v1/files/fetch` may pull from private address space. Tenant-supplied URLs refuse private targets by default, the same policy webhook targets follow. |
 | `COPAL_TRANSFORMERS` | unset | JSON map of named external transformers, e.g. `{"ocr": {"url": "http://ocr:9000/run", "timeout_secs": 120, "secret": "...", "max_source_bytes": 33554432}}`. See the external transformers section. |
@@ -494,7 +495,14 @@ configured, and because it rides the admin router, a split
 `COPAL_ADMIN_BIND` keeps it off the tenant-facing network.
 
 The deployment home lists every tenant with files and bytes, and
-tails the audit trail. Each tenant links into the contract pages:
+tails the audit trail. With `COPAL_CONSOLE_FLEET=1` it also walks
+the shared engine's other namespaces, read-only: one SurrealDB
+server carrying several services shows each sibling's databases,
+tables, and row counts on the same page, every query a
+self-addressing compound on a private connection, so copal's own
+session is never touched. The walk needs a remote engine; embedded
+tiers have no siblings and the section says so instead of
+pretending. Each tenant links into the contract pages:
 the same declaration that renders the OpenAPI document, the GraphQL
 schema, and the MCP manifest renders the console's listings, detail
 pages, action forms, and query panels, and every read and submitted

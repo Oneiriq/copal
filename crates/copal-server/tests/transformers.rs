@@ -198,6 +198,30 @@ async fn transform_derives_through_the_external_service() {
         assert_eq!(guard.body, b"hello transformer");
     }
 
+    // Derived bytes came from another process, so they walk the same
+    // pipeline an upload does: the text the transformer produced is
+    // extracted, which is what makes it findable.
+    let text = req("GET", &format!("/v1/files/{derived}/text"), Body::empty());
+    let response = router.clone().oneshot(text).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK, "derived text extracts");
+    assert_eq!(
+        json_body(response).await["text"],
+        json!("HELLO TRANSFORMER"),
+        "what the transformer produced is what got indexed",
+    );
+
+    let found = req("GET", "/v1/search?q=TRANSFORMER&limit=5", Body::empty());
+    let response = router.clone().oneshot(found).await.unwrap();
+    let hits = json_body(response).await;
+    assert!(
+        hits["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|hit| hit["file"] == json!(derived)),
+        "a transformer's output is searchable: {hits}",
+    );
+
     // The derivation lists beside renditions, and repeating the
     // request returns the existing record.
     let list = req("GET", &format!("/v1/files/{id}/renditions"), Body::empty());

@@ -128,11 +128,19 @@ async fn clean_upload_scans_then_serves_with_annotations() {
 async fn blocked_extension_quarantines_and_refuses_everything() {
     let (router, engine, _dir) = pipelined_stack().await;
 
+    // A real Windows binary, structurally: the DOS stub says at byte
+    // 0x3c where the PE header sits, and the header names itself
+    // there. Two opening letters alone are ordinary prose.
+    let mut binary = vec![0u8; 0x88];
+    binary[..2].copy_from_slice(b"MZ");
+    binary[0x3c..0x40].copy_from_slice(&0x80u32.to_le_bytes());
+    binary[0x80..0x84].copy_from_slice(b"PE\x00\x00");
+
     let (id, record) = create_and_upload(
         &router,
         "tools/installer.exe",
         "application/octet-stream",
-        b"MZ\x90\x00fake binary",
+        &binary,
     )
     .await;
     assert_eq!(record["state"], "scanning");

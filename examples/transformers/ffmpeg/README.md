@@ -87,16 +87,21 @@ The answer decides what happens next:
 `transform.py` maps ffmpeg's own failures to 422 for exactly this
 reason: a file ffmpeg cannot open is not an outage.
 
-## What this does not do
+## What happens to the output
 
-Derived content completes straight to `ready` without walking the
-post-upload pipeline, so a transform's output is not sniffed, not
-scanned, and **not extracted**. A transcript or an OCR pass produced
-this way is stored and served, and it does not become searchable
-text. Feeding derived text back into retrieval means uploading it as
-its own file today.
+Derived bytes arrived from another process, so they walk the same
+pipeline an upload does: sniffed, checked against the extension
+policy, scanned when a scanner is configured, and extracted. The
+derived record passes through `scanning` on its way to `ready`.
 
-Large sources are read into a temporary file before ffmpeg sees it,
+Extraction is why that matters. The `/probe` recipe's JSON becomes
+searchable text, so `GET /v1/search?q=h264` finds the videos whose
+metadata says so. A transformer that produces a transcript or an OCR
+pass makes that text findable the same way, with no second upload.
+
+## Sizing
+
+Large sources are read into a temporary file before ffmpeg sees them,
 because ffmpeg seeks and a pipe cannot. Size the transformer's disk
 for the largest source you expect, and raise `TRANSFORM_MAX_BYTES`
 (default 512 MiB) to match.

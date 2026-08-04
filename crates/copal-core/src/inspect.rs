@@ -42,6 +42,21 @@ const fn sig2(
     }
 }
 
+/// Whether this is a Windows executable, structurally rather than by
+/// its opening letters. A DOS binary carrying no PE header reads as
+/// unverifiable instead, which blocks nothing; the extension policy
+/// still refuses the name.
+fn looks_like_pe(prefix: &[u8]) -> bool {
+    if !at(prefix, 0, b"MZ") {
+        return false;
+    }
+    let Some(field) = prefix.get(0x3c..0x40) else {
+        return false;
+    };
+    let start = u32::from_le_bytes([field[0], field[1], field[2], field[3]]) as usize;
+    at(prefix, start, b"PE\x00\x00")
+}
+
 fn at(prefix: &[u8], offset: usize, magic: &[u8]) -> bool {
     prefix.len() >= offset + magic.len() && &prefix[offset..offset + magic.len()] == magic
 }
@@ -89,7 +104,6 @@ pub fn sniff_content_type(prefix: &[u8]) -> Option<&'static str> {
         sig(0, b"\xfd7zXZ\x00", "application/x-xz"),
         sig(0, b"7z\xbc\xaf\x27\x1c", "application/x-7z-compressed"),
         sig(0, b"\x7fELF", "application/x-executable"),
-        sig(0, b"MZ", "application/x-msdownload"),
         sig(0, b"{", "application/json"),
         sig(0, b"[", "application/json"),
     ];
@@ -111,6 +125,13 @@ pub fn sniff_content_type(prefix: &[u8]) -> Option<&'static str> {
         } else {
             "video/x-matroska"
         });
+    }
+    // "MZ" is two ordinary letters, so a document opening with them
+    // would read as an executable and, with type matching enforced,
+    // be quarantined for it. A real Windows binary says at byte 0x3c
+    // where its PE header begins, and that header names itself.
+    if looks_like_pe(prefix) {
+        return Some("application/x-msdownload");
     }
     // An ID3 tag carries a major version byte that prose starting with
     // the same three letters will not.
@@ -184,7 +205,7 @@ mod tests {
             Some("image/png")
         );
         assert_eq!(
-            sniff_content_type(b"MZ\x90\x00"),
+            sniff_content_type(&pe_header()),
             Some("application/x-msdownload")
         );
         assert_eq!(sniff_content_type(b"plain words here"), Some("text/plain"));
@@ -277,6 +298,37 @@ mod tests {
         assert_eq!(sniff_content_type(b"\x1a\x45"), None);
         assert_eq!(sniff_content_type(b"ID"), Some("text/plain"));
         assert_eq!(sniff_content_type(b""), None);
+    }
+
+    /// A Windows executable, structurally: the stub says at byte 0x3c
+    /// where the PE header begins, and the header names itself there.
+    fn pe_header() -> Vec<u8> {
+        let mut bytes = vec![0u8; 0x88];
+        bytes[..2].copy_from_slice(b"MZ");
+        bytes[0x3c..0x40].copy_from_slice(&0x80u32.to_le_bytes());
+        bytes[0x80..0x84].copy_from_slice(b"PE\x00\x00");
+        bytes
+    }
+
+    /// Two ordinary letters are not an executable. A memo opening with
+    /// them was read as one, and with type matching enforced that is a
+    /// quarantined document.
+    #[test]
+    fn prose_opening_with_mz_is_not_an_executable() {
+        assert_eq!(
+            sniff_content_type(b"MZ said the machine, and the room went quiet."),
+            Some("text/plain"),
+        );
+        assert_eq!(
+            sniff_content_type(&pe_header()),
+            Some("application/x-msdownload")
+        );
+
+        // A stub pointing past what was read cannot be confirmed, so it
+        // reads as unverifiable, which blocks nothing.
+        let mut unverifiable = pe_header();
+        unverifiable[0x3c..0x40].copy_from_slice(&0xffff_0000u32.to_le_bytes());
+        assert_eq!(sniff_content_type(&unverifiable), None);
     }
 
     #[test]

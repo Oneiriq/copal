@@ -113,6 +113,24 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ### Safety and processing
 
+- **Derived content walks the pipeline.** A transform's output
+  completed straight to `ready`, so bytes that arrived from an
+  external service were never sniffed, never scanned, and never
+  extracted. They now pass through `scanning` and the same
+  post-upload run an upload gets, which is what makes a
+  transformer's text findable: the ffmpeg example's `ffprobe` JSON
+  went from zero search hits to answering `q=h264`. Image renditions
+  still land ready directly, since they are generated in process
+  from content that already passed its own pipeline.
+- **An executable is recognised by its structure.** `MZ` is two
+  ordinary letters, so a document opening with them was read as a
+  Windows binary, and with `COPAL_ENFORCE_TYPE_MATCH` set that
+  quarantined it. A real binary says at byte `0x3c` where its PE
+  header begins and that header names itself, so the sniffer checks
+  there. A DOS-era binary carrying no PE header now reads as
+  unverifiable, which blocks nothing; the extension policy still
+  refuses the name.
+
 - **The sniffer knows media and columnar formats.** Audio and video
   containers, HEIC and AVIF stills, TIFF, parquet, and the modern
   compressors join the signature table. Formats that name themselves

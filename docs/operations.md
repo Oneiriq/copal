@@ -483,6 +483,27 @@ and every change writes an audit event carrying it. A held or
 retained version keeps its bytes through file deletion; soft delete
 still hides the file, because hiding is not erasing.
 
+## The console
+
+`/admin/console` on the admin surface is the operator console.
+Browsers cannot send `x-copal-admin-token`, so the console
+authenticates with HTTP Basic: any username, the admin token as the
+password, compared in constant time with the previous token honored
+during a rotation. It exists only when an admin token is
+configured, and because it rides the admin router, a split
+`COPAL_ADMIN_BIND` keeps it off the tenant-facing network.
+
+The deployment home lists every tenant with files and bytes, and
+tails the audit trail. Each tenant links into the contract pages:
+the same declaration that renders the OpenAPI document, the GraphQL
+schema, and the MCP manifest renders the console's listings, detail
+pages, action forms, and query panels, and every read and submitted
+form runs the dispatcher chain the API faces use, so the console
+shows and refuses exactly what an all-scoped caller of that tenant
+would see. The pages are plain HTML with no JavaScript and no
+external assets; the console works air-gapped and over the plainest
+tunnel.
+
 ## Audit export
 
 The audit trail leaves the deployment through one admin endpoint,

@@ -580,6 +580,15 @@ pub fn api_router<B: BlobStore + 'static>(state: AppState<B>) -> Router {
 /// separate bind, [`build_router`] merges it into the main router.
 pub fn admin_router<B: BlobStore + 'static>(state: AppState<B>) -> Router {
     Router::new()
+        .route("/admin/console", get(crate::console::home::<B>))
+        .route(
+            "/admin/console/t/{tenant}",
+            axum::routing::any(crate::console::tenant_home::<B>),
+        )
+        .route(
+            "/admin/console/t/{tenant}/{*rest}",
+            axum::routing::any(crate::console::tenant_pages::<B>),
+        )
         .route(
             "/v1/admin/tenants/{tenant}/keys",
             post(mint_key::<B>).get(list_keys::<B>),

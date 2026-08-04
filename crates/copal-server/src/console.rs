@@ -154,7 +154,7 @@ pub async fn home<B: BlobStore>(State(state): State<AppState<B>>, headers: Heade
                     tr {
                         td {
                             @if let Some(id) = row.get("tenant_id").and_then(|v| v.as_str()) {
-                                a href=(format!("/admin/console/t/{id}/")) { (id) }
+                                a href=(format!("/admin/console/t/{id}")) { (id) }
                             }
                         }
                         td { (row.get("files").and_then(|v| v.as_i64()).unwrap_or(0)) }
@@ -283,6 +283,7 @@ fn page(title: &str, content: Markup) -> Response {
                 meta charset="utf-8";
                 meta name="viewport" content="width=device-width, initial-scale=1";
                 title { (title) " · copal" }
+                link rel="icon" href="data:,";
                 style { (PreEscaped(STYLE)) }
             }
             body {

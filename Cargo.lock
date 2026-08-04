@@ -3555,7 +3555,7 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 [[package]]
 name = "oneiriq-janus"
 version = "0.1.0"
-source = "git+ssh://git@github.com/Oneiriq/janus.git?branch=main#411b4ed4f9cc1ba51019a91ea4c3e68a10d1c4da"
+source = "git+ssh://git@github.com/Oneiriq/janus.git?branch=main#0009905ff6fcce0ef1702e91e57ae8bc50778df7"
 dependencies = [
  "async-graphql",
  "futures-core",

@@ -536,6 +536,12 @@ copalctl admin keys acme mint --name ci
 `GET /v1/admin/tenants` joined the admin surface for the population
 view; the console's deployment home reads the same query.
 
+`copalctl top` is the deployment live: one screen with the figure
+strip (tenants, files, bytes), the tenant population, and the audit
+tail, polled on an interval (`--interval`, default 5s), `q` to
+leave. Rendering is a pure function over a snapshot, which is what
+the golden tests draw.
+
 ## Audit export
 
 The audit trail leaves the deployment through one admin endpoint,

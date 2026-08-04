@@ -176,6 +176,19 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ### Interfaces
 
+- **The service is drawn, and it runs from a README paste.** The
+  architecture doc gained the two-clock framing (a contract compiles
+  at build time, the faces converge on one dispatcher at run time)
+  with diagrams for both, an updated crate table, and the three
+  deployment topologies. A new sequences doc traces upload, the
+  pipeline, an agent through MCP, signed URLs, the console, key
+  rotation, and the contract gate. Twelve diagrams, every one parsed
+  by the mermaid CLI. The README now carries a local run that needs
+  no database and no container, written from a session that ran it.
+  That session also found and fixed a defect: `copalctl status`
+  called `/healthz` refused because the endpoint answers a bare `ok`
+  and the CLI demanded JSON.
+
 - **`copalctl top`.** The deployment live in a terminal: figure
   strip, tenant population, audit tail, polled through the admin
   surface. Rendering is pure over a snapshot, so the golden tests

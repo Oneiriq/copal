@@ -7,4 +7,13 @@ ignore = [
     # RSA decryption oracle) does not exist here. Re-evaluate whenever
     # surrealdb or jsonwebtoken move off the unfixed crate.
     "RUSTSEC-2023-0071",
+    # RUSTSEC-2026-0235 (rkyv: out-of-bounds reads validating archives
+    # holding Rc/Arc) is fixed in 0.8.17, which rust_decimal 1.42.1
+    # cannot take; surrealdb-core pins that release. The crate reaches
+    # the lockfile through rust_decimal's OPTIONAL `rkyv` feature,
+    # which nothing in this graph turns on: `cargo tree -i rkyv`
+    # prints nothing, so the vulnerable code is never compiled here.
+    # Copal deserializes no rkyv archive on any path. Re-evaluate
+    # whenever surrealdb moves to a rust_decimal built on rkyv 0.8.
+    "RUSTSEC-2026-0235",
 ]

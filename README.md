@@ -21,6 +21,67 @@ records, the API guide, the processing model, and the operations reference.
 Generated artifacts (`docs/openapi.json`, `docs/schema.graphql`,
 `clients/*`) are drift-gated by test against the contract.
 
+## Run it
+
+The default build carries the metadata engine, so a local instance needs
+no database, no container, and no configuration file.
+
+```sh
+cargo build -p copal-server -p copal-cli
+
+COPAL_BIND=127.0.0.1:8099 \
+COPAL_AUTH_MODE=keys \
+COPAL_ADMIN_TOKEN=local-admin-token \
+COPAL_DB_URL="surrealkv://./data/local/db" \
+COPAL_BLOB_ROOT=./data/local/blobs \
+COPAL_BLOB_ENCRYPTION_KEY=$(printf 'a%.0s' {1..64}) \
+  ./target/debug/copal-server
+```
+
+It reconciles the schema on a fresh database and listens. Mint a key,
+store something, read it back:
+
+```sh
+export COPAL_URL=http://127.0.0.1:8099 COPAL_ADMIN_TOKEN=local-admin-token
+
+TOKEN=$(curl -s -X POST $COPAL_URL/v1/admin/tenants/acme/keys \
+  -H "x-copal-admin-token: $COPAL_ADMIN_TOKEN" \
+  -H 'content-type: application/json' \
+  -d '{"name":"local","scopes":["read","write"]}' | jq -r .token)
+
+ID=$(curl -s -X POST $COPAL_URL/v1/files \
+  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"path":"runbooks/rotation.txt","content_type":"text/plain"}' | jq -r .id)
+
+curl -s -X PUT $COPAL_URL/v1/files/$ID/content \
+  -H "authorization: Bearer $TOKEN" --data-binary @some-file.txt
+
+curl -s $COPAL_URL/v1/files/$ID/content -H "authorization: Bearer $TOKEN"
+```
+
+The upload lands in `scanning` and the pipeline finalizes it to `ready`
+within a second, extracting text on the way, which is what makes
+`/v1/search?q=...` answer. The bytes on disk open with the `CPE1` magic
+because a key was configured; the plaintext never reaches the filesystem.
+
+Every other face is already serving the same content:
+
+```sh
+curl -s $COPAL_URL/v1c/files -H "authorization: Bearer $TOKEN"        # generated REST
+curl -s -X POST $COPAL_URL/graphql -H "authorization: Bearer $TOKEN" \
+  -H 'content-type: application/json' \
+  -d '{"query":"{ files(limit: 3) { items { id path state } } }"}'    # GraphQL
+curl -s -X POST $COPAL_URL/mcp -H "authorization: Bearer $TOKEN" \
+  -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'     # MCP manifest
+
+COPAL_TOKEN=$TOKEN ./target/debug/copalctl files list                 # the terminal
+COPAL_TOKEN=$TOKEN ./target/debug/copalctl top                        # the live view
+```
+
+The console is at `http://127.0.0.1:8099/admin/console`; log in with any
+username and the admin token as the password.
+
 ## Layout
 
 | Crate | Role |
@@ -30,7 +91,8 @@ Generated artifacts (`docs/openapi.json`, `docs/schema.graphql`,
 | `copal-blob` | Blob plane: content-addressed storage behind one port, OpenDAL backends. |
 | `copal-sign` | Capability tokens for grants and API keys. Hashes in the store, secrets never. |
 | `copal-flow` | Durable workflow execution over the journal. |
-| `copal-server` | Axum HTTP layer: both API faces, sweeps, the worker loop. |
+| `copal-server` | Axum HTTP layer: every face (REST, generated REST, GraphQL, MCP, S3, console, admin), sweeps, the worker loop. |
+| `copal-cli` | `copalctl` and the `copalctl top` live view. |
 
 ## Development
 
@@ -39,6 +101,9 @@ docker compose up -d          # SurrealDB v3 with the files capability
 cargo test                    # unit + mem:// round-trip tests, no server needed
 cargo run -p copal-server     # COPAL_DB_URL=ws://127.0.0.1:8000 by default
 ```
+
+The container is for the server-backed topology. The embedded tier above
+needs none of it.
 
 The whole service integration-tests against an in-memory SurrealDB engine.
 No containers are involved in the test suite.

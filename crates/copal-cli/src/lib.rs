@@ -130,6 +130,21 @@ impl Api {
         Ok(response.bytes().await?.to_vec())
     }
 
+    /// GET an endpoint that answers text rather than JSON. `/healthz`
+    /// answers a bare `ok`, which is not a JSON document.
+    pub async fn get_text(&self, path: &str) -> anyhow::Result<String> {
+        let response = self
+            .identified(self.http.get(format!("{}{path}", self.base)))
+            .send()
+            .await?;
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        if !status.is_success() {
+            bail!("{status}: {body}");
+        }
+        Ok(body)
+    }
+
     /// GET a JSON endpoint under the admin surface.
     pub async fn admin_get(&self, path: &str, query: &[(&str, String)]) -> anyhow::Result<Value> {
         let request = self

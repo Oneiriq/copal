@@ -147,7 +147,7 @@ async fn main() -> anyhow::Result<()> {
 async fn run(api: &Api, command: Command) -> anyhow::Result<Value> {
     match command {
         Command::Status => {
-            let healthz = api.get("/healthz", &[]).await;
+            let healthz = api.get_text("/healthz").await;
             let readyz = api.get("/readyz", &[]).await;
             Ok(json!({
                 "base": api.base,

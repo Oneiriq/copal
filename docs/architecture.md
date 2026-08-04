@@ -1,52 +1,177 @@
 # Architecture
 
-Copal is a self-hosted file service. Metadata, search, access control, and the
-processing journal live in one SurrealDB database. File bytes live behind a
-content-addressed blob port. One contract object drives every API surface.
+Copal is a self-hosted file service. Metadata, search, access control, the
+processing journal, and the audit trail live in one SurrealDB database. File
+bytes live behind a content-addressed blob port. One contract declaration
+drives every surface a caller can reach.
 
-## Planes
+Sequence-level walkthroughs live in [sequences.md](sequences.md).
+
+## Two clocks
+
+Copal runs on two clocks, and most of its design follows from keeping them
+in step.
+
+At **build time** one contract declaration compiles into the documents and
+clients that describe the service, validated against the database schema
+that backs it. At **run time** the faces callers reach converge on one
+dispatcher that enforces the same declaration. A surface cannot drift from
+the contract because no surface is written twice.
+
+### Build time: the contract compiles
+
+The contract names tables and columns. Validation resolves it against the
+real `surql-rs` schema definitions, including index coverage for every
+filter and sort claim, so a query that would become a table scan fails the
+build rather than production.
+
+```mermaid
+flowchart TB
+    contract["Contract declaration<br/>copal-server/src/contract.rs"]
+    schema["Schema as code<br/>copal-store/src/schema/"]
+    validate{"janus validate<br/>columns exist<br/>indexes cover every claim"}
+
+    contract --> validate
+    schema --> validate
+
+    validate --> openapi["docs/openapi.json"]
+    validate --> sdl["docs/schema.graphql"]
+    validate --> manifest["docs/mcp-tools.json"]
+    validate --> clients["clients/<br/>rust, typescript, python, go"]
+    validate --> guards["engine PERMISSIONS<br/>copal-server/src/engine.rs"]
+    clients --> sdks["sdks/build.sh<br/>four installable packages"]
+
+    validate -.->|"drift fails the test"| gate(["cargo test"])
+```
+
+Checked-in artifacts are compared byte for byte by
+`crates/copal-server/tests/contract.rs`; `COPAL_BLESS=1` re-blesses them as
+a deliberate step. The engine's `PERMISSIONS` are compiled from the same
+declaration, so the database enforces tenancy even for a caller holding a
+session directly.
+
+### Run time: the faces converge
+
+Four faces render from the contract at run time and dispatch through one
+chain: the generated REST face, GraphQL, the MCP tool surface, and the
+operator console. The hand-written REST face and the S3 gateway carry
+protocol-specific semantics (byte streaming, 201 and 202 shapes, SigV4) and
+reach the repositories directly, under the same authentication and the same
+engine policy.
 
 ```mermaid
 flowchart LR
-    subgraph clients [Clients]
-        rest[REST client]
-        gql[GraphQL client]
-        cdn[CDN or proxy]
+    subgraph callers [Callers]
+        app[Applications]
+        agent[Agents]
+        tools[S3 tools]
+        browser[Operator browser]
+        term["copalctl and top"]
     end
 
     subgraph server [copal-server]
-        api[API handlers]
-        janus[Janus runtime dispatcher]
-        sweeps[Maintenance sweeps]
-        worker[Flow worker]
+        rest["REST /v1"]
+        s3["S3 gateway"]
+        admin["Admin surface"]
+        restc["REST /v1c"]
+        gql["GraphQL and SSE"]
+        mcp["MCP /mcp"]
+        console["Console /admin/console"]
+        disp{{"Janus dispatcher<br/>scopes, validation,<br/>rate classes, row guards"}}
+        worker["Flow worker"]
+        sweeps["Sweeps, rotation, backfill"]
     end
 
-    subgraph planes [Data planes]
-        store[(SurrealDB metadata plane)]
-        blob[(Content-addressed blob plane)]
+    subgraph planes [Planes]
+        store[("SurrealDB<br/>metadata, journal, audit")]
+        blob[("Blob store<br/>content-addressed")]
     end
 
-    rest --> api
-    gql --> janus
-    cdn --> api
-    api --> store
-    api --> blob
-    janus --> store
-    janus --> blob
-    sweeps --> store
-    sweeps --> blob
+    app --> rest
+    app --> gql
+    agent --> mcp
+    tools --> s3
+    browser --> console
+    term --> rest
+    term --> admin
+
+    restc --> disp
+    gql --> disp
+    mcp --> disp
+    console --> disp
+
+    disp --> store
+    rest --> store
+    rest --> blob
+    s3 --> store
+    s3 --> blob
+    admin --> store
     worker --> store
     worker --> blob
+    sweeps --> store
+    sweeps --> blob
 ```
+
+## Crates
 
 | Crate | Role |
 | --- | --- |
 | `copal-core` | Domain types: ids, digests, the file state machine, content sniffing. Pure, no IO. |
-| `copal-store` | Metadata plane. Schema as code through `surql-rs`, repositories as free functions, every state change a guarded compare-and-swap. |
-| `copal-blob` | Blob plane. Content-addressed storage behind one port, OpenDAL backends, staging-then-rename writes. |
-| `copal-sign` | Capability tokens: grant tokens (`cg1`) and tenant API keys (`ck1`). The store holds hashes only. |
+| `copal-store` | Metadata plane. Schema as code through `surql-rs`, repositories as free functions, every state change a guarded compare-and-swap. Carries the fleet walk. |
+| `copal-blob` | Blob plane. Content-addressed storage behind one port, OpenDAL backends (filesystem, S3, GCS, Azure), staging-then-rename writes, encryption at rest with key rotation. |
+| `copal-sign` | Capability tokens: grant tokens (`cg1`), edge tokens (`cg2`), tenant API keys (`ck1`). The store holds hashes only. |
 | `copal-flow` | Durable execution: journaled workflow runs over the same database. |
-| `copal-server` | The HTTP layer: REST handlers, the Janus-served GraphQL endpoint, sweeps, the worker loop. |
+| `copal-server` | Every face: REST, the generated REST twin, GraphQL, MCP, the S3 gateway, the console, the admin surface, plus sweeps and the worker loop. |
+| `copal-cli` | `copalctl` and its live view, `copalctl top`. |
+
+Two libraries come from outside the workspace. `oneiriq-janus` holds the
+contract IR, the generators, the differ, and the runtime that dispatches
+GraphQL, REST, MCP, and console requests. `oneiriq-surql` holds the
+SurrealDB client, the schema-as-code builders, and the reconciliation that
+brings a database up to the code's definitions at boot.
+
+## Deployment topologies
+
+The same binary serves all three. Which one a deployment runs is a matter
+of configuration.
+
+```mermaid
+flowchart TB
+    subgraph embedded ["Embedded: one process, no database to operate"]
+        e1["copal-server<br/>COPAL_DB_URL=surrealkv://./data/db"]
+        e2[("./data/db")]
+        e3[("./data/blobs")]
+        e1 --- e2
+        e1 --- e3
+    end
+
+    subgraph standard ["Standard: one instance, external planes"]
+        s1[copal-server]
+        s2[("SurrealDB")]
+        s3[("S3, GCS, Azure, or filesystem")]
+        s1 --- s2
+        s1 --- s3
+    end
+
+    subgraph pair ["Two instances: round-robin, no sticky sessions"]
+        p0[nginx]
+        p1[copal-server]
+        p2[copal-server]
+        p3[("SurrealDB")]
+        p4[("shared blob root")]
+        p0 --- p1
+        p0 --- p2
+        p1 --- p3
+        p2 --- p3
+        p1 --- p4
+        p2 --- p4
+    end
+```
+
+The embedded tier is single-process by nature, so the two-instance topology
+stays on a `ws://` engine. Moving up is pointing a SurrealDB server at the
+same surrealkv directory. Leases, claims, and every compare-and-swap resolve
+in the engine, which is why round-robin needs no sticky sessions.
 
 ## The file state machine
 

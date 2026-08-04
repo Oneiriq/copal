@@ -8,7 +8,8 @@ clients, and the breaking-change gate.
 
 | Document | Covers |
 | --- | --- |
-| [architecture.md](architecture.md) | The planes, the file state machine, decision records, the self-healing inventory. |
+| [architecture.md](architecture.md) | The two clocks (contract compiles, faces converge), the crates, deployment topologies, the file state machine, decision records. |
+| [sequences.md](sequences.md) | Upload, the pipeline, an agent through MCP, signed URLs, the console, key rotation, the contract gate. |
 | [api.md](api.md) | Authentication, routes, access levels, serving behavior, grants, runs, GraphQL, errors. |
 | [processing.md](processing.md) | The journal model, the standard upload pipeline, failure and retry, writing workflows. |
 | [operations.md](operations.md) | Configuration reference, key custody, sweeps, runbooks, deployment security posture. |

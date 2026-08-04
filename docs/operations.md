@@ -504,6 +504,30 @@ would see. The pages are plain HTML with no JavaScript and no
 external assets; the console works air-gapped and over the plainest
 tunnel.
 
+## copalctl
+
+`copalctl` (the `copal-cli` crate) is the service from a terminal.
+Identity comes from the environment: `COPAL_URL`, then
+`COPAL_TOKEN` (a minted key) or `COPAL_TENANT` (dev-mode header
+identity), and `COPAL_ADMIN_TOKEN` for the admin commands. Output
+is JSON, always, so the terminal composes with jq the way the API
+composes with programs.
+
+```
+copalctl status
+copalctl files create docs/spec.pdf --content-type application/pdf
+copalctl files upload <id> ./spec.pdf
+copalctl files list --state ready
+copalctl files download <id> -o ./spec.pdf
+copalctl search "signing key rotation" --limit 5
+copalctl admin tenants
+copalctl admin audit --limit 100
+copalctl admin keys acme mint --name ci
+```
+
+`GET /v1/admin/tenants` joined the admin surface for the population
+view; the console's deployment home reads the same query.
+
 ## Audit export
 
 The audit trail leaves the deployment through one admin endpoint,

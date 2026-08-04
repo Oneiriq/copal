@@ -1,0 +1,28 @@
+[package]
+name = "copal-cli"
+version = "0.1.0"
+edition = "2021"
+description = "copalctl: the Copal service from a terminal."
+license = "AGPL-3.0-only"
+
+[[bin]]
+name = "copalctl"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+reqwest = { version = "0.12", default-features = false, features = [
+    "rustls-tls",
+    "json",
+    "stream",
+] }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+copal-server = { path = "../copal-server" }
+copal-store = { path = "../copal-store" }
+copal-blob = { path = "../copal-blob" }
+tempfile = "3"
+axum = "0.8"

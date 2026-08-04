@@ -7,6 +7,7 @@ members = [
     "crates/copal-sign",
     "crates/copal-flow",
     "crates/copal-server",
+    "crates/copal-cli",
 ]
 
 [workspace.package]

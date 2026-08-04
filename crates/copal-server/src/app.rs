@@ -607,6 +607,7 @@ pub fn admin_router<B: BlobStore + 'static>(state: AppState<B>) -> Router {
         )
         .route("/v1/admin/tenants/{tenant}/audit", get(list_audit::<B>))
         .route("/v1/admin/audit/export", get(export_audit::<B>))
+        .route("/v1/admin/tenants", get(list_tenants::<B>))
         .route(
             "/v1/admin/tenants/{tenant}/retention",
             put(set_retention_policy::<B>)
@@ -1614,6 +1615,17 @@ async fn list_audit<B: BlobStore>(
     let limit = params.limit.unwrap_or(200).clamp(1, 1_000);
     let events = copal_store::repo::auth::list_audit(&state.store, &tenant, limit).await?;
     Ok(Json(json!({ "items": events })))
+}
+
+/// Every tenant that has stored anything, with files and bytes:
+/// the deployment's population in one grouped query.
+async fn list_tenants<B: BlobStore>(
+    State(state): State<AppState<B>>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    crate::auth::require_admin(&state, &headers)?;
+    let items = copal_store::repo::tenant::known_tenants(&state.store).await?;
+    Ok(Json(json!({ "items": items })))
 }
 
 /// The deployment audit trail as NDJSON, ascending, keyset-cursored:

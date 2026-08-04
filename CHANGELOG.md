@@ -176,6 +176,14 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ### Interfaces
 
+- **copalctl.** The service from a terminal: files (create, upload,
+  download, list, remove), search, status, and the admin surface
+  (tenant population, audit tail with cursor resume, key custody).
+  One thin HTTP layer with one identity story (bearer or dev-mode
+  tenant header), JSON out, proven by a live-listener roundtrip
+  test. `GET /v1/admin/tenants` joined the admin surface for the
+  population view the console and the CLI share.
+
 - **The operator console, rendered from the declaration.** Janus
   grew a console renderer (janus #15): contract-driven pages over
   the same dispatcher every face uses. Copal mounts it at

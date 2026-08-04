@@ -8,6 +8,8 @@
 //! goes through one [`Api`] with one authentication story, and the
 //! CLI converges on the SDK when the generated client catches up.
 
+pub mod top;
+
 use anyhow::{bail, Context as _};
 use serde_json::Value;
 

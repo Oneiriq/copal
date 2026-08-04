@@ -176,6 +176,12 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ### Interfaces
 
+- **`copalctl top`.** The deployment live in a terminal: figure
+  strip, tenant population, audit tail, polled through the admin
+  surface. Rendering is pure over a snapshot, so the golden tests
+  draw real frames into a test backend with no terminal in CI, the
+  same discipline the house TUI work established.
+
 - **The console sees the fleet.** `COPAL_CONSOLE_FLEET=1` adds a
   read-only walk of the shared engine's sibling namespaces to the
   deployment home: databases, tables, and row counts per namespace,

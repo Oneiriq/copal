@@ -44,6 +44,12 @@ enum Command {
         #[arg(long)]
         content_type: Option<String>,
     },
+    /// The deployment live in the terminal; needs COPAL_ADMIN_TOKEN.
+    Top {
+        /// Seconds between polls.
+        #[arg(long, default_value_t = 5)]
+        interval: u64,
+    },
     /// The admin surface; needs COPAL_ADMIN_TOKEN.
     Admin {
         #[command(subcommand)]
@@ -167,6 +173,10 @@ async fn run(api: &Api, command: Command) -> anyhow::Result<Value> {
                 query.push(("content_type", content_type));
             }
             api.get("/v1/search", &query).await
+        }
+        Command::Top { interval } => {
+            copal_cli::top::run(api, interval.max(1)).await?;
+            Ok(Value::Null)
         }
         Command::Admin { command } => admin(api, command).await,
     }

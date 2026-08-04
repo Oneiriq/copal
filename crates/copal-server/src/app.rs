@@ -531,6 +531,7 @@ pub fn api_router<B: BlobStore + 'static>(state: AppState<B>) -> Router {
         .with_state(state.clone());
 
     Router::new()
+        .route("/", get(index::<B>))
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz::<B>))
         .route("/v1/files", post(create_file::<B>).get(list_files::<B>))
@@ -1324,6 +1325,90 @@ async fn get_storage<B: BlobStore>(
 
 async fn healthz() -> &'static str {
     "ok"
+}
+
+/// The root: what this service is and where its surfaces are.
+///
+/// A person who types the host into a browser deserves better than a
+/// 404, and a program that probes the root deserves a document rather
+/// than prose. Both get the same list, in the shape they asked for.
+/// Nothing here is secret: every path named already announces itself
+/// by answering, and the console appears only when a token exists to
+/// guard it.
+async fn index<B: BlobStore>(State(state): State<AppState<B>>, headers: HeaderMap) -> Response {
+    use axum::response::IntoResponse as _;
+
+    let mut surfaces = vec![
+        ("liveness", "/healthz"),
+        ("readiness", "/readyz"),
+        ("rest", "/v1/files"),
+        ("rest (from the contract)", "/v1c/files"),
+        ("graphql", "/graphql"),
+        ("mcp", "/mcp"),
+        ("search", "/v1/search"),
+    ];
+    if state.auth.admin_token.is_some() {
+        surfaces.push(("console", "/admin/console"));
+    }
+
+    let wants_html = headers
+        .get(axum::http::header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|accept| accept.contains("text/html"));
+
+    if !wants_html {
+        let listed: serde_json::Map<String, serde_json::Value> = surfaces
+            .iter()
+            .map(|(name, path)| ((*name).to_owned(), json!(path)))
+            .collect();
+        return Json(json!({
+            "service": "copal",
+            "version": env!("CARGO_PKG_VERSION"),
+            "surfaces": listed,
+        }))
+        .into_response();
+    }
+
+    let page = maud::html! {
+        (maud::DOCTYPE)
+        html lang="en" {
+            head {
+                meta charset="utf-8";
+                meta name="viewport" content="width=device-width, initial-scale=1";
+                title { "copal" }
+                style {
+                    (maud::PreEscaped(
+                        "body{margin:0;padding:3rem 1.5rem;background:#101014;\
+                         color:#d6d6dc;font:15px/1.6 ui-monospace,Menlo,monospace}\
+                         main{max-width:34rem;margin:0 auto}\
+                         h1{font-size:1.2rem;margin:0 0 .25rem;color:#f2f2f6}\
+                         p{color:#7d838c;margin:0 0 2rem}\
+                         ul{list-style:none;padding:0;margin:0}\
+                         li{display:flex;gap:1rem;padding:.45rem 0;\
+                         border-bottom:1px solid #26262e}\
+                         span{color:#7d838c;min-width:12rem}\
+                         a{color:#8fb8ff;text-decoration:none}\
+                         a:hover{text-decoration:underline}"
+                    ))
+                }
+            }
+            body {
+                main {
+                    h1 { "copal " (env!("CARGO_PKG_VERSION")) }
+                    p { "A self-hosted file service. These surfaces answer here." }
+                    ul {
+                        @for (name, path) in &surfaces {
+                            li {
+                                span { (name) }
+                                a href=(path) { (path) }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    };
+    axum::response::Html(page.into_string()).into_response()
 }
 
 /// Readiness: both planes must answer. Liveness stays `/healthz`.

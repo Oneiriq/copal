@@ -176,6 +176,13 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ### Interfaces
 
+- **The root answers.** `GET /` was a 404, so a person who typed the
+  host into a browser found a dead end and a program probing the root
+  learned nothing. It now names the service, its version, and the
+  surfaces that answer there, as a page for a browser and a document
+  for anything else. The console appears in the list only when an
+  admin token exists to guard it.
+
 - **The service is drawn, and it runs from a README paste.** The
   architecture doc gained the two-clock framing (a contract compiles
   at build time, the faces converge on one dispatcher at run time)

@@ -16,6 +16,14 @@ the same wire mapper. The generated artifacts are the reference documents:
 This guide covers what the generated documents cannot: authentication, the
 byte routes, error shapes, and the behaviors shared across faces.
 
+## The root
+
+`GET /` names the service, its version, and the surfaces that answer
+on this listener. A request asking for `text/html` gets a page with
+links; anything else gets a JSON document. The console is listed only
+when an admin token is configured, because without one it does not
+exist.
+
 ## Authentication
 
 Two modes, selected by `COPAL_AUTH_MODE`.

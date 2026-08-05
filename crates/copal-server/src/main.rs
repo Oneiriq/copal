@@ -8,7 +8,29 @@ use copal_store::Store;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     init_tracing(std::env::var("COPAL_OTLP_ENDPOINT").ok().as_deref());
 
-    let config = Config::from_env();
+    let mut config = Config::from_env();
+    // Custody answers before any store opens, because every backend
+    // below takes its key from the resolved configuration.
+    if let Some(addr) = config.kms_addr.clone() {
+        let material =
+            copal_server::kms::fetch(&addr, &config.kms_key_id, config.kms_token.as_deref())
+                .await?;
+        if config.blob_encryption_key.is_some() {
+            tracing::warn!(
+                "COPAL_BLOB_ENCRYPTION_KEY is set and ignored: key custody at \
+                 COPAL_KMS_ADDR is the authority",
+            );
+        }
+        tracing::info!(
+            addr = %addr,
+            key = %config.kms_key_id,
+            rotating = material.previous.is_some(),
+            "master key taken from custody",
+        );
+        config.blob_encryption_key = Some(material.current);
+        config.blob_encryption_key_previous = material.previous;
+    }
+    let config = config;
     tracing::info!(bind = %config.bind, db = %config.store.url, "starting copal");
 
     let engine_access =

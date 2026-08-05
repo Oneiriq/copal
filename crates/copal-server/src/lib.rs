@@ -15,6 +15,7 @@ pub mod engine;
 pub mod error;
 pub mod extract;
 pub mod graphql;
+pub mod kms;
 pub mod mcp;
 pub mod metrics;
 pub mod netguard;

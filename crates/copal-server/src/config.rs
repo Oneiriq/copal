@@ -34,6 +34,15 @@ pub struct Config {
     /// it while the re-seal sweep moves everything under the current
     /// key; nothing seals under it. Unset it once the sweep drains.
     pub blob_encryption_key_previous: Option<String>,
+    /// External key custody. Set, the master key is fetched from here
+    /// at boot and never read from the environment; a deployment that
+    /// cannot reach custody refuses to start rather than come up
+    /// unable to open its own content.
+    pub kms_addr: Option<String>,
+    /// Which key custody should hand over.
+    pub kms_key_id: String,
+    /// Bearer token presented to custody, when it wants one.
+    pub kms_token: Option<String>,
     /// Upload body ceiling in bytes.
     pub max_upload_bytes: usize,
     /// Upload claim lease TTL; expired claims are stealable and reaped.
@@ -153,6 +162,9 @@ impl Config {
                 })
                 .unwrap_or_default(),
             blob_encryption_key_previous: std::env::var("COPAL_BLOB_ENCRYPTION_KEY_PREVIOUS").ok(),
+            kms_addr: std::env::var("COPAL_KMS_ADDR").ok(),
+            kms_key_id: env_or("COPAL_KMS_KEY_ID", "blob"),
+            kms_token: std::env::var("COPAL_KMS_TOKEN").ok(),
             max_upload_bytes: env_parse("COPAL_MAX_UPLOAD_BYTES", 1 << 30),
             upload_lease_secs: env_parse("COPAL_UPLOAD_LEASE_SECS", 900),
             blocked_extensions: std::env::var("COPAL_BLOCKED_EXTENSIONS").ok(),

@@ -408,6 +408,18 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ### Deployment
 
+- **The master key can live in custody.** `COPAL_KMS_ADDR` points at
+  a key manager, and the key that decides whether stored bytes can be
+  read is fetched at boot rather than read from the environment,
+  where it otherwise sits in shell history and in anything that
+  inspects a running container. The contract is one request
+  answering both halves of a rotation at once, so a short adapter
+  fronts Vault, AWS KMS, or an HSM; a runnable reference ships in
+  `examples/kms`. A deployment configured for custody that cannot
+  reach it refuses to start and never falls back to the environment,
+  because coming up unable to open its own content, or on a key
+  someone believed retired, are both worse than not coming up.
+
 - **CI stops queueing behind itself.** Every merge triggered a full
   rebuild of a tree the pull request had just proved, and with a
   single runner that duplicate blocked the next pull request: an

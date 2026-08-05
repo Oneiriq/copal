@@ -108,6 +108,21 @@ needs none of it.
 The whole service integration-tests against an in-memory SurrealDB engine.
 No containers are involved in the test suite.
 
+### Continuous integration
+
+CI runs on pull requests, on a daily schedule, and on demand. A merge
+does not trigger its own build: it would re-verify a tree the pull
+request already proved, and on one runner that duplicate is what the
+next pull request waits behind. The scheduled run carries what a
+merge build was actually worth, which is a signal for drift that
+arrives without a commit (a new advisory has reddened this branch
+that way) and a warm default-branch cache for pull requests to
+restore.
+
+The two jobs are independent, so runner capacity is the only thing
+between them and running at once. `deploy/add-runner.sh` registers
+another runner on the host, one per parallel job wanted.
+
 ## Security posture
 
 Development defaults are open on purpose. Before exposing a deployment, read

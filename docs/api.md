@@ -523,6 +523,32 @@ so a search that does not want counts does not pay for them. An
 unsupported field is a `400` naming the fields that work, because an
 empty list would read as "nothing matched".
 
+### Reranking
+
+Retrieval decides which passages carry the query's words or sit near
+its vector. Neither reads a passage against the question. A reranker
+does, one pair at a time, which is why it runs over a shortlist.
+
+With `COPAL_RERANK_ADDR` set (see
+[operations.md](operations.md) and
+[examples/rerank](../examples/rerank/README.md)), search hands the top
+`COPAL_RERANK_DEPTH` fused candidates to the service and orders them
+by what comes back. The response says how far it reached:
+
+```json
+{"mode": "hybrid", "reranked": 50, "items": [...]}
+```
+
+`reranked` is absent when no service is configured. Whatever sits
+below the depth keeps its fused order, so a deep page reads as a
+reranked head followed by a fused remainder, and no document is lost
+either way.
+
+A reranker improves an answer that already exists, so losing one costs
+relevance and leaves the search standing. An unreachable or refusing
+service logs a warning naming the cause and reports `reranked: 0`.
+Semantic retrieval degrades to lexical on the same reasoning.
+
 Search is tenant-scoped in the query itself rather than filtered
 afterward, empty terms refuse, a re-upload replaces what matches, and
 deleting a file removes it from the index so results never name

@@ -90,6 +90,17 @@ pub struct Config {
     pub embedding_addr: Option<String>,
     pub embedding_model: String,
     pub embedding_dimension: u32,
+    /// Reranking service, which reads each shortlisted passage
+    /// against the query instead of scoring it by term statistics or
+    /// vector distance. Absent means search ranks by fusion alone.
+    /// The model and token are what individual services ask for.
+    pub rerank_addr: Option<String>,
+    pub rerank_model: Option<String>,
+    pub rerank_token: Option<String>,
+    /// How many fused candidates to hand the reranker. Reading pairs
+    /// with a model costs per pair, so this bounds the work rather
+    /// than the corpus.
+    pub rerank_depth: usize,
     /// Cosine-distance ceiling for a semantic match.
     pub max_semantic_distance: f64,
     /// Seconds one subscription may stay open before the server ends
@@ -190,6 +201,10 @@ impl Config {
             }),
             clamav_addr: std::env::var("COPAL_CLAMAV_ADDR").ok(),
             extractor_addr: std::env::var("COPAL_EXTRACTOR_ADDR").ok(),
+            rerank_addr: std::env::var("COPAL_RERANK_ADDR").ok(),
+            rerank_model: std::env::var("COPAL_RERANK_MODEL").ok(),
+            rerank_token: std::env::var("COPAL_RERANK_TOKEN").ok(),
+            rerank_depth: env_parse("COPAL_RERANK_DEPTH", 50usize).clamp(1, 200),
             embedding_addr: std::env::var("COPAL_EMBEDDING_ADDR").ok(),
             embedding_model: env_or("COPAL_EMBEDDING_MODEL", "nomic-embed-text"),
             embedding_dimension: env_parse("COPAL_EMBEDDING_DIMENSION", 768),

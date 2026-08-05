@@ -19,6 +19,9 @@ Every value comes from the environment. Defaults target local development.
 | `COPAL_CONSOLE_FLEET` | `false` | Console fleet view: sibling namespaces on the shared engine, read-only (namespaces, databases, tables, row counts). Needs a remote engine and credentials with root reach; the walk refuses on an embedded engine and says so. |
 | `COPAL_OTLP_ENDPOINT` | unset | OTLP trace collector (http/protobuf), e.g. `http://otel-collector:4318/v1/traces`. Unset, spans feed the logs and nothing leaves the process. See the traces section. |
 | `COPAL_FETCH_ALLOW_PRIVATE_TARGETS` | `false` | Whether `POST /v1/files/fetch` may pull from private address space. Tenant-supplied URLs refuse private targets by default, the same policy webhook targets follow. |
+| `COPAL_KMS_ADDR` | unset | External key custody. Set, the blob master key is fetched from here at boot and never read from the environment, and a deployment that cannot reach custody refuses to start. See key custody. |
+| `COPAL_KMS_KEY_ID` | `blob` | Which key custody should hand over. |
+| `COPAL_KMS_TOKEN` | unset | Bearer token presented to custody. |
 | `COPAL_TRANSFORMERS` | unset | JSON map of named external transformers, e.g. `{"ocr": {"url": "http://ocr:9000/run", "timeout_secs": 120, "secret": "...", "max_source_bytes": 33554432}}`. See the external transformers section. |
 | `COPAL_MAX_UPLOAD_BYTES` | `1073741824` | Upload ceiling, enforced in-stream (413 past it). |
 | `COPAL_UPLOAD_LEASE_SECS` | `900` | Upload claim lease. Expired claims are stealable and reaped. |
@@ -153,13 +156,44 @@ and unsetting the previous once callers have moved. Audit rows
 are immutable inside the engine; an UPDATE or DELETE against one aborts in
 SurrealDB itself.
 
+## Key custody
+
+`COPAL_BLOB_ENCRYPTION_KEY` puts the key that decides whether stored
+bytes can be read at all into the process environment, where it sits
+in shell history, in a compose file, and in whatever inspects a
+running container. Point `COPAL_KMS_ADDR` at a key manager and the
+key is fetched at boot instead, held in memory for the process
+lifetime, and absent from the environment entirely.
+
+The contract is one request, so a short adapter serves it:
+
+```
+GET {addr}/keys/{key_id}
+Authorization: Bearer {token}
+-> 200 {"current": "<64 hex>", "previous": "<64 hex>" | null}
+```
+
+Both keys arrive together because a rotation is a state, and reading
+them one at a time can show a half that never existed. A runnable
+reference, plus the twenty lines that reach Vault, AWS KMS, or an
+HSM, lives in [`examples/kms`](../examples/kms).
+
+A deployment configured for custody that cannot reach it does not
+start, and does not fall back to the environment even when
+`COPAL_BLOB_ENCRYPTION_KEY` is set: coming up unable to open its own
+content, or on a key an operator thought they had retired, are both
+worse than not coming up. An answer that is not a key is refused at
+the same point, where the cause is plain.
+
 ## Master key rotation
 
 `COPAL_BLOB_ENCRYPTION_KEY` retires in three motions, with reads
 correct throughout.
 
 1. Set the new key as `COPAL_BLOB_ENCRYPTION_KEY` and move the old
-   one to `COPAL_BLOB_ENCRYPTION_KEY_PREVIOUS`, then restart. New
+   one to `COPAL_BLOB_ENCRYPTION_KEY_PREVIOUS`, then restart. Under
+   key custody the same motion happens there, and Copal reads both
+   halves from the one answer. New
    writes seal under the new key; reads probe the current key first
    and fall back to the retiring one, so nothing sealed earlier goes
    dark.

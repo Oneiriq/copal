@@ -9,6 +9,20 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ## [Unreleased]
 
+### Deployment
+
+- **Debug builds carry line tables instead of full symbols.** The
+  workspace links surrealdb into every test binary, and on Windows
+  each gets its own PDB that Cargo never collects when it goes stale.
+  A week of builds left 856 of them holding 457 GB, most of a 790 GB
+  target directory on a disk at 99%. Measured after the change, over
+  one full build of every test binary: 145 MB per PDB against 535 MB,
+  and 26.7 GB of target in total. Accumulation is slower rather than
+  ended, so a periodic `cargo clean` is still the remedy. Panic
+  backtraces still name a file, a line, and the symbols around them,
+  which is what failures are read with; stepping through the code in
+  a native debugger is what this gives up.
+
 ### Retrieval
 
 - **The generated SDKs can call search.** Janus carried contract

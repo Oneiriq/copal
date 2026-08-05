@@ -10,13 +10,12 @@ external transformer seam, rendition URLs and URL ingestion, and the
 GCS and Azure backends all shipped and left this file. What follows
 came out of reading the service against what the market offers.
 
-1. **Retrieval depth.** Search finds documents and ranks them once.
-   A second pass over the top results, facet counts on the fields
-   listings already filter by, and match highlighting are what
-   separates a search box from a search product. Related: a chunk
-   inherits its file's access level, so a passage cannot be readable
-   under rules its file is not. That is correct and coarse; per-chunk
-   authorization is the finer version.
+1. **Per-chunk authorization.** A chunk inherits its file's access
+   level, so a passage cannot be readable under rules its file is
+   not. That is correct, and coarse: a document with one sensitive
+   passage is all-or-nothing. Per-chunk authorization is the finer
+   version, and it is the last of the retrieval-depth work; match
+   highlighting, facet counts, and the reranking seam all shipped.
 
 2. **Scale evidence above 256 MiB.** The largest object measured is
    256 MiB, in the encryption overhead figures in

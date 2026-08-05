@@ -152,6 +152,10 @@ pub struct AppState<B: BlobStore> {
     /// Embedding service address and model, when semantic retrieval
     /// is configured.
     pub embedding: Option<(String, String)>,
+    /// Reranking service: address, optional model, optional token, and
+    /// how many fused candidates it sees. Absent means search ranks by
+    /// fusion alone.
+    pub reranker: Option<crate::rerank::Reranker>,
     /// Named external transformers, by name; the transform action
     /// validates against this map before enqueueing.
     pub transformers: std::collections::HashMap<String, crate::config::TransformerConfig>,
@@ -190,6 +194,7 @@ impl<B: BlobStore> AppState<B> {
             auth: crate::auth::AuthConfig::default(),
             scan_gates_serving: false,
             embedding: None,
+            reranker: None,
             transformers: std::collections::HashMap::new(),
             fleet: None,
             cipher: None,
@@ -239,6 +244,12 @@ impl<B: BlobStore> AppState<B> {
     }
 
     /// Install the embedding service semantic search asks.
+    /// Point search at a reranking service.
+    pub fn with_reranker(mut self, reranker: Option<crate::rerank::Reranker>) -> Self {
+        self.reranker = reranker;
+        self
+    }
+
     pub fn with_embedding(mut self, embedding: Option<(String, String)>) -> Self {
         self.embedding = embedding;
         self
@@ -802,11 +813,58 @@ pub(crate) async fn search_core<B: BlobStore>(
     };
     let lexical_ids = rank(&lexical);
     let semantic_ids = rank(&semantic);
-    let ordered = match mode {
+    let mut ordered = match mode {
         "lexical" => lexical_ids,
         "semantic" => semantic_ids,
         _ => crate::embed::reciprocal_rank_fusion(&[lexical_ids, semantic_ids], 60.0),
     };
+
+    // Reranking, when a service is configured. Retrieval decides which
+    // passages contain the words or sit near the vector; neither reads
+    // a passage against the question. This does, over the head of the
+    // ranking, because reading pairs with a model costs per pair.
+    //
+    // The tail below `depth` keeps its fused order. A search deeper
+    // than the reranker saw is then a reranked head followed by a
+    // fused remainder, which is coherent to page through, and the
+    // response says how far the reranking reached.
+    let mut reranked = None;
+    if let Some(reranker) = &state.reranker {
+        let head = ordered.len().min(reranker.depth);
+        let documents: Vec<String> = ordered[..head]
+            .iter()
+            .filter_map(|id| bodies.get(id).map(|(_, body)| body.clone()))
+            .collect();
+        if documents.len() == head && head > 1 {
+            match crate::rerank::rerank(
+                &reranker.addr,
+                reranker.model.as_deref(),
+                reranker.token.as_deref(),
+                q,
+                &documents,
+            )
+            .await
+            {
+                Ok(order) => {
+                    let head_ids: Vec<String> =
+                        order.into_iter().map(|i| ordered[i].clone()).collect();
+                    ordered = head_ids
+                        .into_iter()
+                        .chain(ordered[head..].to_vec())
+                        .collect();
+                    reranked = Some(head);
+                }
+                // A reranker is an improvement on an answer that
+                // already exists, so losing it costs relevance rather
+                // than the search. Semantic retrieval degrades to
+                // lexical the same way.
+                Err(error) => {
+                    tracing::warn!(%error, "reranking failed; ranking by fusion alone");
+                    reranked = Some(0);
+                }
+            }
+        }
+    }
 
     let page: Vec<_> = ordered
         .iter()
@@ -839,6 +897,13 @@ pub(crate) async fn search_core<B: BlobStore>(
     };
 
     let mut response = json!({ "mode": mode, "items": page, "next_cursor": next_cursor });
+    // How far the reranking reached, so a caller can tell a reranked
+    // head from a fused one. Zero means a reranker is configured and
+    // did not answer. Absent means none is configured, or that fewer
+    // than two documents matched and none was called.
+    if let Some(depth) = reranked {
+        response["reranked"] = json!(depth);
+    }
     // Counted over the whole match set rather than the ranked window,
     // so a facet says how many documents match and the page says which
     // ones rank. Lexical matching decides membership either way: the

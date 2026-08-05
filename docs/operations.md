@@ -44,6 +44,10 @@ Every value comes from the environment. Defaults target local development.
 | `COPAL_EMBEDDING_ADDR` | unset | Embedding service speaking the OpenAI `/v1/embeddings` shape (Ollama, llama.cpp, text-embeddings-inference, LocalAI, vLLM, OpenAI). Set enables semantic and hybrid search. |
 | `COPAL_EMBEDDING_MODEL` | `nomic-embed-text` | Model name passed to that service. |
 | `COPAL_EMBEDDING_DIMENSION` | `768` | Width the model emits. The vector index is defined at this dimension at startup, so it must match the model. |
+| `COPAL_RERANK_ADDR` | unset | Reranking service reading each shortlisted passage against the query (text-embeddings-inference with a cross-encoder, Infinity, Jina, Cohere, Voyage). Unset means search ranks by fusion alone. |
+| `COPAL_RERANK_MODEL` | unset | Model name, sent only when set, because some services require one and others reject it. |
+| `COPAL_RERANK_TOKEN` | unset | Bearer token for that service. |
+| `COPAL_RERANK_DEPTH` | `50` | How many fused candidates the reranker sees, clamped to 1..200. Reading pairs with a model costs per pair, so this bounds the work rather than the corpus. |
 | `COPAL_SUBSCRIPTION_MAX_SECS` | 900 | Lifetime of one subscription; re-subscribing re-authenticates. |
 | `COPAL_RATE_LEDGER` | memory | `store` shares one consumption budget across a fleet. |
 | `COPAL_ENGINE_ACCESS_KEY` | unset | HS256 key for the engine's caller access method. Set, the store defines record access, every table's `PERMISSIONS` become enforceable per caller, and `Store::caller` sessions filter engine side. Rotation replaces the method on next boot. |

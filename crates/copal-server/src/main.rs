@@ -160,6 +160,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .embedding_addr
                 .clone()
                 .map(|addr| (addr, config.embedding_model.clone())),
+        )
+        .with_reranker(
+            config
+                .rerank_addr
+                .clone()
+                .map(|addr| copal_server::rerank::Reranker {
+                    addr,
+                    model: config.rerank_model.clone(),
+                    token: config.rerank_token.clone(),
+                    depth: config.rerank_depth,
+                }),
         );
     state.limits = copal_server::app::Limits {
         max_upload_bytes: config.max_upload_bytes,

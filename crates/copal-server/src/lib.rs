@@ -21,6 +21,7 @@ pub mod metrics;
 pub mod netguard;
 pub mod pipeline;
 pub mod rate;
+pub mod rerank;
 pub mod rest_runtime;
 pub mod rotate;
 pub mod s3;

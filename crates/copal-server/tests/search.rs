@@ -891,3 +891,189 @@ async fn filters_narrow_the_counts_too() {
         "the prefix applies to the counts: {narrowed:#?}",
     );
 }
+
+/// A reranker that answers by a rule the test controls, so the
+/// assertions are about ordering rather than about a model.
+///
+/// `mode` picks the behaviour: `reverse` scores the last document
+/// best, `top_one` scores only one, and `broken` refuses.
+async fn fake_reranker(mode: &'static str) -> String {
+    #[derive(serde::Deserialize)]
+    struct Ask {
+        documents: Vec<String>,
+    }
+    let app = Router::new().route(
+        "/rerank",
+        axum::routing::post(move |axum::Json(ask): axum::Json<Ask>| async move {
+            let count = ask.documents.len();
+            match mode {
+                "broken" => (
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    axum::Json(serde_json::json!({"error": "no model loaded"})),
+                ),
+                // Only the last document scored, in the bare shape
+                // text-embeddings-inference returns.
+                "top_one" => (
+                    axum::http::StatusCode::OK,
+                    axum::Json(serde_json::json!([
+                        {"index": count - 1, "score": 0.99}
+                    ])),
+                ),
+                // Every document scored, worst to best, in the wrapped
+                // shape Cohere and Jina return.
+                _ => {
+                    let results: Vec<serde_json::Value> = (0..count)
+                        .map(|index| {
+                            serde_json::json!({
+                                "index": index,
+                                "relevance_score": index as f64,
+                            })
+                        })
+                        .collect();
+                    (
+                        axum::http::StatusCode::OK,
+                        axum::Json(serde_json::json!({ "results": results })),
+                    )
+                }
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    format!("http://{addr}/rerank")
+}
+
+async fn reranking_stack(
+    mode: &'static str,
+    depth: usize,
+) -> (axum::Router, FlowEngine, tempfile::TempDir) {
+    let store = Store::connect(StoreConfig::memory()).await.unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let blobs = ObjectStore::open(dir.path().to_str().unwrap()).unwrap();
+    let registry = standard_registry(
+        store.clone(),
+        Residencies::local_only(blobs.clone()),
+        ExtensionPolicy::standard(),
+        false,
+        None,
+        None,
+        None,
+        std::collections::HashMap::new(),
+        copal_server::pipeline::FetchPolicy::default(),
+    );
+    let addr = fake_reranker(mode).await;
+    let state = AppState::new(store, blobs)
+        .with_flow(registry)
+        .with_reranker(Some(copal_server::rerank::Reranker {
+            addr,
+            model: None,
+            token: None,
+            depth,
+        }));
+    let engine = state.flow.clone();
+    (build_router(state), engine, dir)
+}
+
+async fn seed(router: &axum::Router, engine: &FlowEngine) {
+    for (path, body) in [
+        ("a.txt", "inspection of the first vessel"),
+        ("b.txt", "inspection of the second vessel"),
+        ("c.txt", "inspection of the third vessel"),
+    ] {
+        upload(router, path, "text/plain", body.as_bytes()).await;
+    }
+    while engine.tick("w").await.unwrap() {}
+}
+
+/// The reranker decides the order of what retrieval found, and the
+/// response says how far it reached.
+#[tokio::test]
+async fn a_reranker_reorders_the_head() {
+    let (router, engine, _dir) = reranking_stack("reverse", 50).await;
+    seed(&router, &engine).await;
+
+    let body = search_json(&router, "/v1/search?q=inspection").await;
+    let ids: Vec<&str> = body["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|hit| hit["file"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids.len(), 3, "{body:#?}");
+    assert_eq!(body["reranked"], 3, "all three were read: {body:#?}");
+
+    // The stub scores later documents higher, so the fused order is
+    // reversed. Without a reranker the order is the fusion's.
+    let (plain, plain_engine, _plain_dir) = stack(None).await;
+    seed(&plain, &plain_engine).await;
+    let fused = search_json(&plain, "/v1/search?q=inspection").await;
+    let fused_ids: Vec<&str> = fused["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|hit| hit["file"].as_str().unwrap())
+        .collect();
+    assert!(
+        fused.get("reranked").is_none(),
+        "no reranker configured, no claim made: {fused:#?}",
+    );
+    assert_ne!(ids, fused_ids, "the reranker changed the order");
+}
+
+/// A reranker that refuses costs relevance and leaves the search
+/// standing, the way semantic retrieval degrades to lexical.
+#[tokio::test]
+async fn a_broken_reranker_does_not_break_search() {
+    let (router, engine, _dir) = reranking_stack("broken", 50).await;
+    seed(&router, &engine).await;
+
+    let body = search_json(&router, "/v1/search?q=inspection").await;
+    assert_eq!(body["items"].as_array().unwrap().len(), 3, "{body:#?}");
+    assert_eq!(
+        body["reranked"], 0,
+        "configured and unanswered reads as zero: {body:#?}",
+    );
+}
+
+/// Reranking runs over the head of the ranking, so a depth below the
+/// match count leaves the rest in fused order. Every document still
+/// comes back exactly once.
+#[tokio::test]
+async fn depth_bounds_the_reranking_without_losing_documents() {
+    let (router, engine, _dir) = reranking_stack("reverse", 2).await;
+    seed(&router, &engine).await;
+
+    let body = search_json(&router, "/v1/search?q=inspection").await;
+    assert_eq!(body["reranked"], 2, "only the head was read: {body:#?}");
+    let ids: Vec<&str> = body["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|hit| hit["file"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids.len(), 3, "the tail survives the bound: {body:#?}");
+    let unique: std::collections::HashSet<&&str> = ids.iter().collect();
+    assert_eq!(unique.len(), 3, "no document repeats or vanishes: {ids:?}");
+}
+
+/// A service scoring only part of what it was sent still yields a
+/// total order, so a `top_n` reply loses nothing.
+#[tokio::test]
+async fn a_partial_answer_still_returns_every_document() {
+    let (router, engine, _dir) = reranking_stack("top_one", 50).await;
+    seed(&router, &engine).await;
+
+    let body = search_json(&router, "/v1/search?q=inspection").await;
+    let ids: Vec<&str> = body["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|hit| hit["file"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids.len(), 3, "{body:#?}");
+    let unique: std::collections::HashSet<&&str> = ids.iter().collect();
+    assert_eq!(unique.len(), 3, "{ids:?}");
+}

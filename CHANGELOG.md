@@ -20,6 +20,30 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
   now carry both queries, `search` with its seven parameters including
   `facets`.
 
+- **A reranking seam.** Retrieval decides which passages carry the
+  query's words or sit near its vector, and neither reads a passage
+  against the question. A reranker does, one pair at a time, which is
+  why `COPAL_RERANK_ADDR` gets a shortlist rather than a corpus:
+  `COPAL_RERANK_DEPTH` fused candidates, 50 by default. Whatever sits
+  below the depth keeps its fused order, so a deep page reads as a
+  reranked head followed by a fused remainder and no document is lost
+  either way. The response carries `reranked`, how far it reached.
+
+  Two response shapes are accepted, because the self-hostable
+  implementations split between them: the wrapped `results` with
+  `relevance_score` that Cohere, Jina, and Voyage return, and the bare
+  array with `score` that text-embeddings-inference returns. An
+  existing TEI deployment needs no adapter. Scoring a subset is
+  allowed, since what an answer omits keeps its incoming order below
+  what it ranked.
+
+  Losing the service costs relevance and nothing else: an unreachable
+  or refusing reranker leaves the fused ranking standing, logs a
+  warning naming the cause, and reports `reranked: 0`, the way
+  semantic retrieval degrades to lexical. `examples/rerank` carries a
+  runnable reference whose `score()` is the whole of what a real
+  deployment replaces.
+
 - **Search counts the match set.** `facets=content_type,access` on a
   search returns how many documents carry each value, alongside the
   ranked page. Two decisions are the whole feature. The counts are

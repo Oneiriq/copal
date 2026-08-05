@@ -56,6 +56,73 @@ pub struct AuthConfig {
     /// beside the current one, so rotation needs no restart and no
     /// moment where neither token works. Unset outside rotations.
     pub admin_token_previous: Option<String>,
+    /// Header naming the person an authenticating proxy let through.
+    /// Set it and the admin surface refuses a request that arrives
+    /// without one, which is what stops a caller reaching past the
+    /// proxy; unset, operator actions are attributed to the
+    /// deployment, as they always were.
+    pub operator_header: Option<String>,
+}
+
+/// Who performed an operator action.
+///
+/// A shared token says a deployment acted. It cannot say which person
+/// did, and an audit trail that cannot name a person is a weaker
+/// record than the immutability around it deserves. With an identity
+/// header configured this carries whoever the proxy authenticated.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Operator(String);
+
+impl Operator {
+    /// The deployment itself, for a surface with no identity seam.
+    pub fn deployment() -> Self {
+        Self("admin".to_owned())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for Operator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// An identity is written into an immutable trail, so it is bounded
+/// and stripped of anything that would forge a line there.
+pub(crate) fn readable(raw: &str) -> String {
+    raw.chars()
+        .filter(|c| !c.is_control())
+        .take(128)
+        .collect::<String>()
+        .trim()
+        .to_owned()
+}
+
+/// Resolve who is acting, refusing when the seam is configured and
+/// the request carries no identity: that request did not come through
+/// the proxy.
+pub fn operator<B: BlobStore>(
+    state: &AppState<B>,
+    headers: &HeaderMap,
+) -> Result<Operator, ApiError> {
+    let Some(header) = state.auth.operator_header.as_deref() else {
+        return Ok(Operator::deployment());
+    };
+    let named = headers
+        .get(header)
+        .and_then(|value| value.to_str().ok())
+        .map(readable)
+        .unwrap_or_default();
+    if named.is_empty() {
+        return Err(CopalError::unauthorized(format!(
+            "{header} carries no operator; the admin surface expects an authenticating proxy in front of it",
+        ))
+        .into());
+    }
+    Ok(Operator(named))
 }
 
 /// A fixed 64-hex compare target (matching no real key) burned on
@@ -361,7 +428,7 @@ pub async fn authenticate_scoped_with_identity<B: BlobStore>(
 pub fn require_admin<B: BlobStore>(
     state: &AppState<B>,
     headers: &HeaderMap,
-) -> Result<(), ApiError> {
+) -> Result<Operator, ApiError> {
     let Some(configured) = state.auth.admin_token.as_deref() else {
         return Err(CopalError::unauthorized("admin API is not enabled").into());
     };
@@ -377,7 +444,7 @@ pub fn require_admin<B: BlobStore>(
         None => false,
     };
     if current || previous {
-        Ok(())
+        operator(state, headers)
     } else {
         Err(CopalError::unauthorized("missing or invalid admin token").into())
     }

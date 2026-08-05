@@ -165,6 +165,7 @@ impl Config {
                     .unwrap_or_default(),
                 admin_token: std::env::var("COPAL_ADMIN_TOKEN").ok(),
                 admin_token_previous: std::env::var("COPAL_ADMIN_TOKEN_PREVIOUS").ok(),
+                operator_header: std::env::var("COPAL_OPERATOR_HEADER").ok(),
             },
             request_timeout_secs: env_parse("COPAL_REQUEST_TIMEOUT_SECS", 30),
             tus_session_ttl_secs: env_parse("COPAL_TUS_SESSION_TTL_SECS", 86_400),

@@ -25,6 +25,7 @@ async fn stack() -> (axum::Router, tempfile::TempDir) {
         mode: AuthMode::ApiKeys,
         admin_token: Some(ADMIN.into()),
         admin_token_previous: None,
+        operator_header: None,
     });
     (build_router(state), dir)
 }
@@ -221,6 +222,7 @@ async fn the_fleet_view_gates_on_configuration_and_names_its_limits() {
             mode: AuthMode::ApiKeys,
             admin_token: Some(ADMIN.into()),
             admin_token_previous: None,
+            operator_header: None,
         })
         .with_fleet(Some(StoreConfig::memory()));
     let router = build_router(state);

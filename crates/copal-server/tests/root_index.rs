@@ -22,6 +22,7 @@ async fn stack(admin_token: Option<&str>) -> (axum::Router, tempfile::TempDir) {
             mode: AuthMode::ApiKeys,
             admin_token: Some(token.to_owned()),
             admin_token_previous: None,
+            operator_header: None,
         });
     }
     (build_router(state), dir)

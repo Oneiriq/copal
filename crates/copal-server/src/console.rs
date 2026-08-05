@@ -44,27 +44,33 @@ th { color: #9a9aa8; font-weight: 600; }
 ";
 
 /// Constant-time Basic check against the admin token (previous
-/// honored). `None` means the request may proceed; `Some` is the
-/// challenge to return.
-fn gate<B: BlobStore>(state: &AppState<B>, headers: &HeaderMap) -> Option<Response> {
+/// honored), answering with whoever got through. `Err` is the
+/// challenge or refusal to return.
+#[allow(clippy::result_large_err)]
+fn gate<B: BlobStore>(
+    state: &AppState<B>,
+    headers: &HeaderMap,
+) -> Result<crate::auth::Operator, Response> {
+    // The realm reaches a browser's credential dialog, and the
+    // username never does anything, so it says so where it will be
+    // read.
     let challenge = || {
-        Some(
-            (
-                StatusCode::UNAUTHORIZED,
-                [("www-authenticate", "Basic realm=\"copal console\"")],
-                "the console takes the admin token as the Basic password",
-            )
-                .into_response(),
+        Err((
+            StatusCode::UNAUTHORIZED,
+            [(
+                "www-authenticate",
+                "Basic realm=\"copal console: any username, admin token as password\"",
+            )],
+            "the console takes the admin token as the Basic password",
         )
+            .into_response())
     };
     let Some(configured) = state.auth.admin_token.as_deref() else {
-        return Some(
-            (
-                StatusCode::NOT_FOUND,
-                "the console exists only when an admin token is configured",
-            )
-                .into_response(),
-        );
+        return Err((
+            StatusCode::NOT_FOUND,
+            "the console exists only when an admin token is configured",
+        )
+            .into_response());
     };
     let presented = headers
         .get("authorization")
@@ -84,21 +90,23 @@ fn gate<B: BlobStore>(state: &AppState<B>, headers: &HeaderMap) -> Option<Respon
         Some(prior) => copal_sign::verify_secret(&presented, &copal_sign::hash_secret(prior)),
         None => false,
     };
-    if current || previous {
-        None
-    } else {
-        challenge()
+    if !(current || previous) {
+        return challenge();
     }
+    crate::auth::operator(state, headers).map_err(IntoResponse::into_response)
 }
 
 /// The operator acts as the tenant with every scope and the root
 /// store: the dispatcher still enforces guards and validation, so
 /// the console sees what an all-scoped caller of that tenant sees.
-fn operator_context(tenant: &TenantId) -> janus::runtime::JanusContext {
+fn operator_context(
+    tenant: &TenantId,
+    operator: &crate::auth::Operator,
+) -> janus::runtime::JanusContext {
     let mut ctx = janus::runtime::JanusContext::new();
     ctx.insert(crate::graphql::Tenant(tenant.clone()));
     ctx.insert(janus::runtime::Principal::new(
-        "operator".to_owned(),
+        operator.as_str().to_owned(),
         vec![
             "read".to_owned(),
             "write".to_owned(),
@@ -126,9 +134,10 @@ fn console_router<B: BlobStore>(
 
 /// GET `/admin/console`: the deployment home.
 pub async fn home<B: BlobStore>(State(state): State<AppState<B>>, headers: HeaderMap) -> Response {
-    if let Some(refused) = gate(&state, &headers) {
-        return refused;
-    }
+    let operator = match gate(&state, &headers) {
+        Ok(operator) => operator,
+        Err(refused) => return refused,
+    };
     let tenants = copal_store::repo::tenant::known_tenants(&state.store)
         .await
         .unwrap_or_default();
@@ -145,6 +154,7 @@ pub async fn home<B: BlobStore>(State(state): State<AppState<B>>, headers: Heade
     };
     let body = html! {
         h1 { "deployment" }
+        p.dim { "signed in as " (operator) }
         h2 { "tenants" }
         @if tenants.is_empty() { p.dim { "no tenant has stored anything yet" } }
         table {
@@ -223,9 +233,10 @@ pub async fn tenant_pages<B: BlobStore>(
     Path((tenant, rest)): Path<(String, String)>,
     body: Bytes,
 ) -> Response {
-    if let Some(refused) = gate(&state, &headers) {
-        return refused;
-    }
+    let operator = match gate(&state, &headers) {
+        Ok(operator) => operator,
+        Err(refused) => return refused,
+    };
     let tenant = match TenantId::parse(&tenant) {
         Ok(tenant) => tenant,
         Err(e) => return crate::error::ApiError::from(e).into_response(),
@@ -234,7 +245,7 @@ pub async fn tenant_pages<B: BlobStore>(
         Ok(router) => router,
         Err(e) => return e.into_response(),
     };
-    let ctx = operator_context(&tenant);
+    let ctx = operator_context(&tenant, &operator);
     if method == Method::POST {
         let pairs: Vec<(String, String)> = serde_urlencoded::from_bytes(&body).unwrap_or_default();
         match router.submit(&rest, &pairs, ctx).await {

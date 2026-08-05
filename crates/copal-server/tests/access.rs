@@ -25,6 +25,7 @@ async fn keyed_stack() -> (axum::Router, Store, tempfile::TempDir) {
         mode: AuthMode::ApiKeys,
         admin_token: Some(ADMIN.into()),
         admin_token_previous: None,
+        operator_header: None,
     });
     (build_router(state), store, dir)
 }
@@ -318,6 +319,7 @@ async fn the_admin_surface_splits_off_the_tenant_router() {
         mode: AuthMode::ApiKeys,
         admin_token: Some(ADMIN.into()),
         admin_token_previous: None,
+        operator_header: None,
     });
 
     // The tenant-facing router alone has NO admin routes at all.

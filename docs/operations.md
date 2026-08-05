@@ -15,6 +15,7 @@ Every value comes from the environment. Defaults target local development.
 | `COPAL_BLOB_ROOT` | `./data/blobs` | Filesystem blob store root. |
 | `COPAL_BLOB_ENCRYPTION_KEY` | unset | 64-hex master key enabling encryption at rest. New objects seal (chunked AES-256-GCM, per-object derived keys); existing plaintext objects keep serving. Digests stay plaintext digests, so addressing and dedupe are unchanged. |
 | `COPAL_BLOB_ENCRYPTION_KEY_PREVIOUS` | unset | The retiring master key during a rotation. Reads fall back to it while the re-seal sweep moves objects and sealed secrets under the current key; nothing seals under it. Unset it once `copal_resealed_total` goes quiet. See the rotation section. |
+| `COPAL_OPERATOR_HEADER` | unset | Header naming the person an authenticating proxy let through, for example `x-forwarded-email`. Set it and every audited operator action carries that name, and the admin surface refuses a request arriving without one. See operator identity. |
 | `COPAL_CONSOLE_FLEET` | `false` | Console fleet view: sibling namespaces on the shared engine, read-only (namespaces, databases, tables, row counts). Needs a remote engine and credentials with root reach; the walk refuses on an embedded engine and says so. |
 | `COPAL_OTLP_ENDPOINT` | unset | OTLP trace collector (http/protobuf), e.g. `http://otel-collector:4318/v1/traces`. Unset, spans feed the logs and nothing leaves the process. See the traces section. |
 | `COPAL_FETCH_ALLOW_PRIVATE_TARGETS` | `false` | Whether `POST /v1/files/fetch` may pull from private address space. Tenant-supplied URLs refuse private targets by default, the same policy webhook targets follow. |
@@ -529,6 +530,39 @@ and every change writes an audit event carrying it. A held or
 retained version keeps its bytes through file deletion; soft delete
 still hides the file, because hiding is not erasing.
 
+## Operator identity
+
+The admin token says a deployment acted. It cannot say which person
+did, which leaves an immutable audit trail recording `admin` for
+every custody change, quota edit, and legal hold. Copal takes the
+missing half from a proxy rather than implementing sign-in: put
+oauth2-proxy, Authelia, Authentik, Pomerium, or Cloudflare Access in
+front of the admin surface, and name the header it sets.
+
+```
+COPAL_OPERATOR_HEADER=x-forwarded-email
+```
+
+Two things change. Audited actions record that person instead of
+`admin`, and a request that arrives without the header is refused,
+which is what stops a caller reaching the admin surface past the
+proxy. The token check still runs first, so an identity header alone
+grants nothing.
+
+The proxy holds the admin token and injects it, so the humans behind
+it never handle the shared secret:
+
+```
+proxy_set_header x-copal-admin-token $copal_admin_token;
+proxy_set_header x-forwarded-email   $authenticated_email;
+```
+
+Bind the admin surface where only the proxy reaches it
+(`COPAL_ADMIN_BIND` on an interface the proxy shares), because a
+header is a claim, and it is the network that makes the claim
+trustworthy. Unset, everything behaves as it did: operator actions
+are attributed to the deployment.
+
 ## The console
 
 `/admin/console` on the admin surface is the operator console.
@@ -538,6 +572,12 @@ password, compared in constant time with the previous token honored
 during a rotation. It exists only when an admin token is
 configured, and because it rides the admin router, a split
 `COPAL_ADMIN_BIND` keeps it off the tenant-facing network.
+
+The console names who is signed in when an identity header is
+configured, and its authentication dialog says what to type: any
+username, the admin token as the password. The person it names is
+also the principal the dispatcher carries, so a guard that reads the
+subject sees the operator.
 
 The deployment home lists every tenant with files and bytes, and
 tails the audit trail. With `COPAL_CONSOLE_FLEET=1` it also walks

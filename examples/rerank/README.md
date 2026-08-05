@@ -47,8 +47,10 @@ GET /v1/search?q=vessel+inspection
 {"mode": "lexical", "reranked": 2, "items": [...]}
 ```
 
-`reranked` is absent when no service is configured and `0` when one is
-configured and did not answer.
+`reranked` is `0` when a service is configured and did not answer. It
+is absent when none is configured, and also when fewer than two
+documents matched, since there is no order to change and the service
+is not called.
 
 The reference scores by term overlap and how tightly the matched words
 sit together. That is not what a reranker is for and is deliberately

@@ -539,10 +539,11 @@ by what comes back. The response says how far it reached:
 {"mode": "hybrid", "reranked": 50, "items": [...]}
 ```
 
-`reranked` is absent when no service is configured. Whatever sits
-below the depth keeps its fused order, so a deep page reads as a
-reranked head followed by a fused remainder, and no document is lost
-either way.
+`reranked` is absent when no service is configured, and also when
+fewer than two documents matched, since there is no order to change.
+Whatever sits below the depth keeps its fused order, so a deep page
+reads as a reranked head followed by a fused remainder, and no
+document is lost either way.
 
 A reranker improves an answer that already exists, so losing one costs
 relevance and leaves the search standing. An unreachable or refusing

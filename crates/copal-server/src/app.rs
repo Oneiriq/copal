@@ -898,8 +898,9 @@ pub(crate) async fn search_core<B: BlobStore>(
 
     let mut response = json!({ "mode": mode, "items": page, "next_cursor": next_cursor });
     // How far the reranking reached, so a caller can tell a reranked
-    // head from a fused one. Absent means no reranker is configured;
-    // zero means one is and it did not answer.
+    // head from a fused one. Zero means a reranker is configured and
+    // did not answer. Absent means none is configured, or that fewer
+    // than two documents matched and none was called.
     if let Some(depth) = reranked {
         response["reranked"] = json!(depth);
     }

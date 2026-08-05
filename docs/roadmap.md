@@ -10,15 +10,29 @@ external transformer seam, rendition URLs and URL ingestion, and the
 GCS and Azure backends all shipped and left this file. What follows
 came out of reading the service against what the market offers.
 
-1. **Per-chunk authorization, if anything asks for it.** A chunk is
-   withheld exactly when its file is, which is all-or-nothing: a
-   document with one sensitive passage is readable or it is not.
-   Splitting that finer needs something to decide which passages are
-   sensitive, and nothing does. An earlier version of this file said
-   the coarse behaviour was correct; it was not enforced at all until
-   the CHANGELOG's entry on retrieval and access, and the fix is what
-   makes it coarse rather than absent. What holds this open is the
-   absence of a use case; the work itself is understood.
+1. **Per-chunk authorization.** A chunk is withheld exactly when its
+   file is, which is all-or-nothing: a document with one sensitive
+   passage is readable or it is not. An earlier version of this file
+   said the coarse behaviour was correct; it was not enforced at all
+   until the CHANGELOG's entry on retrieval and access, and the fix is
+   what makes it coarse rather than absent.
+
+   The demand is real. A contract with a public summary and
+   confidential pricing, a record whose header is broadly readable and
+   whose body is not, a manual serving several audiences, a passage
+   carrying personal data that should not reach everyone cleared for
+   the rest of the file: each of these is one document today and one
+   access level today. The workaround is to split the document into
+   several files, and it is weaker than it sounds here, because
+   chunking is automatic. Someone who uploads one PDF gets passages
+   they cannot govern individually, and pre-splitting by hand gives up
+   what automatic extraction and embedding were for.
+
+   What holds this open is a design decision about where the sensitivity
+   comes from, since nothing in the upload path, the extractor, or the
+   pipeline knows. Per-upload markers put the answer with the uploader,
+   who does know, and they fail safe: no markers means today's
+   behaviour.
 
    A classifier seam is the shape that most resembles the rest of the
    service and is the one to resist. Every seam here fails safe when

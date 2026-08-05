@@ -699,3 +699,68 @@ async fn stub_embedder() -> (String, std::sync::Arc<std::sync::atomic::AtomicUsi
     });
     (addr, served)
 }
+
+/// The excerpt is chosen with the analyzer that decided the match, so
+/// a passage matched through a stem shows the word that matched.
+///
+/// Selecting it by searching the passage for the caller's own words
+/// fails exactly where stemming earns its keep: ask for `inspecting`,
+/// match a passage that says `inspection`, and a literal search finds
+/// nothing, so the reader is handed the opening of the passage and no
+/// reason it came back. The spans say where the matches are, counted
+/// in characters of the excerpt.
+#[tokio::test]
+async fn a_stemmed_match_is_shown_where_it_matched() {
+    let (router, engine, _dir) = stack(None).await;
+    // Long enough that the excerpt is a window rather than the whole
+    // passage, with the match buried past the opening.
+    // Nine repeats puts the match past character 500, so a window
+    // taken from the opening of the passage cannot contain it.
+    let filler = "The vessel remained at anchor through the morning watch. ".repeat(9);
+    let body = format!("{filler}Routine inspection of the hull followed. {filler}");
+    upload(&router, "docs/log.txt", "text/plain", body.as_bytes()).await;
+    while engine.tick("w").await.unwrap() {}
+
+    let hits = search(&router, "inspecting").await;
+    assert_eq!(hits.len(), 1, "the stemmed term matches: {hits:#?}");
+
+    let excerpt = hits[0]["excerpt"].as_str().unwrap();
+    assert!(
+        excerpt.contains("inspection of the hull"),
+        "the window lands on the match rather than the opening: {excerpt}",
+    );
+
+    let matches = hits[0]["matches"].as_array().unwrap();
+    assert_eq!(matches.len(), 1, "one word matched: {matches:?}");
+    let start = matches[0][0].as_u64().unwrap() as usize;
+    let end = matches[0][1].as_u64().unwrap() as usize;
+    let marked: String = excerpt.chars().skip(start).take(end - start).collect();
+    assert_eq!(
+        marked, "inspection",
+        "the span points at the matched word, whole",
+    );
+}
+
+/// A passage with nothing to mark still answers, with an empty list
+/// rather than a missing field, so a caller reads one shape.
+#[tokio::test]
+async fn every_hit_carries_a_matches_list() {
+    let (router, engine, _dir) = stack(None).await;
+    upload(
+        &router,
+        "docs/short.txt",
+        "text/plain",
+        b"routine inspection of the vessel",
+    )
+    .await;
+    while engine.tick("w").await.unwrap() {}
+
+    let hits = search(&router, "inspecting").await;
+    let matches = hits[0]["matches"].as_array().expect("matches is a list");
+    assert_eq!(matches.len(), 1);
+    let excerpt = hits[0]["excerpt"].as_str().unwrap();
+    let start = matches[0][0].as_u64().unwrap() as usize;
+    let end = matches[0][1].as_u64().unwrap() as usize;
+    let marked: String = excerpt.chars().skip(start).take(end - start).collect();
+    assert_eq!(marked, "inspection");
+}

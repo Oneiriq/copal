@@ -675,35 +675,6 @@ async fn metrics_scrape<B: BlobStore>(
 /// channel.
 const EXCERPT_CHARS: usize = 400;
 
-/// A window of `body` showing why it matched.
-///
-/// An excerpt that does not contain the searched words tells a reader
-/// nothing, and a matching sentence can sit anywhere in a passage. So
-/// the window centres on the first term that appears literally.
-/// Semantic hits may share no words at all, and stemmed matches
-/// ("inspection" for "inspect") may not match case-sensitively; both
-/// fall back to the opening, which is the best available summary.
-fn excerpt_around(body: &str, query: &str) -> String {
-    let chars: Vec<char> = body.chars().collect();
-    if chars.len() <= EXCERPT_CHARS {
-        return body.to_owned();
-    }
-    let haystack = body.to_lowercase();
-    let found = query
-        .split_whitespace()
-        .filter(|term| term.len() > 2)
-        .filter_map(|term| haystack.find(&term.to_lowercase()))
-        .min();
-    let Some(byte_index) = found else {
-        return chars.iter().take(EXCERPT_CHARS).collect();
-    };
-    // Byte offset to character offset, then a window around it.
-    let char_index = body[..byte_index].chars().count();
-    let start = char_index.saturating_sub(EXCERPT_CHARS / 3);
-    let end = (start + EXCERPT_CHARS).min(chars.len());
-    chars[start..end].iter().collect()
-}
-
 /// Search query parameters. `mode` selects retrieval: `lexical`
 /// (words), `semantic` (meaning), or `hybrid` (both, fused).
 #[derive(Debug, Deserialize)]
@@ -827,11 +798,21 @@ pub(crate) async fn search_core<B: BlobStore>(
         .take(limit as usize)
         .filter_map(|id| {
             let (ordinal, body) = bodies.get(id)?;
+            // Chosen with the analyzer that decided the match, so a
+            // passage matched through a stem shows the word that
+            // matched. The spans say where, for a caller that marks
+            // them.
+            let found = copal_core::excerpt(body, q, EXCERPT_CHARS);
             Some(json!({
                 "file": id,
                 // Which passage matched, so a caller can point at it.
                 "passage": ordinal,
-                "excerpt": excerpt_around(body, q),
+                "excerpt": found.text,
+                "matches": found
+                    .matches
+                    .iter()
+                    .map(|(start, end)| json!([start, end]))
+                    .collect::<Vec<_>>(),
             }))
         })
         .collect();

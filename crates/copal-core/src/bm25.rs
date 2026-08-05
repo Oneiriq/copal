@@ -36,6 +36,58 @@ pub fn analyze(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// One token, and where it sits in the text it came from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Token {
+    /// Half-open character range in the source text.
+    pub start: usize,
+    pub end: usize,
+    /// The stemmed term, as the index holds it.
+    pub term: String,
+}
+
+/// [`analyze`], keeping each token's place.
+///
+/// The scorer never asks where a term was; an excerpt has to. Stemming
+/// is why: the index resolves `running` and `runs` to one term, so the
+/// span a reader should be shown is not findable by searching the
+/// source for what the caller typed.
+///
+/// Character offsets rather than byte offsets, because what is built on
+/// this travels as a JSON string, and its consumers index strings by
+/// character.
+pub fn analyze_spans(text: &str) -> Vec<Token> {
+    let stemmer = rust_stemmers::Stemmer::create(rust_stemmers::Algorithm::English);
+    let mut tokens = Vec::new();
+    let mut word = String::new();
+    let mut start = 0;
+    let mut length = 0;
+    for (index, character) in text.chars().enumerate() {
+        length = index + 1;
+        if character.is_alphanumeric() {
+            if word.is_empty() {
+                start = index;
+            }
+            word.push(character);
+        } else if !word.is_empty() {
+            tokens.push(Token {
+                start,
+                end: index,
+                term: stemmer.stem(&word.to_lowercase()).into_owned(),
+            });
+            word.clear();
+        }
+    }
+    if !word.is_empty() {
+        tokens.push(Token {
+            start,
+            end: length,
+            term: stemmer.stem(&word.to_lowercase()).into_owned(),
+        });
+    }
+    tokens
+}
+
 /// One scored candidate: its position in the input and its score.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Scored {
@@ -117,6 +169,36 @@ pub fn rank(query: &str, documents: &[String]) -> Vec<Scored> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The two analyzers must agree, or an excerpt would mark spans the
+    /// scorer never counted.
+    #[test]
+    fn spans_carry_the_same_terms_the_scorer_sees() {
+        for text in [
+            "Running quickly, the libraries closed.",
+            "  leading and trailing  ",
+            "trailing-word",
+            "café naïve 42 mixed",
+            "",
+            "!!!",
+        ] {
+            let spanned: Vec<String> = analyze_spans(text).into_iter().map(|t| t.term).collect();
+            assert_eq!(spanned, analyze(text), "disagreed on {text:?}");
+        }
+    }
+
+    /// A span has to point at the word it came from, including the last
+    /// one when no separator follows it.
+    #[test]
+    fn spans_point_at_their_own_words() {
+        let text = "the Libraries were running";
+        let characters: Vec<char> = text.chars().collect();
+        let words: Vec<String> = analyze_spans(text)
+            .iter()
+            .map(|t| characters[t.start..t.end].iter().collect())
+            .collect();
+        assert_eq!(words, vec!["the", "Libraries", "were", "running"]);
+    }
 
     #[test]
     fn stemming_matches_the_analyzer() {

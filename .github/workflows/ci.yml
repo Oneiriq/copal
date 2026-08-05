@@ -4,9 +4,17 @@ on:
   pull_request:
     branches:
       - main
-  push:
-    branches:
-      - main
+  # A merge re-verifies a tree the pull request already proved, and on
+  # a single runner that duplicate build is what every later pull
+  # request queues behind: one evening of back-to-back merges turned a
+  # thirty-minute pipeline into a two-hour wait. Main is checked on a
+  # schedule instead. That keeps the signal for drift arriving without
+  # a commit, which is how a new advisory once reddened this branch,
+  # and it keeps a default-branch cache warm for pull requests to
+  # restore, which a bare pull-request trigger would have lost.
+  schedule:
+    - cron: "0 7 * * *"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -22,7 +30,7 @@ env:
 jobs:
   check:
     name: fmt + clippy + test
-    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, aur0]
     steps:
       - uses: actions/checkout@v6
@@ -42,10 +50,13 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      # Both jobs name one cache, so whichever runs second finds the
+      # registry already downloaded. This job owns writing it.
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
         with:
-          prefix-key: "v1-copal-stable"
+          prefix-key: "v1-copal"
+          shared-key: "workspace"
 
       - name: cargo fmt --check
         run: cargo fmt --all --check
@@ -63,9 +74,12 @@ jobs:
           fi
           cargo audit
 
+  # No `needs` between the jobs: they are independent, so a second
+  # runner parallelises them the moment one exists. With one runner
+  # they queue, and the shared cache is what keeps the second cheap.
   sdks:
     name: assemble + validate SDKs
-    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, aur0]
     steps:
       - uses: actions/checkout@v6
@@ -73,11 +87,16 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      # Restores what the check job wrote and writes nothing back: two
+      # jobs saving one key is a race whose loser uploaded for nothing.
+      # The assembled crate carries no private dependency, so the
+      # registry is all this job wants from the cache.
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
         with:
-          prefix-key: "v1-copal-sdk"
-          workspaces: "sdks/dist/rust"
+          prefix-key: "v1-copal"
+          shared-key: "workspace"
+          save-if: "false"
 
       - uses: actions/setup-node@v4
         with:

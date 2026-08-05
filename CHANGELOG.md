@@ -408,6 +408,18 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ### Deployment
 
+- **CI stops queueing behind itself.** Every merge triggered a full
+  rebuild of a tree the pull request had just proved, and with a
+  single runner that duplicate blocked the next pull request: an
+  evening of back-to-back merges turned a thirty-minute pipeline
+  into a two-hour wait. Main is verified on a daily schedule and on
+  demand instead, which keeps both things the merge build was worth,
+  a signal for drift arriving without a commit and a warm
+  default-branch cache. The two jobs now name one cache rather than
+  two, so whichever runs second finds the registry already there,
+  and `deploy/add-runner.sh` adds the runner capacity that lets them
+  run at once.
+
 - **Traces export over OTLP.** `COPAL_OTLP_ENDPOINT` turns every
   served request into a span named by its route template, joined to
   the caller's `traceparent` and propagated outward on webhook

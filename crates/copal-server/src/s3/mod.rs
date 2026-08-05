@@ -103,6 +103,12 @@ async fn object_route<B: BlobStore>(
     if multipart::claims_request(request.method(), request.uri()) {
         return multipart::dispatch(State(gateway), Path((bucket, key)), request).await;
     }
+    // Ahead of the method match, because the damage a subresource does
+    // here is done by the PUT handler treating the request body as
+    // object content.
+    if let Some(subresource) = unsupported_subresource(request.uri().query()) {
+        return not_implemented(subresource);
+    }
     let method = request.method().clone();
     match method {
         Method::PUT => {
@@ -156,10 +162,77 @@ async fn bucket_post<B: BlobStore>(
     if has_delete {
         return objects::delete_objects(State(gateway), Path(bucket), request).await;
     }
+    if let Some(subresource) = unsupported_subresource(request.uri().query()) {
+        return not_implemented(subresource);
+    }
     xml_error(
         StatusCode::METHOD_NOT_ALLOWED,
         "MethodNotAllowed",
         "unsupported bucket operation",
+    )
+}
+
+/// S3 subresources the gateway does not implement.
+///
+/// Every one of these is a query key that changes what a request
+/// MEANS. Without this list they fall through to the handler for the
+/// bare path, and the fall-through is not a harmless no-op: a
+/// `GET /{bucket}?lifecycle` answers with an object listing, and a
+/// `PUT /{bucket}/{key}?tagging` writes the tagging XML into the
+/// object as its content. The first is a confusing answer and the
+/// second destroys the object the client just uploaded.
+///
+/// Naming them explicitly keeps the check an allowlist: an unknown
+/// query parameter still reaches the handler it always did, because
+/// only S3's own subresource names appear here.
+const UNSUPPORTED_SUBRESOURCES: &[&str] = &[
+    "accelerate",
+    "acl",
+    "analytics",
+    "cors",
+    "encryption",
+    "intelligent-tiering",
+    "inventory",
+    "legal-hold",
+    "lifecycle",
+    "logging",
+    "metrics",
+    "notification",
+    "object-lock",
+    "ownershipControls",
+    "policy",
+    "policyStatus",
+    "publicAccessBlock",
+    "replication",
+    "requestPayment",
+    "restore",
+    "retention",
+    "tagging",
+    "torrent",
+    "versionId",
+    "versions",
+    "website",
+];
+
+/// The unimplemented subresource a request asks for, if it asks for
+/// one.
+pub(crate) fn unsupported_subresource(query: Option<&str>) -> Option<&'static str> {
+    let params = parse_query(query.unwrap_or_default());
+    UNSUPPORTED_SUBRESOURCES
+        .iter()
+        .copied()
+        .find(|name| params.contains_key(*name))
+}
+
+/// What a client gets for asking. S3 uses 501 for an operation the
+/// endpoint does not implement, and a client that reads the code can
+/// tell it apart from a bucket that is missing or a key that is not
+/// there.
+pub(crate) fn not_implemented(subresource: &str) -> Response {
+    xml_error(
+        StatusCode::NOT_IMPLEMENTED,
+        "NotImplemented",
+        &format!("the gateway does not implement ?{subresource}"),
     )
 }
 
@@ -568,6 +641,22 @@ async fn list_objects<B: BlobStore>(
     // for objects.
     if params.contains_key("uploads") {
         return multipart::list_uploads(&gateway, tenant, &bucket).await;
+    }
+    // GetBucketVersioning has a true answer, so it gets one. The S3
+    // face exposes no versionIds, which is what an empty configuration
+    // states; copal's own version history lives on the REST face. Some
+    // clients probe this before their first transfer and treat a
+    // failure as a reason to stop.
+    if params.contains_key("versioning") {
+        return xml_response(
+            StatusCode::OK,
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+             <VersioningConfiguration xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\" />"
+                .to_owned(),
+        );
+    }
+    if let Some(subresource) = unsupported_subresource(uri.query()) {
+        return not_implemented(subresource);
     }
     let prefix = params.get("prefix").cloned().unwrap_or_default();
     let delimiter = params.get("delimiter").cloned().unwrap_or_default();

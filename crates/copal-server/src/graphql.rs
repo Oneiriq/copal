@@ -772,6 +772,11 @@ pub(crate) fn dispatcher<B: BlobStore + 'static>(
                     .get("cursor")
                     .and_then(|v| v.as_str())
                     .map(str::to_owned);
+                let facets = args
+                    .input
+                    .get("facets")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_owned);
                 crate::app::search_core(
                     &state,
                     &store,
@@ -781,6 +786,7 @@ pub(crate) fn dispatcher<B: BlobStore + 'static>(
                     limit,
                     &filters,
                     cursor.as_deref(),
+                    facets.as_deref(),
                 )
                 .await
                 .map_err(|e| to_janus_error(e.0))

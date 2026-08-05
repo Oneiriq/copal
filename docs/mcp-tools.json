@@ -611,6 +611,10 @@
           "cursor": {
             "type": "string",
             "description": "Continue a ranking from the previous page's next_cursor;                              best-effort, since rankings shift as content changes."
+          },
+          "facets": {
+            "type": "string",
+            "description": "Count the match set by these file fields, comma separated                              (content_type, access). Counts are documents, exact over                              every match rather than over the ranked window."
           }
         },
         "required": [

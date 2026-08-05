@@ -441,6 +441,108 @@ impl SearchHit {
 /// how much of a large match set gets rescored.
 const RESCORE_WINDOW: i64 = 500;
 
+/// A field a caller may ask for counts on.
+///
+/// Closed, because the field name reaches the engine inside a
+/// projection this builds by hand. A caller names one of these or gets
+/// a validation error; nothing a caller types becomes query text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FacetField {
+    ContentType,
+    Access,
+}
+
+impl FacetField {
+    /// The wire name, which is also the file column.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FacetField::ContentType => "content_type",
+            FacetField::Access => "access",
+        }
+    }
+
+    pub fn parse(raw: &str) -> copal_core::Result<Self> {
+        match raw.trim() {
+            "content_type" => Ok(FacetField::ContentType),
+            "access" => Ok(FacetField::Access),
+            other => Err(CopalError::validation(format!(
+                "cannot facet on {other}; fields are content_type and access",
+            ))),
+        }
+    }
+}
+
+/// One bucket: a value, and how many FILES in the match set carry it.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct FacetBucket {
+    pub value: String,
+    pub files: i64,
+}
+
+/// Counts over the whole match set, grouped by one field of the file.
+///
+/// Files rather than passages. A document matching in five passages is
+/// one document, and a caller reading "12 PDFs" means twelve of them.
+/// The engine's `count()` counts rows, so this groups the linked file
+/// ids and measures the distinct set, which is the form that survives
+/// `GROUP BY` here (pinned in `tests/engine_assumptions.rs`).
+///
+/// No limit, deliberately. The ranked page comes from a rescore window
+/// and is bounded by it; a count that inherited the same bound would be
+/// a number that quietly meant "of the first five hundred". These
+/// counts are exact over everything the query matches, which is the
+/// only reading of a facet that is worth showing.
+pub async fn facet_counts(
+    store: &Store,
+    tenant: &TenantId,
+    terms: &str,
+    field: FacetField,
+    filters: &SearchFilters,
+) -> copal_core::Result<Vec<FacetBucket>> {
+    if terms.trim().is_empty() {
+        return Err(CopalError::validation("search terms must not be empty"));
+    }
+    #[derive(serde::Deserialize)]
+    struct Row {
+        value: Option<String>,
+        files: Option<i64>,
+    }
+
+    let mut query = Query::new()
+        .select(Some(vec![
+            format!("file.{} AS value", field.as_str()),
+            "array::len(array::distinct(array::group(file))) AS files".to_owned(),
+        ]))
+        .from_table(CHUNK_TABLE)
+        .map_err(|e| map_store_err("facet_counts", e))?
+        .where_(eq("tenant_id", tenant.as_str()))
+        .fulltext_search("body", 1, terms)
+        .map_err(|e| map_store_err("facet_counts", e))?;
+    for clause in filters.clauses() {
+        query = query.where_str(clause);
+    }
+    let query = query.group_by(["value"]);
+
+    let rows: Vec<Row> = query_records(store.client(), &query)
+        .await
+        .map_err(|e| map_store_err("facet_counts", e))?;
+
+    // Largest first, then by value, so a caller rendering the top few
+    // gets the same few on every identical request.
+    let mut buckets: Vec<FacetBucket> = rows
+        .into_iter()
+        .filter_map(|row| {
+            Some(FacetBucket {
+                value: row.value?,
+                files: row.files.unwrap_or(0),
+            })
+        })
+        .filter(|bucket| bucket.files > 0)
+        .collect();
+    buckets.sort_by(|a, b| b.files.cmp(&a.files).then_with(|| a.value.cmp(&b.value)));
+    Ok(buckets)
+}
+
 /// Lexical search over a tenant's extracted text, in relevance order.
 ///
 /// The tenant predicate and the search predicate are one statement,

@@ -25,6 +25,7 @@ async fn keyed_router() -> (axum::Router, tempfile::TempDir) {
         mode: AuthMode::ApiKeys,
         admin_token: Some(ADMIN.into()),
         admin_token_previous: None,
+        operator_header: None,
     });
     (build_router(state), dir)
 }
@@ -253,6 +254,7 @@ async fn the_admin_surface_is_gated_and_disableable() {
         mode: AuthMode::ApiKeys,
         admin_token: None,
         admin_token_previous: None,
+        operator_header: None,
     });
     let disabled = build_router(state);
     let response = disabled
@@ -277,6 +279,7 @@ async fn admin_token_rotation_window_accepts_both() {
         mode: AuthMode::ApiKeys,
         admin_token: Some("new-token".into()),
         admin_token_previous: Some("old-token".into()),
+        operator_header: None,
     });
     let router = build_router(state);
 
@@ -309,6 +312,7 @@ async fn keys_narrow_to_scopes_and_expire() {
         mode: AuthMode::ApiKeys,
         admin_token: Some(ADMIN.into()),
         admin_token_previous: None,
+        operator_header: None,
     });
     let router = build_router(state);
     let _dir = dir;

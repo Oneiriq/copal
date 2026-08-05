@@ -19,6 +19,7 @@ async fn serve() -> (String, tempfile::TempDir) {
         mode: AuthMode::ApiKeys,
         admin_token: Some(ADMIN.into()),
         admin_token_previous: None,
+        operator_header: None,
     });
     let router = build_router(state);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

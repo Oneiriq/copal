@@ -24,6 +24,7 @@ async fn keyed_router() -> (axum::Router, tempfile::TempDir) {
         mode: AuthMode::ApiKeys,
         admin_token: Some(ADMIN.into()),
         admin_token_previous: None,
+        operator_header: None,
     });
     (build_router(state), dir)
 }
@@ -381,6 +382,7 @@ async fn a_fleet_shares_one_budget_through_the_store_ledger() {
         mode: AuthMode::ApiKeys,
         admin_token: Some(ADMIN.into()),
         admin_token_previous: None,
+        operator_header: None,
     };
     let mut replica_a = AppState::new(
         store.clone(),
@@ -533,6 +535,7 @@ async fn engine_sessions_serve_the_files_face() {
             mode: AuthMode::ApiKeys,
             admin_token: Some(ADMIN.into()),
             admin_token_previous: None,
+            operator_header: None,
         })
         .with_engine_access(Some(copal_server::engine::EngineAccess {
             key: "gov-engine-key".to_owned(),
@@ -765,6 +768,7 @@ async fn caller_sessions_are_reused_per_identity() {
             mode: AuthMode::ApiKeys,
             admin_token: Some(ADMIN.into()),
             admin_token_previous: None,
+            operator_header: None,
         })
         .with_engine_access(Some(copal_server::engine::EngineAccess {
             key: "cache-key".to_owned(),
@@ -817,6 +821,7 @@ async fn zero_bounds_hold_no_sessions() {
             mode: AuthMode::ApiKeys,
             admin_token: Some(ADMIN.into()),
             admin_token_previous: None,
+            operator_header: None,
         })
         .with_engine_access(Some(copal_server::engine::EngineAccess {
             key: "nocache-key".to_owned(),

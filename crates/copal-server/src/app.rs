@@ -936,13 +936,13 @@ async fn set_quota<B: BlobStore>(
     Path(tenant): Path<String>,
     Json(request): Json<SetQuotaRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    crate::auth::require_admin(&state, &headers)?;
+    let operator = crate::auth::require_admin(&state, &headers)?;
     let tenant = TenantId::parse(&tenant)?;
     copal_store::repo::tenant::set_quota(&state.store, &tenant, request.max_bytes).await?;
     copal_store::repo::auth::record_audit(
         &state.store,
         &tenant,
-        "admin",
+        operator.as_str(),
         "tenant.quota_set",
         &request.max_bytes.to_string(),
         forwarded_origin(&headers).as_deref(),
@@ -970,7 +970,7 @@ async fn set_retention_policy<B: BlobStore>(
     Path(tenant): Path<String>,
     Json(request): Json<RetentionPolicyRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    crate::auth::require_admin(&state, &headers)?;
+    let operator = crate::auth::require_admin(&state, &headers)?;
     let tenant = TenantId::parse(&tenant)?;
     if request.seconds.is_none() && request.keep_last.is_none() {
         return Err(CopalError::validation("a policy needs seconds, keep_last, or both").into());
@@ -992,7 +992,7 @@ async fn set_retention_policy<B: BlobStore>(
     copal_store::repo::auth::record_audit(
         &state.store,
         &tenant,
-        "admin",
+        operator.as_str(),
         "tenant.retention_policy_set",
         tenant.as_str(),
         forwarded_origin(&headers).as_deref(),
@@ -1035,13 +1035,13 @@ async fn clear_retention_policy<B: BlobStore>(
     headers: HeaderMap,
     Path(tenant): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    crate::auth::require_admin(&state, &headers)?;
+    let operator = crate::auth::require_admin(&state, &headers)?;
     let tenant = TenantId::parse(&tenant)?;
     copal_store::repo::tenant::clear_retention_policy(&state.store, &tenant).await?;
     copal_store::repo::auth::record_audit(
         &state.store,
         &tenant,
-        "admin",
+        operator.as_str(),
         "tenant.retention_policy_cleared",
         tenant.as_str(),
         forwarded_origin(&headers).as_deref(),
@@ -1073,7 +1073,7 @@ async fn set_version_retention<B: BlobStore>(
     Path((tenant, file, number)): Path<(String, String, u64)>,
     Json(request): Json<RetentionRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    crate::auth::require_admin(&state, &headers)?;
+    let operator = crate::auth::require_admin(&state, &headers)?;
     let tenant = TenantId::parse(&tenant)?;
     let file = parse_id(&file)?;
     let mode = request.mode.as_deref().unwrap_or("governance");
@@ -1098,7 +1098,7 @@ async fn set_version_retention<B: BlobStore>(
     copal_store::repo::auth::record_audit(
         &state.store,
         &tenant,
-        "admin",
+        operator.as_str(),
         "version.retention_set",
         &format!("{file}#v{number}"),
         forwarded_origin(&headers).as_deref(),
@@ -1123,7 +1123,7 @@ async fn clear_version_retention<B: BlobStore>(
     headers: HeaderMap,
     Path((tenant, file, number)): Path<(String, String, u64)>,
 ) -> Result<StatusCode, ApiError> {
-    crate::auth::require_admin(&state, &headers)?;
+    let operator = crate::auth::require_admin(&state, &headers)?;
     let tenant = TenantId::parse(&tenant)?;
     let file = parse_id(&file)?;
     let applied =
@@ -1137,7 +1137,7 @@ async fn clear_version_retention<B: BlobStore>(
     copal_store::repo::auth::record_audit(
         &state.store,
         &tenant,
-        "admin",
+        operator.as_str(),
         "version.retention_cleared",
         &format!("{file}#v{number}"),
         forwarded_origin(&headers).as_deref(),
@@ -1204,7 +1204,7 @@ async fn version_hold<B: BlobStore>(
     reason: &str,
     held: bool,
 ) -> Result<StatusCode, ApiError> {
-    crate::auth::require_admin(state, headers)?;
+    let operator = crate::auth::require_admin(state, headers)?;
     if reason.trim().is_empty() {
         return Err(CopalError::validation("a hold change requires a reason").into());
     }
@@ -1219,7 +1219,7 @@ async fn version_hold<B: BlobStore>(
     copal_store::repo::auth::record_audit(
         &state.store,
         &tenant,
-        "admin",
+        operator.as_str(),
         action,
         &format!("{file}#v{number}"),
         forwarded_origin(headers).as_deref(),
@@ -1262,7 +1262,7 @@ async fn clear_quota<B: BlobStore>(
     headers: HeaderMap,
     Path(tenant): Path<String>,
 ) -> Result<StatusCode, ApiError> {
-    crate::auth::require_admin(&state, &headers)?;
+    let operator = crate::auth::require_admin(&state, &headers)?;
     let tenant = TenantId::parse(&tenant)?;
     if !copal_store::repo::tenant::clear_quota(&state.store, &tenant).await? {
         return Err(CopalError::not_found("no quota is set").into());
@@ -1270,7 +1270,7 @@ async fn clear_quota<B: BlobStore>(
     copal_store::repo::auth::record_audit(
         &state.store,
         &tenant,
-        "admin",
+        operator.as_str(),
         "tenant.quota_cleared",
         "",
         forwarded_origin(&headers).as_deref(),
@@ -1295,7 +1295,7 @@ async fn assign_storage<B: BlobStore>(
     Path(tenant): Path<String>,
     Json(request): Json<AssignStorageRequest>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    crate::auth::require_admin(&state, &headers)?;
+    let operator = crate::auth::require_admin(&state, &headers)?;
     let tenant = TenantId::parse(&tenant)?;
     if !state.residencies.contains(&request.residency) {
         return Err(CopalError::validation(format!(
@@ -1308,7 +1308,7 @@ async fn assign_storage<B: BlobStore>(
     copal_store::repo::auth::record_audit(
         &state.store,
         &tenant,
-        "admin",
+        operator.as_str(),
         "tenant.storage_assigned",
         &request.residency,
         forwarded_origin(&headers).as_deref(),
@@ -1462,7 +1462,7 @@ async fn create_principal<B: BlobStore>(
     Path(tenant): Path<String>,
     Json(request): Json<CreatePrincipalRequest>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
-    crate::auth::require_admin(&state, &headers)?;
+    let operator = crate::auth::require_admin(&state, &headers)?;
     let tenant = TenantId::parse(&tenant)?;
     if !matches!(request.kind.as_str(), "human" | "service" | "agent") {
         return Err(CopalError::validation("kind must be human, service, or agent").into());
@@ -1486,7 +1486,7 @@ async fn create_principal<B: BlobStore>(
     copal_store::repo::auth::record_audit(
         &state.store,
         &tenant,
-        "admin",
+        operator.as_str(),
         "principal.created",
         &row.handle,
         forwarded_origin(&headers).as_deref(),
@@ -1535,7 +1535,7 @@ async fn disable_principal<B: BlobStore>(
     headers: HeaderMap,
     Path((tenant, handle)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
-    crate::auth::require_admin(&state, &headers)?;
+    let operator = crate::auth::require_admin(&state, &headers)?;
     let tenant = TenantId::parse(&tenant)?;
     let disabled =
         copal_store::repo::principal::disable_principal(&state.store, &tenant, &handle).await?;
@@ -1545,7 +1545,7 @@ async fn disable_principal<B: BlobStore>(
     copal_store::repo::auth::record_audit(
         &state.store,
         &tenant,
-        "admin",
+        operator.as_str(),
         "principal.disabled",
         &handle,
         forwarded_origin(&headers).as_deref(),
@@ -1563,7 +1563,7 @@ async fn mint_key<B: BlobStore>(
     Path(tenant): Path<String>,
     Json(request): Json<MintKeyRequest>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
-    crate::auth::require_admin(&state, &headers)?;
+    let operator = crate::auth::require_admin(&state, &headers)?;
     let tenant = TenantId::parse(&tenant)?;
     for scope in &request.scopes {
         if !crate::auth::KEY_SCOPES.contains(&scope.as_str()) {
@@ -1629,7 +1629,7 @@ async fn mint_key<B: BlobStore>(
     copal_store::repo::auth::record_audit(
         &state.store,
         &tenant,
-        "admin",
+        operator.as_str(),
         "key.minted",
         &row.key_id(),
         forwarded_origin(&headers).as_deref(),
@@ -1669,7 +1669,7 @@ async fn revoke_key<B: BlobStore>(
     headers: HeaderMap,
     Path((tenant, key_id)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
-    crate::auth::require_admin(&state, &headers)?;
+    let operator = crate::auth::require_admin(&state, &headers)?;
     let tenant = TenantId::parse(&tenant)?;
     if !copal_store::repo::auth::revoke_key(&state.store, &tenant, &key_id).await? {
         return Err(CopalError::not_found(format!("key {key_id}")).into());
@@ -1677,7 +1677,7 @@ async fn revoke_key<B: BlobStore>(
     copal_store::repo::auth::record_audit(
         &state.store,
         &tenant,
-        "admin",
+        operator.as_str(),
         "key.revoked",
         &key_id,
         forwarded_origin(&headers).as_deref(),

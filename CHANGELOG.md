@@ -471,6 +471,18 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ### Governance
 
+- **The audit trail can name a person.** Operator actions recorded
+  `admin`, because a shared token is all the admin surface knew. With
+  `COPAL_OPERATOR_HEADER` naming the header an authenticating proxy
+  sets, every audited action carries whoever that proxy let through,
+  and a request arriving without the header is refused, which is what
+  keeps a caller from reaching the admin surface around the proxy.
+  The token check still runs first, so a header alone grants nothing,
+  and the identity is bounded and stripped before it reaches a trail
+  nothing can rewrite. Sign-in itself stays with the proxy, so any
+  provider works. Unset, actions are attributed to the deployment as
+  before.
+
 - **The audit trail exports to a SIEM.** One admin endpoint serves
   the whole deployment's audit events as NDJSON, ascending, keyset
   cursored over `(created_at, id)` with the checkpoint riding the

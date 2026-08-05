@@ -451,12 +451,41 @@ and this engine reports no lexical score at all, so fusing positions
 is both simpler and more honest: a document near the top of either
 ranking scores well, one near the top of both scores best.
 
-Hits carry the file id, the passage that matched, and an excerpt
-bounded at 400 characters, in the engine's relevance order. There is no score
-field: SurrealDB 3.x does not report per-row BM25 values through the
-full-text scan, so a score column would be a constant dressed as
-relevance. The analyzer lowercases, folds accents, and stems English,
-so `inspect` finds `inspection`.
+Hits carry the file id, the passage that matched, an excerpt bounded
+at 400 characters, and `matches`, in the engine's relevance order.
+There is no score field: SurrealDB 3.x does not report per-row BM25
+values through the full-text scan, so a score column would be a
+constant dressed as relevance. The analyzer lowercases, folds accents,
+and stems English, so `inspect` finds `inspection`.
+
+`matches` locates the query inside the excerpt: a list of
+`[start, end)` pairs counted in characters of the excerpt string, so a
+caller can mark them without searching the text again. Searching it
+again is what a caller cannot reliably do, and the same reason governs
+how the excerpt window is chosen. Both use the analyzer that decided
+the match rather than the words the caller typed. Ask for
+`inspecting`, match a passage that says `inspection`, and a literal
+search finds nothing in it:
+
+```json
+{
+  "mode": "hybrid",
+  "items": [
+    {
+      "file": "file:01J...",
+      "passage": 3,
+      "excerpt": "...Routine inspection of the hull followed...",
+      "matches": [[10, 20]]
+    }
+  ],
+  "next_cursor": null
+}
+```
+
+Where a passage has several matches, the window lands on the densest
+cluster: a document that mentions a term once at the top and four
+times together lower down is about the latter. A passage with nothing
+to mark carries an empty list rather than omitting the field.
 
 Search is tenant-scoped in the query itself rather than filtered
 afterward, empty terms refuse, a re-upload replaces what matches, and

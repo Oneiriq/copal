@@ -9,6 +9,27 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ## [Unreleased]
 
+### Retrieval
+
+- **A hit shows the words that matched, and says where they are.**
+  Retrieval and ranking run over stemmed terms, and the excerpt was
+  chosen by searching the passage for the words the caller typed.
+  Those disagree in the case stemming exists for: ask for
+  `inspecting`, match a passage that says `inspection`, and the
+  literal search finds nothing, so the reader was handed the opening
+  of the passage and no reason it came back. Verified against a
+  running server, a 1067-character document whose only match sits at
+  character 513 returned pure filler.
+
+  The window is now chosen with the analyzer that decided the match,
+  and hits carry `matches`: `[start, end)` pairs in characters of the
+  excerpt, so a caller can mark them without searching the text again.
+  Where a passage matches several times the window lands on the
+  densest cluster, since a document that mentions a term once at the
+  top and four times together lower down is about the latter. A hit
+  with nothing to mark carries an empty list. Search declares only its
+  inputs on the contract, so no generated artifact moves.
+
 ### Fixed
 
 - **The S3 gateway refuses subresources it does not implement.** A

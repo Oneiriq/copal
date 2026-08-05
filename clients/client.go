@@ -376,3 +376,44 @@ func (c *Client) RetryRun(id string) (map[string]any, error) {
 	return out, nil
 }
 
+func (c *Client) Search(q string, mode string, limit int64, prefix string, contentType string, cursor string, facets string) (any, error) {
+	query := url.Values{}
+	query.Set("q", q)
+	if mode != "" {
+		query.Set("mode", mode)
+	}
+	if limit > 0 {
+		query.Set("limit", fmt.Sprint(limit))
+	}
+	if prefix != "" {
+		query.Set("prefix", prefix)
+	}
+	if contentType != "" {
+		query.Set("content_type", contentType)
+	}
+	if cursor != "" {
+		query.Set("cursor", cursor)
+	}
+	if facets != "" {
+		query.Set("facets", facets)
+	}
+	path := "/v1/search"
+	if encoded := query.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+	var out any
+	if err := c.request("GET", path, nil, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) FileText(id string) (any, error) {
+	path := "/v1/files/" + id + "/text"
+	var out any
+	if err := c.request("GET", path, nil, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+

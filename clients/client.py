@@ -220,3 +220,11 @@ class Client:
   def retry_run(self, id: str) -> Any:
     return self._request('POST', f'/v1/runs/{id}/retry')
 
+  def search(self, q: str, mode: str | None = None, limit: int | None = None, prefix: str | None = None, content_type: str | None = None, cursor: str | None = None, facets: str | None = None) -> Any:
+    query = {k: v for k, v in {'q': q, 'mode': mode, 'limit': limit, 'prefix': prefix, 'content_type': content_type, 'cursor': cursor, 'facets': facets}.items() if v is not None}
+    suffix = f'?{urllib.parse.urlencode(query)}' if query else ''
+    return self._request('GET', f'/v1/search{suffix}')
+
+  def file_text(self, id: str) -> Any:
+    return self._request('GET', f'/v1/files/{id}/text')
+

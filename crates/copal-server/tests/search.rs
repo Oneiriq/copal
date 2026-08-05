@@ -1077,3 +1077,162 @@ async fn a_partial_answer_still_returns_every_document() {
     let unique: std::collections::HashSet<&&str> = ids.iter().collect();
     assert_eq!(unique.len(), 3, "{ids:?}");
 }
+
+/// Upload at a given access level, since the default helper does not
+/// take one.
+async fn upload_at(router: &axum::Router, path: &str, access: &str, body: &[u8]) -> String {
+    let created = router
+        .clone()
+        .oneshot(req(
+            "POST",
+            "/v1/files",
+            Body::from(format!(
+                r#"{{"path":"{path}","content_type":"text/plain","access":"{access}"}}"#
+            )),
+        ))
+        .await
+        .unwrap();
+    let id = json_body(created).await["id"].as_str().unwrap().to_owned();
+    let put = router
+        .clone()
+        .oneshot(req(
+            "PUT",
+            &format!("/v1/files/{id}/content"),
+            Body::from(body.to_vec()),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(put.status(), StatusCode::OK);
+    id
+}
+
+/// A grant-only file's text is its content, and its content flows
+/// exclusively through issued URLs.
+///
+/// Search enforced nothing: it filtered by tenant and never looked at
+/// the access level, so one token got `403` from the download path and
+/// the whole passage from the search path. Both halves are asserted
+/// here, because the refusal is what makes the disclosure a leak.
+#[tokio::test]
+async fn a_grant_only_file_does_not_answer_searches() {
+    let (router, engine, _dir) = stack(None).await;
+    let secret = b"Board minutes: the acquisition of Northwind closes in March.";
+    let id = upload_at(&router, "secret/minutes.txt", "grant", secret).await;
+    // A readable file alongside it, so an empty result cannot pass by
+    // accident of nothing being indexed.
+    upload(
+        &router,
+        "public/notes.txt",
+        "text/plain",
+        b"acquisition notes, routine",
+    )
+    .await;
+    while engine.tick("w").await.unwrap() {}
+
+    let download = router
+        .clone()
+        .oneshot(req(
+            "GET",
+            &format!("/v1/files/{id}/content"),
+            Body::empty(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(
+        download.status(),
+        StatusCode::FORBIDDEN,
+        "the bytes are refused, which is what makes the text a leak",
+    );
+
+    let hits = search(&router, "acquisition").await;
+    let files: Vec<&str> = hits.iter().map(|h| h["file"].as_str().unwrap()).collect();
+    assert!(
+        !files.contains(&id.as_str()),
+        "grant-only text surfaced in search: {hits:#?}",
+    );
+    assert_eq!(files.len(), 1, "the readable file still answers: {hits:#?}");
+    for hit in &hits {
+        assert!(
+            !hit["excerpt"].as_str().unwrap().contains("Northwind"),
+            "the excerpt carried the withheld content: {hit:#?}",
+        );
+    }
+}
+
+/// The counts describe what the caller may read, or they report
+/// documents whose existence is itself withheld.
+#[tokio::test]
+async fn facets_do_not_count_what_search_will_not_return() {
+    let (router, engine, _dir) = stack(None).await;
+    upload_at(
+        &router,
+        "secret/minutes.txt",
+        "grant",
+        b"acquisition of Northwind",
+    )
+    .await;
+    upload(
+        &router,
+        "public/notes.txt",
+        "text/plain",
+        b"acquisition notes",
+    )
+    .await;
+    while engine.tick("w").await.unwrap() {}
+
+    let body = search_json(&router, "/v1/search?q=acquisition&facets=access").await;
+    let buckets = body["facets"]["access"].as_array().unwrap();
+    let total: i64 = buckets.iter().map(|b| b["files"].as_i64().unwrap()).sum();
+    assert_eq!(total, 1, "only the readable file is counted: {buckets:?}");
+    assert!(
+        !buckets.iter().any(|b| b["value"] == "grant"),
+        "a grant bucket names files the caller cannot reach: {buckets:?}",
+    );
+}
+
+/// The semantic leg reaches the same rows by a different index, so it
+/// needs the same guard. A vector query finds passages that share no
+/// words, which is exactly how a withheld document would come back
+/// under a query that never names it.
+#[tokio::test]
+async fn the_semantic_leg_withholds_the_same_files() {
+    let (router, engine, _dir) = semantic_stack().await;
+    let id = upload_at(
+        &router,
+        "secret/minutes.txt",
+        "grant",
+        b"acquisition of Northwind",
+    )
+    .await;
+    while engine.tick("w").await.unwrap() {}
+
+    let body = search_mode(&router, "acquisition", "semantic").await;
+    let hits = body["items"].as_array().cloned().unwrap_or_default();
+    assert!(
+        !hits.iter().any(|h| h["file"].as_str() == Some(id.as_str())),
+        "grant-only text surfaced through the vector index: {body:#?}",
+    );
+}
+
+/// The guard must not overreach. `private` and `tenant` both serve to
+/// a read-scoped caller of the owning tenant on the download path, so
+/// both keep answering searches.
+#[tokio::test]
+async fn the_readable_access_levels_still_answer() {
+    let (router, engine, _dir) = stack(None).await;
+    for (path, access) in [
+        ("a/private.txt", "private"),
+        ("a/tenant.txt", "tenant"),
+        ("a/public.txt", "public"),
+    ] {
+        upload_at(&router, path, access, b"quarterly inspection report").await;
+    }
+    while engine.tick("w").await.unwrap() {}
+
+    let hits = search(&router, "inspection").await;
+    assert_eq!(
+        hits.len(),
+        3,
+        "withholding more than the download path does breaks search: {hits:#?}",
+    );
+}

@@ -9,6 +9,31 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ## [Unreleased]
 
+### Security
+
+- **Search withholds what download withholds.** Retrieval filtered by
+  tenant and looked at the access level nowhere: `access` reached the
+  query code only as a facet field, never as a predicate. So one token
+  met `403 file is grant-only; redeem an issued URL` on
+  `GET /v1/files/{id}/content` and got the whole passage back from
+  `GET /v1/search`, excerpt and all. A grant-only file serves its
+  bytes exclusively through issued URLs, and its extracted text is
+  those bytes.
+
+  Both retrieval legs and the facet counts now carry the guard, since
+  the vector index reaches the same rows by another route and a count
+  would otherwise report documents whose existence is withheld. The
+  rule mirrors what a read-scoped caller of the owning tenant meets on
+  the download path: grant is refused and quarantined records are
+  refused, while `public`, `private`, and `tenant` all answer. Deleted
+  records are named too, because the purge at deletion ignores its own
+  errors.
+
+  The principle was already written down one function away, in the
+  soft-delete path: search indexes what exists, so a tombstoned file's
+  text would keep answering queries with content nobody can fetch. It
+  had been applied to deletion and never to access.
+
 ### Deployment
 
 - **Debug builds carry line tables instead of full symbols.** The

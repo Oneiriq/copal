@@ -394,6 +394,7 @@ pub async fn semantic_search(
         .from_table(CHUNK_TABLE)
         .map_err(|e| map_store_err("semantic_search", e))?
         .where_(eq("tenant_id", tenant.as_str()))
+        .where_str(DISCLOSABLE)
         .vector_search_indexed("embedding", embedding.to_vec(), over_fetch, HNSW_EF)
         .map_err(|e| map_store_err("semantic_search", e))?;
     for clause in filters.clauses() {
@@ -516,6 +517,7 @@ pub async fn facet_counts(
         .from_table(CHUNK_TABLE)
         .map_err(|e| map_store_err("facet_counts", e))?
         .where_(eq("tenant_id", tenant.as_str()))
+        .where_str(DISCLOSABLE)
         .fulltext_search("body", 1, terms)
         .map_err(|e| map_store_err("facet_counts", e))?;
     for clause in filters.clauses() {
@@ -542,6 +544,28 @@ pub async fn facet_counts(
     buckets.sort_by(|a, b| b.files.cmp(&a.files).then_with(|| a.value.cmp(&b.value)));
     Ok(buckets)
 }
+
+/// Files whose extracted text must never surface in retrieval.
+///
+/// The download path already refuses these, and the soft-delete path
+/// already states the principle: search indexes what exists, so text
+/// that keeps answering queries is content nobody can fetch leaking
+/// through a second door. An excerpt IS the content for a grant-only
+/// file, whose bytes flow exclusively through issued URLs.
+///
+/// The rule mirrors what a read-scoped caller of the same tenant meets
+/// on `GET /v1/files/{id}/content`: grant is refused, and
+/// `servable_content()` refuses a quarantined record. State otherwise
+/// plays no part there, because a failed re-upload keeps the previous
+/// version serving, so a failed record is not excluded here either.
+/// Deleted records have their chunks purged at deletion; the purge
+/// ignores its own errors, so they are named here as well.
+///
+/// This lives on the queries rather than on [`SearchFilters`] because
+/// a filter is something a caller chooses and this is not.
+const DISCLOSABLE: &str = "file.access != 'grant' \
+                           AND file.state != 'quarantined' \
+                           AND file.state != 'deleted'";
 
 /// Lexical search over a tenant's extracted text, in relevance order.
 ///
@@ -587,6 +611,7 @@ pub async fn search(
         .from_table(CHUNK_TABLE)
         .map_err(|e| map_store_err("search", e))?
         .where_(eq("tenant_id", tenant.as_str()))
+        .where_str(DISCLOSABLE)
         .fulltext_search("body", 1, terms)
         .map_err(|e| map_store_err("search", e))?;
     for clause in filters.clauses() {

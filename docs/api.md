@@ -438,6 +438,15 @@ matched, and its excerpt is the window around the matching words
 rather than the opening of a long document. `GET /v1/files/{id}/text`
 still returns the whole text in one piece.
 
+Retrieval withholds what the download path withholds. A grant-only
+file serves its bytes exclusively through issued URLs, and an excerpt
+of its text is those bytes, so it answers no search on either leg and
+appears in no facet count. Quarantined records are withheld for the
+same reason `servable_content` refuses them, and deleted records have
+their text purged at deletion. The levels a read-scoped caller of the
+owning tenant can download, which is `public`, `private`, and
+`tenant`, are the levels that answer searches.
+
 Semantic retrieval applies a relevance floor, so a query about
 something nobody stored returns nothing rather than the least-distant
 passage in the corpus. The floor is a cosine distance

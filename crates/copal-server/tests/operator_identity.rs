@@ -94,8 +94,9 @@ async fn with_the_seam_the_trail_names_the_person() {
     );
 }
 
-/// The seam is a control, not a label: a request holding the token but
-/// carrying no identity did not pass the proxy, and is refused.
+/// Configuring the seam makes it a control: a request holding the
+/// token but carrying no identity did not pass the proxy, so it is
+/// refused.
 #[tokio::test]
 async fn a_request_that_skipped_the_proxy_is_refused() {
     let (router, _dir) = stack(Some(HEADER)).await;

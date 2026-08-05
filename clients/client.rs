@@ -293,4 +293,37 @@ impl Client {
         Ok(self.http.post(url).header("x-copal-tenant", &self.tenant).send().await?.error_for_status()?.json().await?)
     }
 
+    pub async fn search(&self, q: &str, mode: Option<&str>, limit: Option<i64>, prefix: Option<&str>, content_type: Option<&str>, cursor: Option<&str>, facets: Option<&str>) -> Result<Value, Error> {
+        let url = format!("{}/v1/search", self.base_url);
+        let mut request = self.http.get(url)
+            .header("x-copal-tenant", &self.tenant);
+        request = request.query(&[("q", q)]);
+        if let Some(value) = mode {
+            request = request.query(&[("mode", value)]);
+        }
+        if let Some(value) = limit {
+            request = request.query(&[("limit", value)]);
+        }
+        if let Some(value) = prefix {
+            request = request.query(&[("prefix", value)]);
+        }
+        if let Some(value) = content_type {
+            request = request.query(&[("content_type", value)]);
+        }
+        if let Some(value) = cursor {
+            request = request.query(&[("cursor", value)]);
+        }
+        if let Some(value) = facets {
+            request = request.query(&[("facets", value)]);
+        }
+        Ok(request.send().await?.error_for_status()?.json().await?)
+    }
+
+    pub async fn file_text(&self, id: &str) -> Result<Value, Error> {
+        let url = format!("{}/v1/files/{id}/text", self.base_url);
+        let request = self.http.get(url)
+            .header("x-copal-tenant", &self.tenant);
+        Ok(request.send().await?.error_for_status()?.json().await?)
+    }
+
 }

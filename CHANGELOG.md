@@ -11,6 +11,15 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ### Retrieval
 
+- **The generated SDKs can call search.** Janus carried contract
+  queries to OpenAPI, GraphQL, MCP, the console, and both runtime
+  routers, and never to the four client generators, so `search` and
+  `file_text` were published on five faces and absent from every SDK.
+  The highlighting and facets above were unreachable from a generated
+  client. Fixed upstream in janus and picked up here: all four clients
+  now carry both queries, `search` with its seven parameters including
+  `facets`.
+
 - **Search counts the match set.** `facets=content_type,access` on a
   search returns how many documents carry each value, alongside the
   ranked page. Two decisions are the whole feature. The counts are

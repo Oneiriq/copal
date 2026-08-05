@@ -218,4 +218,21 @@ export class Client {
     return this.request('POST', `/v1/runs/${id}/retry`)
   }
 
+  search(q: string, mode?: string, limit?: number, prefix?: string, contentType?: string, cursor?: string, facets?: string): Promise<unknown> {
+    const query = new URLSearchParams()
+    query.set('q', String(q))
+    if (mode !== undefined) query.set('mode', String(mode))
+    if (limit !== undefined) query.set('limit', String(limit))
+    if (prefix !== undefined) query.set('prefix', String(prefix))
+    if (contentType !== undefined) query.set('content_type', String(contentType))
+    if (cursor !== undefined) query.set('cursor', String(cursor))
+    if (facets !== undefined) query.set('facets', String(facets))
+    const suffix = query.size > 0 ? `?${query}` : ''
+    return this.request('GET', `/v1/search${suffix}`)
+  }
+
+  fileText(id: string): Promise<unknown> {
+    return this.request('GET', `/v1/files/${id}/text`)
+  }
+
 }

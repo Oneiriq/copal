@@ -11,6 +11,26 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ### Retrieval
 
+- **Search counts the match set.** `facets=content_type,access` on a
+  search returns how many documents carry each value, alongside the
+  ranked page. Two decisions are the whole feature. The counts are
+  documents: the engine counts rows and a row is a passage, so a
+  document matching in six places would have been six documents, and
+  the count measures the distinct set of files instead. The counts are
+  also exact over everything the query matches, because the ranked
+  page comes from a 500-candidate rescore window and a count that
+  inherited that bound would quietly mean "of the first five hundred".
+  The facet query carries no limit.
+
+  Filters narrow the counts the same way they narrow the results. A
+  search that asks for no facets runs no facet query. An unsupported
+  field is a `400` naming the fields that work, since an empty list
+  would read as "nothing matched". `tests/engine_assumptions.rs` pins
+  the engine behaviour this rests on: `count::distinct` does not
+  exist, `SELECT DISTINCT a, b` is a parse error, and
+  `array::len(array::distinct(array::group(file)))` is the form that
+  survives `GROUP BY`.
+
 - **A hit shows the words that matched, and says where they are.**
   Retrieval and ranking run over stemmed terms, and the excerpt was
   chosen by searching the passage for the words the caller typed.

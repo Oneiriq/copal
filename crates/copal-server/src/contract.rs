@@ -698,6 +698,15 @@ pub fn contract() -> Contract {
                                 .into(),
                         ),
                     },
+                    ActionField {
+                        name: "facets".into(),
+                        kind: TypeRef::String,
+                        required: false,
+                        description: Some(
+                            "Count the match set by these file fields, comma separated                              (content_type, access). Counts are documents, exact over                              every match rather than over the ranked window."
+                                .into(),
+                        ),
+                    },
                 ],
                 description: Some(
                     "Retrieval across the tenant's extracted text: engine-selected candidates                      rescored in process, fused across lexical and semantic rankings."

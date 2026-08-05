@@ -764,3 +764,130 @@ async fn every_hit_carries_a_matches_list() {
     let marked: String = excerpt.chars().skip(start).take(end - start).collect();
     assert_eq!(marked, "inspection");
 }
+
+/// One search response, whole, for tests that read past `items`.
+async fn search_json(router: &axum::Router, uri: &str) -> Value {
+    json_body(
+        router
+            .clone()
+            .oneshot(req("GET", uri, Body::empty()))
+            .await
+            .unwrap(),
+    )
+    .await
+}
+/// Facets count DOCUMENTS over the WHOLE match set.
+///
+/// Both halves matter. The engine's `count()` counts passages, so a
+/// document matching in three places would be three PDFs. And the
+/// ranked page comes from a rescore window, so a count taken from it
+/// would quietly mean "of the first few hundred".
+#[tokio::test]
+async fn facets_count_documents_across_the_whole_match_set() {
+    let (router, engine, _dir) = stack(None).await;
+    // One long document matching in several passages, plus two short
+    // ones. Counting passages and counting documents disagree here.
+    let repeated = "The vessel inspection covered the hull. ".repeat(120);
+    for (path, kind, body) in [
+        ("reports/long.txt", "text/plain", repeated.as_str()),
+        (
+            "reports/short.txt",
+            "text/plain",
+            "a routine inspection log",
+        ),
+        ("manuals/guide.md", "text/markdown", "inspection procedures"),
+    ] {
+        upload(&router, path, kind, body.as_bytes()).await;
+    }
+    while engine.tick("w").await.unwrap() {}
+
+    let body = search_json(&router, "/v1/search?q=inspecting&facets=content_type").await;
+    let buckets = body["facets"]["content_type"].as_array().unwrap();
+    let counts: std::collections::HashMap<&str, i64> = buckets
+        .iter()
+        .map(|b| (b["value"].as_str().unwrap(), b["files"].as_i64().unwrap()))
+        .collect();
+    assert_eq!(
+        counts.get("text/plain"),
+        Some(&2),
+        "two documents, however many passages matched: {buckets:?}",
+    );
+    assert_eq!(counts.get("text/markdown"), Some(&1), "{buckets:?}");
+
+    // The long document alone carries more matching passages than the
+    // whole facet count, which is the distinction the test exists for.
+    let hits = search(&router, "inspecting").await;
+    assert!(!hits.is_empty());
+}
+
+/// Asking for nothing costs nothing: no facet key, and no second
+/// query over the match set.
+#[tokio::test]
+async fn facets_are_absent_unless_asked_for() {
+    let (router, engine, _dir) = stack(None).await;
+    upload(&router, "a.txt", "text/plain", b"routine inspection").await;
+    while engine.tick("w").await.unwrap() {}
+
+    let body = search_json(&router, "/v1/search?q=inspecting").await;
+    assert!(body.get("facets").is_none(), "{body:#?}");
+
+    let body = search_json(&router, "/v1/search?q=inspecting&facets=access").await;
+    assert!(body["facets"]["access"].is_array(), "{body:#?}");
+}
+
+/// A field nobody supports is a validation error rather than an empty
+/// list, because an empty list reads as "nothing matched".
+#[tokio::test]
+async fn an_unknown_facet_field_is_refused() {
+    let (router, engine, _dir) = stack(None).await;
+    upload(&router, "a.txt", "text/plain", b"routine inspection").await;
+    while engine.tick("w").await.unwrap() {}
+
+    let response = router
+        .clone()
+        .oneshot(req(
+            "GET",
+            "/v1/search?q=inspecting&facets=size_bytes",
+            Body::empty(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = json_body(response).await;
+    assert!(
+        body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("content_type and access"),
+        "the error names what IS allowed: {body:#?}",
+    );
+}
+
+/// Facets describe the filtered set, so narrowing the search narrows
+/// the counts. A facet that ignored filters would describe a result
+/// the caller is not looking at.
+#[tokio::test]
+async fn filters_narrow_the_counts_too() {
+    let (router, engine, _dir) = stack(None).await;
+    for (path, kind) in [
+        ("reports/a.txt", "text/plain"),
+        ("reports/b.txt", "text/plain"),
+        ("manuals/c.txt", "text/plain"),
+    ] {
+        upload(&router, path, kind, b"routine inspection of the hull").await;
+    }
+    while engine.tick("w").await.unwrap() {}
+
+    let all = search_json(&router, "/v1/search?q=inspecting&facets=content_type").await;
+    assert_eq!(all["facets"]["content_type"][0]["files"], 3);
+
+    let narrowed = search_json(
+        &router,
+        "/v1/search?q=inspecting&prefix=reports/&facets=content_type",
+    )
+    .await;
+    assert_eq!(
+        narrowed["facets"]["content_type"][0]["files"], 2,
+        "the prefix applies to the counts: {narrowed:#?}",
+    );
+}

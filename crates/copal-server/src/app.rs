@@ -690,6 +690,9 @@ struct SearchQuery {
     content_type: Option<String>,
     #[serde(default)]
     cursor: Option<String>,
+    /// Fields to count the match set by, comma separated.
+    #[serde(default)]
+    facets: Option<String>,
 }
 
 /// Search a tenant's extracted text.
@@ -710,7 +713,20 @@ pub(crate) async fn search_core<B: BlobStore>(
     limit: i64,
     filters: &copal_store::repo::text::SearchFilters,
     cursor: Option<&str>,
+    facets: Option<&str>,
 ) -> Result<serde_json::Value, ApiError> {
+    // Parsed before any retrieval runs, so a misspelled field is a
+    // validation error rather than a search the caller pays for and
+    // then cannot read the counts of.
+    let facet_fields = match facets {
+        Some(raw) => raw
+            .split(',')
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(copal_store::repo::text::FacetField::parse)
+            .collect::<copal_core::Result<Vec<_>>>()?,
+        None => Vec::new(),
+    };
     // The cursor is a ranking offset, opaque on the wire. Rankings
     // shift as content changes, so continuation is best-effort: a
     // page boundary may repeat or skip a result that moved between
@@ -821,7 +837,26 @@ pub(crate) async fn search_core<B: BlobStore>(
     } else {
         None
     };
-    Ok(json!({ "mode": mode, "items": page, "next_cursor": next_cursor }))
+
+    let mut response = json!({ "mode": mode, "items": page, "next_cursor": next_cursor });
+    // Counted over the whole match set rather than the ranked window,
+    // so a facet says how many documents match and the page says which
+    // ones rank. Lexical matching decides membership either way: the
+    // semantic leg has no match set to count, only a neighbourhood.
+    if !facet_fields.is_empty() {
+        let mut counts = serde_json::Map::new();
+        for field in facet_fields {
+            let buckets: Vec<serde_json::Value> =
+                copal_store::repo::text::facet_counts(store, tenant, q, field, filters)
+                    .await?
+                    .into_iter()
+                    .map(|bucket| json!({ "value": bucket.value, "files": bucket.files }))
+                    .collect();
+            counts.insert(field.as_str().to_owned(), json!(buckets));
+        }
+        response["facets"] = serde_json::Value::Object(counts);
+    }
+    Ok(response)
 }
 
 async fn search_text<B: BlobStore>(
@@ -846,6 +881,7 @@ async fn search_text<B: BlobStore>(
         limit,
         &filters,
         params.cursor.as_deref(),
+        params.facets.as_deref(),
     )
     .await?;
     Ok(Json(answer))

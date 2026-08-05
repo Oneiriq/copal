@@ -1305,6 +1305,15 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "description": "Count the match set by these file fields, comma separated                              (content_type, access). Counts are documents, exact over                              every match rather than over the ranked window.",
+            "in": "query",
+            "name": "facets",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {

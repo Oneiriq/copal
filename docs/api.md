@@ -487,6 +487,42 @@ cluster: a document that mentions a term once at the top and four
 times together lower down is about the latter. A passage with nothing
 to mark carries an empty list rather than omitting the field.
 
+### Facets
+
+`facets` counts the match set by one or more file fields, comma
+separated. Two fields answer: `content_type` and `access`.
+
+```
+GET /v1/search?q=inspecting&facets=content_type,access
+```
+
+```json
+"facets": {
+  "content_type": [
+    {"value": "text/plain", "files": 2},
+    {"value": "text/markdown", "files": 1}
+  ],
+  "access": [{"value": "private", "files": 3}]
+}
+```
+
+Counts are **documents**, and they are **exact over the whole match
+set**. Both halves are choices worth stating. The engine counts rows,
+and a row is a passage, so a document matching in six places would
+otherwise be six documents; the count measures the distinct set of
+files instead. And the ranked page comes from a rescore window bounded
+at 500 candidates, so a count taken from it would quietly mean "of the
+first five hundred". The facet query carries no limit.
+
+Filters apply to the counts, so `prefix` and `content_type` narrow
+what is counted the same way they narrow what is returned. Faceting on
+`content_type` while also filtering by it therefore yields one bucket.
+
+Asking for no facets runs no facet query and returns no `facets` key,
+so a search that does not want counts does not pay for them. An
+unsupported field is a `400` naming the fields that work, because an
+empty list would read as "nothing matched".
+
 Search is tenant-scoped in the query itself rather than filtered
 afterward, empty terms refuse, a re-upload replaces what matches, and
 deleting a file removes it from the index so results never name

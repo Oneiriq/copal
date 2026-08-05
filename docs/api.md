@@ -243,6 +243,50 @@ download: their bytes flow only through issued grants. Listings walk
 the live-path index in key order; `delimiter` collapses shared segments
 into `CommonPrefixes`.
 
+### Where the compatibility stops
+
+The gateway covers the object plane so stock tooling can move bytes in
+and out. It is a door onto Copal storage, and the operations above are
+the whole of it. Everything else an S3 client might reach for is
+absent, and the reason differs by case.
+
+Four are absent because Copal already answers the question somewhere
+else, and a second answer on the S3 face could disagree with the
+first:
+
+| S3 feature | Where Copal answers it |
+| --- | --- |
+| Versioning API (`?versions`, `versionId`) | A file's version list: `GET /v1/files/{id}/versions`. The gateway serves the live version of a key and refuses to copy a specific one. |
+| Object Lock, legal hold | Retention policy and holds, tenant-wide and admin-set. See [retention.md](retention.md). |
+| Bucket and object ACLs | The file's access level, and grants for anything narrower. A bucket is a tenant, so a bucket-wide ACL would be a tenant-wide one. |
+| Lifecycle rules (`?lifecycle`) | Retention handles expiry. Cost tiering is genuinely absent and on the [roadmap](roadmap.md). |
+
+The rest are absent because nothing has needed them: object tagging,
+`?cors`, `?policy`, `?encryption`, `?replication`, `?website`,
+`?accelerate`, `?logging`, `?notification`, requester-pays, storage
+classes beyond the default, presigned `POST` policy uploads, and
+bucket creation or deletion (a bucket is a tenant, minted on the admin
+surface).
+
+Asking for any of them returns `501 NotImplemented` naming the
+subresource. That refusal is load-bearing. A query key like `?tagging`
+changes what a request means, and without the refusal these fall
+through to the handler for the bare path: `GET /{bucket}?lifecycle`
+would answer with an object listing under a `200`, and
+`PUT /{bucket}/{key}?tagging` would write the tagging document into
+the object as its content, destroying what the client had just
+uploaded.
+
+`GET /{bucket}?versioning` is the one exception, because it has a true
+answer and clients probe it before transferring. It returns an empty
+`VersioningConfiguration`: the S3 face exposes no versionIds, and
+`versionId` on a request is refused like the rest.
+
+The practical read: `mc`, `rclone`, and `aws s3` move data correctly,
+including `sync` and `mirror`. A tool that manages bucket
+configuration rather than objects is pointed at the wrong face, and
+the admin surface is the right one.
+
 ## Ingestion, on the contract
 
 Creation is a declared action: `POST /v1/files` in the OpenAPI

@@ -1412,3 +1412,160 @@ async fn s3_mint_answers_to_the_ceiling() {
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     assert!(text_body(response).await.contains("read and write"));
 }
+
+/// A subresource the gateway does not implement must refuse rather
+/// than fall through to the handler for the bare path. The fall-through
+/// was not a harmless no-op: `?tagging` on a PUT wrote the tagging
+/// document into the object as its content, so a client setting tags
+/// after an upload destroyed what it had just uploaded.
+#[tokio::test]
+async fn an_unimplemented_subresource_refuses_instead_of_answering_wrong() {
+    let (gateway, admin, _dir) = stack().await;
+    let (access_key, secret) = mint(&admin, "acme").await;
+
+    let payload = b"the object worth keeping";
+    let request = signed_request(
+        "PUT",
+        "/acme/docs/readme.txt",
+        "",
+        &sha256_hex(payload),
+        &access_key,
+        &secret,
+        Body::from(payload.to_vec()),
+        &[],
+    );
+    let response = gateway.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // Setting tags: refused, and the body is not treated as content.
+    let tags = b"<Tagging><TagSet><Tag><Key>a</Key><Value>b</Value></Tag></TagSet></Tagging>";
+    let request = signed_request(
+        "PUT",
+        "/acme/docs/readme.txt",
+        "tagging",
+        &sha256_hex(tags),
+        &access_key,
+        &secret,
+        Body::from(tags.to_vec()),
+        &[],
+    );
+    let response = gateway.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+    let body = text_body(response).await;
+    assert!(body.contains("NotImplemented"), "{body}");
+    assert!(body.contains("?tagging"), "the error names it: {body}");
+
+    // The object still holds what was uploaded.
+    let request = signed_request(
+        "GET",
+        "/acme/docs/readme.txt",
+        "",
+        "UNSIGNED-PAYLOAD",
+        &access_key,
+        &secret,
+        Body::empty(),
+        &[],
+    );
+    let response = gateway.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        text_body(response).await,
+        "the object worth keeping",
+        "a refused subresource must not have rewritten the object",
+    );
+}
+
+/// Bucket-level subresources fell through to the object listing, so a
+/// client asking for the lifecycle configuration got a list of objects
+/// under a 200 and had to parse its way to confusion.
+#[tokio::test]
+async fn bucket_subresources_do_not_answer_with_a_listing() {
+    let (gateway, admin, _dir) = stack().await;
+    let (access_key, secret) = mint(&admin, "acme").await;
+
+    for subresource in [
+        "lifecycle",
+        "acl",
+        "policy",
+        "cors",
+        "replication",
+        "versions",
+    ] {
+        // The `=` is what SigV4 canonicalization produces for a
+        // valueless parameter, and what every SDK sends.
+        let signed_form = format!("{subresource}=");
+        let request = signed_request(
+            "GET",
+            "/acme",
+            &signed_form,
+            "UNSIGNED-PAYLOAD",
+            &access_key,
+            &secret,
+            Body::empty(),
+            &[],
+        );
+        let response = gateway.clone().oneshot(request).await.unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::NOT_IMPLEMENTED,
+            "?{subresource} answered {}",
+            response.status(),
+        );
+        let body = text_body(response).await;
+        assert!(!body.contains("ListBucketResult"), "?{subresource}: {body}");
+    }
+}
+
+/// GetBucketVersioning has a true answer and clients probe it before
+/// transferring, so it gets one: the S3 face exposes no versionIds,
+/// which is what an empty configuration states.
+#[tokio::test]
+async fn bucket_versioning_answers_empty_rather_than_refusing() {
+    let (gateway, admin, _dir) = stack().await;
+    let (access_key, secret) = mint(&admin, "acme").await;
+
+    let request = signed_request(
+        "GET",
+        "/acme",
+        "versioning=",
+        "UNSIGNED-PAYLOAD",
+        &access_key,
+        &secret,
+        Body::empty(),
+        &[],
+    );
+    let response = gateway.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = text_body(response).await;
+    assert!(body.contains("VersioningConfiguration"), "{body}");
+    assert!(!body.contains("<Status>"), "nothing is enabled: {body}");
+}
+
+/// The check is an allowlist of S3's own subresource names, so the
+/// operations the gateway does serve are untouched.
+#[tokio::test]
+async fn the_served_query_forms_still_work() {
+    let (gateway, admin, _dir) = stack().await;
+    let (access_key, secret) = mint(&admin, "acme").await;
+
+    for (path, query, marker) in [
+        ("/acme", "list-type=2", "ListBucketResult"),
+        ("/acme", "location=", "LocationConstraint"),
+        ("/acme", "uploads=", "ListMultipartUploadsResult"),
+    ] {
+        let request = signed_request(
+            "GET",
+            path,
+            query,
+            "UNSIGNED-PAYLOAD",
+            &access_key,
+            &secret,
+            Body::empty(),
+            &[],
+        );
+        let response = gateway.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "?{query}");
+        let body = text_body(response).await;
+        assert!(body.contains(marker), "?{query}: {body}");
+    }
+}

@@ -9,6 +9,41 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The S3 gateway refuses subresources it does not implement.** A
+  query key like `?tagging` changes what a request means, and the
+  gateway routed on path and method alone, so these fell through to
+  the handler for the bare path. `GET /{bucket}?lifecycle` answered
+  with an object listing under a `200`, and `PUT /{bucket}/{key}?
+  tagging` wrote the tagging document into the object as its content,
+  destroying what the client had just uploaded. Both now return `501
+  NotImplemented` naming the subresource, and the object-plane check
+  runs before the handler can read the body. `GET /{bucket}?
+  versioning` is the exception: clients probe it before transferring
+  and it has a true answer, so it returns an empty
+  `VersioningConfiguration`. The check is an allowlist of S3's own
+  subresource names, so an unrecognized query parameter still reaches
+  the handler it always did.
+
+### Documentation
+
+- **Where S3 compatibility stops, in [api.md](docs/api.md).** The
+  gateway covers the object plane, and a reader meeting `s3://` had no
+  way to learn the boundary. Four absent features are absent because
+  copal answers them elsewhere (versioning is a file's version list,
+  object lock is retention, ACLs are the file's access level, expiry
+  is retention policy) and that mapping is now a table. The rest are
+  listed by name with the refusal they produce.
+
+- **The roadmap carries open items again.** Its stated contract is
+  that an item disappearing means the item is done, and seven of its
+  nine numbered entries had shipped without leaving, three of them
+  described in the file as built while still holding a number. It now
+  lists what reading the service against the market turned up:
+  retrieval depth, scale evidence above the 256 MiB that has been
+  measured, lifecycle tiering, and multi-region replication.
+
 ### Retrieval
 
 - **Search narrows and pages.** The contract query gained `prefix`,

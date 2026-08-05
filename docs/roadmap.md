@@ -10,12 +10,21 @@ external transformer seam, rendition URLs and URL ingestion, and the
 GCS and Azure backends all shipped and left this file. What follows
 came out of reading the service against what the market offers.
 
-1. **Per-chunk authorization.** A chunk inherits its file's access
-   level, so a passage cannot be readable under rules its file is
-   not. That is correct, and coarse: a document with one sensitive
-   passage is all-or-nothing. Per-chunk authorization is the finer
-   version, and it is the last of the retrieval-depth work; match
-   highlighting, facet counts, and the reranking seam all shipped.
+1. **Per-chunk authorization, if anything asks for it.** A chunk is
+   withheld exactly when its file is, which is all-or-nothing: a
+   document with one sensitive passage is readable or it is not.
+   Splitting that finer needs something to decide which passages are
+   sensitive, and nothing does. An earlier version of this file said
+   the coarse behaviour was correct; it was not enforced at all until
+   the CHANGELOG's entry on retrieval and access, and the fix is what
+   makes it coarse rather than absent. What holds this open is the
+   absence of a use case; the work itself is understood.
+
+   A classifier seam is the shape that most resembles the rest of the
+   service and is the one to resist. Every seam here fails safe when
+   it is absent: no extractor means no text, no reranker means the
+   fused order, no custody means the server refuses to boot. One
+   deciding confidentiality would be the first whose absence leaks.
 
 2. **Scale evidence above 256 MiB.** The largest object measured is
    256 MiB, in the encryption overhead figures in

@@ -19,7 +19,7 @@ use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use axum::response::{Html, IntoResponse, Redirect, Response};
-use maud::{html, Markup, PreEscaped, DOCTYPE};
+use maud::{html, Markup, PreEscaped};
 
 use copal_blob::BlobStore;
 use copal_core::TenantId;
@@ -30,7 +30,8 @@ use crate::app::AppState;
 /// page here. A second copy is a second console: this page kept one,
 /// so it went on printing raw byte counts and nanosecond timestamps
 /// after the generated pages stopped.
-use janus::runtime::{cell, STYLE};
+use janus::runtime::{cell, document, rail_section, Page};
+use serde_json::Value;
 
 /// Constant-time Basic check against the admin token (previous
 /// honored), answering with whoever got through. `Err` is the
@@ -209,7 +210,7 @@ pub async fn home<B: BlobStore>(State(state): State<AppState<B>>, headers: Heade
             }
         }
     };
-    page("deployment", body)
+    page("Deployment", &tenants, body)
 }
 
 /// GET `/admin/console/t/{tenant}` and everything under it: the
@@ -275,22 +276,41 @@ pub async fn tenant_home<B: BlobStore>(
     .await
 }
 
-fn page(title: &str, content: Markup) -> Response {
-    let document = html! {
-        (DOCTYPE)
-        html lang="en" {
-            head {
-                meta charset="utf-8";
-                meta name="viewport" content="width=device-width, initial-scale=1";
-                title { (title) " · copal" }
-                link rel="icon" href="data:,";
-                style { (PreEscaped(STYLE)) }
-            }
-            body {
-                header { span.title { a href="/admin/console" { "copal console" } } }
-                main { (content) }
-            }
+fn page(title: &str, tenants: &[Value], content: Markup) -> Response {
+    let rail = html! {
+        (rail_section("Deployment", &[(
+            "Overview".to_owned(),
+            "/admin/console".to_owned(),
+            true,
+        )]))
+        @if !tenants.is_empty() {
+            (rail_section(
+                "Tenants",
+                &tenants
+                    .iter()
+                    .filter_map(|row| row.get("tenant_id").and_then(Value::as_str))
+                    .map(|id| (
+                        id.to_owned(),
+                        format!("/admin/console/t/{id}"),
+                        false,
+                    ))
+                    .collect::<Vec<_>>(),
+            ))
         }
     };
+    let footer = html! {
+        span { "copal" }
+        span.dim { "Admin surface" }
+    };
+    let document = PreEscaped(document(
+        Page {
+            brand: "copal",
+            home: "/admin/console",
+            title,
+        },
+        rail,
+        content,
+        footer,
+    ));
     Html(document.into_string()).into_response()
 }

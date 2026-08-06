@@ -25,6 +25,11 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
   against copal's own generated schema, and every REST body parses as
   JSON.
 
+  The deployment page renders its own markup beside the generated
+  ones, so it kept the old layout while everything else moved. It
+  takes the frame from janus now, the way it already took the
+  stylesheet, and lists the tenants in the rail.
+
 ### Operator console
 
 - **Facets are checkboxes, and the console reads in daylight.**

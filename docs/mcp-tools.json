@@ -70,6 +70,12 @@
           },
           "access": {
             "type": "string",
+            "enum": [
+              "public",
+              "private",
+              "tenant",
+              "grant"
+            ],
             "description": "public, private, tenant, or grant; defaults to private."
           },
           "metadata": {
@@ -268,6 +274,12 @@
           },
           "access": {
             "type": "string",
+            "enum": [
+              "public",
+              "private",
+              "tenant",
+              "grant"
+            ],
             "description": "public, private, tenant, or grant; defaults to private."
           },
           "metadata": {
@@ -594,6 +606,11 @@
           },
           "mode": {
             "type": "string",
+            "enum": [
+              "lexical",
+              "semantic",
+              "hybrid"
+            ],
             "description": "lexical, semantic, or hybrid (the default). A deployment without                              an embedding service answers lexically and says so."
           },
           "limit": {

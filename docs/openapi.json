@@ -531,6 +531,12 @@
               "schema": {
                 "properties": {
                   "access": {
+                    "enum": [
+                      "public",
+                      "private",
+                      "tenant",
+                      "grant"
+                    ],
                     "type": "string"
                   },
                   "content_type": {
@@ -582,6 +588,12 @@
               "schema": {
                 "properties": {
                   "access": {
+                    "enum": [
+                      "public",
+                      "private",
+                      "tenant",
+                      "grant"
+                    ],
                     "type": "string"
                   },
                   "content_type": {
@@ -1267,6 +1279,11 @@
             "name": "mode",
             "required": false,
             "schema": {
+              "enum": [
+                "lexical",
+                "semantic",
+                "hybrid"
+              ],
               "type": "string"
             }
           },

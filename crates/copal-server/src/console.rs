@@ -142,12 +142,12 @@ pub async fn home<B: BlobStore>(State(state): State<AppState<B>>, headers: Heade
         None => None,
     };
     let body = html! {
-        h1 { "deployment" }
+        h1 { "Deployment" }
         p.dim { "signed in as " (operator) }
-        h2 { "tenants" }
+        h2 { "Tenants" }
         @if tenants.is_empty() { p.dim { "no tenant has stored anything yet" } }
         table {
-            thead { tr { th { "tenant" } th { "files" } th { "bytes" } } }
+            thead { tr { th { "Tenant" } th { "Files" } th { "Bytes" } } }
             tbody {
                 @for row in &tenants {
                     tr {
@@ -163,7 +163,7 @@ pub async fn home<B: BlobStore>(State(state): State<AppState<B>>, headers: Heade
             }
         }
         @if let Some(fleet) = &fleet {
-            h2 { "fleet" }
+            h2 { "Fleet" }
             @match fleet {
                 Ok(namespaces) => {
                     @for ns in namespaces {
@@ -171,7 +171,7 @@ pub async fn home<B: BlobStore>(State(state): State<AppState<B>>, headers: Heade
                         @for db in &ns.databases {
                             table {
                                 thead {
-                                    tr { th { (ns.name) "/" (db.name) } th { "rows" } }
+                                    tr { th { (ns.name) "/" (db.name) } th { "Rows" } }
                                 }
                                 tbody {
                                     @for table in &db.tables {
@@ -193,9 +193,9 @@ pub async fn home<B: BlobStore>(State(state): State<AppState<B>>, headers: Heade
                 Err(reason) => { p.dim { (reason) } }
             }
         }
-        h2 { "audit tail" }
+        h2 { "Audit tail" }
         table {
-            thead { tr { th { "at" } th { "tenant" } th { "actor" } th { "action" } th { "subject" } } }
+            thead { tr { th { "At" } th { "Tenant" } th { "Actor" } th { "Action" } th { "Subject" } } }
             tbody {
                 @for row in audit.iter().rev() {
                     tr {

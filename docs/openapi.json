@@ -1329,7 +1329,14 @@
             "name": "facets",
             "required": false,
             "schema": {
-              "type": "string"
+              "items": {
+                "enum": [
+                  "content_type",
+                  "access"
+                ],
+                "type": "string"
+              },
+              "type": "array"
             }
           }
         ],

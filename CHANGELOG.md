@@ -11,6 +11,27 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ### Operator console
 
+- **The console reads like somewhere to work.** Navigation moved into
+  a rail down the left, actions became buttons above the data with
+  their forms in dialogs, and every declared name is said the way a
+  person writes it: `content_type` reads "Content type" and a card
+  that said "create" now says "Create file". The deployment page's own
+  headings follow.
+
+  A reference page describes the whole contract: for every operation,
+  the REST path, the GraphQL field, the MCP tool, the scopes it wants,
+  and the request each face takes, with a link to the control that
+  runs it. Every GraphQL document it shows parses and validates
+  against copal's own generated schema, and every REST body parses as
+  JSON.
+
+  The deployment page renders its own markup beside the generated
+  ones, so it kept the old layout while everything else moved. It
+  takes the frame from janus now, the way it already took the
+  stylesheet, and lists the tenants in the rail.
+
+### Operator console
+
 - **Facets are checkboxes, and the console reads in daylight.**
   `facets` takes several values at once, which a menu cannot express,
   so it is declared as such and renders as a row of boxes. Ticking two

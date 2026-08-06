@@ -164,7 +164,9 @@ async fn the_tenant_console_serves_the_contract_pages() {
     let response = router.clone().oneshot(detail).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let html = text(response).await;
-    assert!(html.contains("versions"), "sub-collections render");
+    // Headings say the name the way a person writes it, so a
+    // sub-collection declared as `versions` reads as "Versions".
+    assert!(html.contains("Versions"), "sub-collections render");
     assert!(html.contains("/a/issue_url"), "actions become forms");
 }
 
@@ -234,7 +236,7 @@ async fn the_fleet_view_gates_on_configuration_and_names_its_limits() {
     let response = router.clone().oneshot(home).await.unwrap();
     let html = text(response).await;
     assert!(
-        html.contains(">fleet<"),
+        html.contains(">Fleet<"),
         "the section renders when configured"
     );
     assert!(

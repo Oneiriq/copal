@@ -9,6 +9,23 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ## [Unreleased]
 
+### Operator console
+
+- **One stylesheet, one console.** The deployment page carried its own
+  copy of the console's look and rendered its own tables, so it went
+  on printing raw byte counts and nanosecond timestamps after janus
+  made the generated pages read at a glance. It now takes both the
+  stylesheet and the value formatting from janus: a tenant's usage
+  says `1.3 KB` and an audit row says `2026-08-05 06:46:46`.
+
+  What arrived with it, on every page the contract generates: nested
+  values collapse to a summary that opens on a click, which returned a
+  five-file listing from three thousand pixels to one screen; digests
+  cut to a stub and timestamps lose their sub-seconds, both keeping
+  the exact value one hover away; and a file's state reads as a
+  coloured chip. Access levels stay uncoloured deliberately, since
+  green reads as healthy and `public` is the most exposed a file gets.
+
 ### Security
 
 - **Search withholds what download withholds.** Retrieval filtered by

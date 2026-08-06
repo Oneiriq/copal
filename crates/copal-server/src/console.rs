@@ -26,22 +26,11 @@ use copal_core::TenantId;
 
 use crate::app::AppState;
 
-const STYLE: &str = "
-:root { color-scheme: dark; }
-body { margin: 0; font: 14px/1.5 ui-monospace, 'Cascadia Code', Menlo, monospace;
-  background: #101014; color: #d6d6dc; }
-a { color: #8fb8ff; text-decoration: none; }
-a:hover { text-decoration: underline; }
-header { padding: .75rem 1.25rem; border-bottom: 1px solid #26262e; }
-header .title { font-weight: 700; color: #f2f2f6; }
-main { padding: 1.25rem; max-width: 72rem; }
-h1 { font-size: 1.15rem; margin: 0 0 1rem; color: #f2f2f6; }
-h2 { font-size: .95rem; margin: 1.5rem 0 .5rem; color: #c9c9d4; }
-table { border-collapse: collapse; width: 100%; margin: .5rem 0 1rem; }
-th, td { text-align: left; padding: .3rem .6rem; border-bottom: 1px solid #26262e; }
-th { color: #9a9aa8; font-weight: 600; }
-.dim { color: #5c5c68; }
-";
+/// The console's look belongs to janus, which generates every other
+/// page here. A second copy is a second console: this page kept one,
+/// so it went on printing raw byte counts and nanosecond timestamps
+/// after the generated pages stopped.
+use janus::runtime::{cell, STYLE};
 
 /// Constant-time Basic check against the admin token (previous
 /// honored), answering with whoever got through. `Err` is the
@@ -167,8 +156,8 @@ pub async fn home<B: BlobStore>(State(state): State<AppState<B>>, headers: Heade
                                 a href=(format!("/admin/console/t/{id}")) { (id) }
                             }
                         }
-                        td { (row.get("files").and_then(|v| v.as_i64()).unwrap_or(0)) }
-                        td { (row.get("bytes").and_then(|v| v.as_i64()).unwrap_or(0)) }
+                        td { (cell("files", row.get("files"))) }
+                        td { (cell("bytes", row.get("bytes"))) }
                     }
                 }
             }
@@ -210,7 +199,7 @@ pub async fn home<B: BlobStore>(State(state): State<AppState<B>>, headers: Heade
             tbody {
                 @for row in audit.iter().rev() {
                     tr {
-                        td.dim { (row.get("created_at").and_then(|v| v.as_str()).unwrap_or("")) }
+                        td.dim { (cell("created_at", row.get("created_at"))) }
                         td { (row.get("tenant_id").and_then(|v| v.as_str()).unwrap_or("")) }
                         td { (row.get("actor").and_then(|v| v.as_str()).unwrap_or("")) }
                         td { (row.get("action").and_then(|v| v.as_str()).unwrap_or("")) }

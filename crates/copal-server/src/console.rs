@@ -119,7 +119,8 @@ fn console_router<B: BlobStore>(
             base: format!("/admin/console/t/{}", tenant.as_str()),
             title: format!("copal · {}", tenant.as_str()),
         },
-    ))
+    )
+    .with_schema(copal_store::schema::tables()))
 }
 
 /// GET `/admin/console`: the deployment home.

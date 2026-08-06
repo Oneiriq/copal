@@ -11,6 +11,15 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ### Operator console
 
+- **Facets are checkboxes, and the console reads in daylight.**
+  `facets` takes several values at once, which a menu cannot express,
+  so it is declared as such and renders as a row of boxes. Ticking two
+  reaches the wire as one comma-separated value and both counts come
+  back. The console also follows the reader's colour scheme now
+  rather than assuming a dark room.
+
+### Operator console
+
 - **The tenant overview shows what a tenant holds.** Each card read
   the contract's shape, so opening a tenant said "8 actions, 1
   sub-collections" where an operator wanted to know what is in it.

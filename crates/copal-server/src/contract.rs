@@ -149,6 +149,7 @@ pub fn contract() -> Contract {
                                 name: "path".into(),
                                 kind: TypeRef::String,
                                 required: true,
+                                multiple: false,
                                 options: Vec::new(),
                                 description: Some(
                                     "The file's path, unique among the tenant's live files."
@@ -159,6 +160,7 @@ pub fn contract() -> Contract {
                                 name: "content_type".into(),
                                 kind: TypeRef::String,
                                 required: false,
+                                multiple: false,
                                 options: Vec::new(),
                                 description: Some(
                                     "Declared type; defaults to application/octet-stream.".into(),
@@ -168,6 +170,7 @@ pub fn contract() -> Contract {
                                 name: "access".into(),
                                 kind: TypeRef::String,
                                 required: false,
+                                multiple: false,
                                 options: ["public", "private", "tenant", "grant"]
                                     .iter()
                                     .map(|s| (*s).to_owned())
@@ -181,6 +184,7 @@ pub fn contract() -> Contract {
                                 name: "metadata".into(),
                                 kind: TypeRef::Json,
                                 required: false,
+                                multiple: false,
                                 options: Vec::new(),
                                 description: Some("Caller metadata, stored verbatim.".into()),
                             },
@@ -188,6 +192,7 @@ pub fn contract() -> Contract {
                                 name: "idempotency_key".into(),
                                 kind: TypeRef::String,
                                 required: false,
+                                multiple: false,
                                 options: Vec::new(),
                                 description: Some(
                                     "Replays return the original record instead of a duplicate."
@@ -214,6 +219,7 @@ pub fn contract() -> Contract {
                             name: "ttl_secs".into(),
                             kind: TypeRef::Int,
                             required: false,
+                            multiple: false,
                             options: Vec::new(),
                             description: Some(
                                 "Seconds until the URL stops working (default 900, max one year)."
@@ -224,6 +230,7 @@ pub fn contract() -> Contract {
                             name: "max_uses".into(),
                             kind: TypeRef::Int,
                             required: false,
+                            multiple: false,
                             options: Vec::new(),
                             description: Some(
                                 "Cap on redemptions; one-time links use 1. Unset = unlimited \
@@ -246,6 +253,7 @@ pub fn contract() -> Contract {
                             name: "ttl_secs".into(),
                             kind: TypeRef::Int,
                             required: false,
+                            multiple: false,
                             options: Vec::new(),
                             description: Some(
                                 "Seconds until the upload URL stops working (default 900, max \
@@ -271,6 +279,7 @@ pub fn contract() -> Contract {
                             name: "ttl_secs".into(),
                             kind: TypeRef::Int,
                             required: false,
+                            multiple: false,
                             options: Vec::new(),
                             description: Some(
                                 "Seconds until the token expires (default 900, max one day). \
@@ -297,6 +306,7 @@ pub fn contract() -> Contract {
                                 name: "kind".into(),
                                 kind: TypeRef::String,
                                 required: false,
+                                multiple: false,
                                 options: Vec::new(),
                                 description: Some(
                                     "Rendition label, part of the derived path (default \
@@ -308,6 +318,7 @@ pub fn contract() -> Contract {
                                 name: "width".into(),
                                 kind: TypeRef::Int,
                                 required: false,
+                                multiple: false,
                                 options: Vec::new(),
                                 description: Some(
                                     "Bounding width, 16..=4096 (default 256).".into(),
@@ -317,6 +328,7 @@ pub fn contract() -> Contract {
                                 name: "height".into(),
                                 kind: TypeRef::Int,
                                 required: false,
+                                multiple: false,
                                 options: Vec::new(),
                                 description: Some(
                                     "Bounding height, 16..=4096 (default 256).".into(),
@@ -326,6 +338,7 @@ pub fn contract() -> Contract {
                                 name: "format".into(),
                                 kind: TypeRef::String,
                                 required: false,
+                                multiple: false,
                                 options: Vec::new(),
                                 description: Some("\"jpeg\" (default) or \"png\".".into()),
                             },
@@ -349,6 +362,7 @@ pub fn contract() -> Contract {
                                 name: "transformer".into(),
                                 kind: TypeRef::String,
                                 required: true,
+                                multiple: false,
                                 options: Vec::new(),
                                 description: Some(
                                     "Name of a transformer the deployment configures."
@@ -359,6 +373,7 @@ pub fn contract() -> Contract {
                                 name: "params".into(),
                                 kind: TypeRef::Json,
                                 required: false,
+                                multiple: false,
                                 options: Vec::new(),
                                 description: Some(
                                     "Free-form parameters forwarded to the service.".into(),
@@ -368,6 +383,7 @@ pub fn contract() -> Contract {
                                 name: "content_type".into(),
                                 kind: TypeRef::String,
                                 required: false,
+                                multiple: false,
                                 options: Vec::new(),
                                 description: Some(
                                     "Declared media type of the derived output (default \
@@ -396,6 +412,7 @@ pub fn contract() -> Contract {
                                 name: "url".into(),
                                 kind: TypeRef::String,
                                 required: true,
+                                multiple: false,
                                 options: Vec::new(),
                                 description: Some(
                                     "http or https source the server pulls; the outbound \
@@ -407,6 +424,7 @@ pub fn contract() -> Contract {
                                 name: "path".into(),
                                 kind: TypeRef::String,
                                 required: true,
+                                multiple: false,
                                 options: Vec::new(),
                                 description: Some(
                                     "The file's path, unique among the tenant's live files."
@@ -417,6 +435,7 @@ pub fn contract() -> Contract {
                                 name: "content_type".into(),
                                 kind: TypeRef::String,
                                 required: false,
+                                multiple: false,
                                 options: Vec::new(),
                                 description: Some(
                                     "Declared type; unset lets the source's answer stand."
@@ -427,6 +446,7 @@ pub fn contract() -> Contract {
                                 name: "access".into(),
                                 kind: TypeRef::String,
                                 required: false,
+                                multiple: false,
                                 options: ["public", "private", "tenant", "grant"]
                                     .iter()
                                     .map(|s| (*s).to_owned())
@@ -440,6 +460,7 @@ pub fn contract() -> Contract {
                                 name: "metadata".into(),
                                 kind: TypeRef::Json,
                                 required: false,
+                                multiple: false,
                                 options: Vec::new(),
                                 description: Some("Caller metadata, stored verbatim.".into()),
                             },
@@ -447,6 +468,7 @@ pub fn contract() -> Contract {
                                 name: "idempotency_key".into(),
                                 kind: TypeRef::String,
                                 required: false,
+                                multiple: false,
                                 options: Vec::new(),
                                 description: Some(
                                     "Replays return the original record instead of a duplicate."
@@ -527,6 +549,7 @@ pub fn contract() -> Contract {
                                 name: "url".into(),
                                 kind: TypeRef::String,
                                 required: true,
+                                multiple: false,
                                 options: Vec::new(),
                                 description: Some(
                                     "Destination, which must resolve to a public address.".into(),
@@ -536,6 +559,7 @@ pub fn contract() -> Contract {
                                 name: "events".into(),
                                 kind: TypeRef::Json,
                                 required: false,
+                                multiple: false,
                                 options: Vec::new(),
                                 description: Some(
                                     "Dotted actions to deliver; empty means every event.".into(),
@@ -628,6 +652,7 @@ pub fn contract() -> Contract {
                                 name: "workflow".into(),
                                 kind: TypeRef::String,
                                 required: true,
+                                multiple: false,
                                 options: Vec::new(),
                                 description: Some("Registered workflow key.".into()),
                             },
@@ -635,6 +660,7 @@ pub fn contract() -> Contract {
                                 name: "input".into(),
                                 kind: TypeRef::Json,
                                 required: false,
+                                multiple: false,
                                 options: Vec::new(),
                                 description: Some("Workflow input document.".into()),
                             },
@@ -642,6 +668,7 @@ pub fn contract() -> Contract {
                                 name: "file".into(),
                                 kind: TypeRef::String,
                                 required: false,
+                                multiple: false,
                                 options: Vec::new(),
                                 description: Some(
                                     "Subject file id, when the run concerns one.".into(),
@@ -651,6 +678,7 @@ pub fn contract() -> Contract {
                                 name: "idempotency_key".into(),
                                 kind: TypeRef::String,
                                 required: false,
+                                multiple: false,
                                 options: Vec::new(),
                                 description: Some(
                                     "Dedupe key: a retried start returns the original run.".into(),
@@ -660,6 +688,7 @@ pub fn contract() -> Contract {
                                 name: "mode".into(),
                                 kind: TypeRef::String,
                                 required: false,
+                                multiple: false,
                                 options: Vec::new(),
                                 description: Some(
                                     "\"async\" (default) enqueues for a worker; \"sync\" executes \
@@ -708,6 +737,7 @@ pub fn contract() -> Contract {
                         name: "q".into(),
                         kind: TypeRef::String,
                         required: true,
+                        multiple: false,
                         options: Vec::new(),
                         description: Some("The question, in the caller's own words.".into()),
                     },
@@ -715,6 +745,7 @@ pub fn contract() -> Contract {
                         name: "mode".into(),
                         kind: TypeRef::String,
                         required: false,
+                        multiple: false,
                         options: ["lexical", "semantic", "hybrid"]
                             .iter()
                             .map(|s| (*s).to_owned())
@@ -728,6 +759,7 @@ pub fn contract() -> Contract {
                         name: "limit".into(),
                         kind: TypeRef::Int,
                         required: false,
+                        multiple: false,
                         options: Vec::new(),
                         description: Some("Documents to return, 1..=100.".into()),
                     },
@@ -735,6 +767,7 @@ pub fn contract() -> Contract {
                         name: "prefix".into(),
                         kind: TypeRef::String,
                         required: false,
+                        multiple: false,
                         options: Vec::new(),
                         description: Some(
                             "Keep results whose file path starts with this.".into(),
@@ -744,6 +777,7 @@ pub fn contract() -> Contract {
                         name: "content_type".into(),
                         kind: TypeRef::String,
                         required: false,
+                        multiple: false,
                         options: Vec::new(),
                         description: Some(
                             "Keep results whose file carries this content type.".into(),
@@ -753,6 +787,7 @@ pub fn contract() -> Contract {
                         name: "cursor".into(),
                         kind: TypeRef::String,
                         required: false,
+                        multiple: false,
                         options: Vec::new(),
                         description: Some(
                             "Continue a ranking from the previous page's next_cursor;                              best-effort, since rankings shift as content changes."
@@ -763,7 +798,11 @@ pub fn contract() -> Contract {
                         name: "facets".into(),
                         kind: TypeRef::String,
                         required: false,
-                        options: Vec::new(),
+                        multiple: true,
+                        options: ["content_type", "access"]
+                            .iter()
+                            .map(|s| (*s).to_owned())
+                            .collect(),
                         description: Some(
                             "Count the match set by these file fields, comma separated                              (content_type, access). Counts are documents, exact over                              every match rather than over the ranked window."
                                 .into(),
@@ -785,6 +824,7 @@ pub fn contract() -> Contract {
                     name: "id".into(),
                     kind: TypeRef::String,
                     required: true,
+                    multiple: false,
                     options: Vec::new(),
                     description: Some("The file whose extracted text to read.".into()),
                 }],

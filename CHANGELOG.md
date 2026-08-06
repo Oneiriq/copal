@@ -11,6 +11,17 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ### Operator console
 
+- **The contract declares its closed sets, so callers pick rather than
+  guess.** A file's `access` is one of four words and a search's `mode`
+  is one of three, and both said so only in a description. They are
+  declared now, which janus carries to every face: an `enum` in the
+  OpenAPI document and the MCP manifest, a menu in the console, and a
+  refusal at the dispatcher for anything outside the list, ahead of
+  the resolver. The `state` filter on the files listing is a menu of
+  the states the schema asserts.
+
+### Operator console
+
 - **One stylesheet, one console.** The deployment page carried its own
   copy of the console's look and rendered its own tables, so it went
   on printing raw byte counts and nanosecond timestamps after janus

@@ -11,6 +11,16 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ### Operator console
 
+- **The tenant overview shows what a tenant holds.** Each card read
+  the contract's shape, so opening a tenant said "8 actions, 1
+  sub-collections" where an operator wanted to know what is in it.
+  Cards now carry a row count and the first few rows, each as what it
+  is and when: a file by its path, an event by its kind, a run by its
+  workflow. A resource whose listing refuses reports it on its own
+  card and leaves the rest of the page standing.
+
+### Operator console
+
 - **The contract declares its closed sets, so callers pick rather than
   guess.** A file's `access` is one of four words and a search's `mode`
   is one of three, and both said so only in a description. They are

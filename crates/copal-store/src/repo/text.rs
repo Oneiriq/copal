@@ -305,9 +305,9 @@ const HNSW_EF: i64 = 64;
 /// unrelated, 2 is opposite).
 ///
 /// The floor is what lets a semantic query say "nothing matches".
-/// Nearest-neighbour search otherwise returns its k nearest however
+/// Nearest-neighbor search otherwise returns its k nearest however
 /// far away they are, so in a small corpus every passage is
-/// somebody's neighbour.
+/// somebody's neighbor.
 ///
 /// `vector_search_indexed` renders `<|k,EF|>`, the form that reaches
 /// the HNSW index (EXPLAIN: KnnScan). `Query::vector_search` renders
@@ -415,7 +415,7 @@ pub async fn semantic_search(
 /// per-row BM25 values through the full-text scan (`search::score`
 /// returns 0), so a score column would be a constant pretending to be
 /// relevance. The scan itself returns rows in relevance order, which
-/// is the real signal, so hits arrive ranked and unlabelled.
+/// is the real signal, so hits arrive ranked and unlabeled.
 #[derive(Debug, Clone, Deserialize)]
 pub struct SearchHit {
     #[serde(default)]

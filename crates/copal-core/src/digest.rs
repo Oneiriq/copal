@@ -10,9 +10,23 @@ use sha2::{Digest as _, Sha256};
 use crate::error::CopalError;
 
 /// A validated lowercase-hex SHA-256 digest.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 #[serde(transparent)]
 pub struct ContentDigest(String);
+
+/// Arriving as data means the same thing as arriving through `parse`.
+///
+/// A derived `Deserialize` on a transparent newtype hands back
+/// whatever string was in the JSON, so a row read from the store with
+/// a short digest produced a value the type claims is validated and
+/// `storage_key` slices the first four characters off. That was a
+/// panic where an error belonged.
+impl<'de> Deserialize<'de> for ContentDigest {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = String::deserialize(deserializer)?;
+        Self::parse(raw).map_err(serde::de::Error::custom)
+    }
+}
 
 impl ContentDigest {
     /// Wrap a digest string, validating shape.
@@ -119,8 +133,33 @@ mod tests {
     fn parse_rejects_bad_shapes() {
         assert!(ContentDigest::parse("abc").is_err());
         assert!(ContentDigest::parse("g".repeat(64)).is_err());
-        // Uppercase input normalises rather than failing.
+        // Uppercase input normalizes rather than failing.
         let upper = EMPTY.to_ascii_uppercase();
         assert_eq!(ContentDigest::parse(upper).unwrap().as_str(), EMPTY);
+    }
+}
+
+#[cfg(test)]
+mod deserialize_holds_the_shape {
+    use super::ContentDigest;
+
+    /// The type says validated, so arriving as data has to mean that
+    /// too.
+    ///
+    /// `#[serde(transparent)] + #[derive(Deserialize)]` handed back a
+    /// `ContentDigest` holding whatever string was in the JSON, and
+    /// `storage_key` slices the first four characters off it. A row
+    /// read back with a short digest was a panic rather than an error.
+    #[test]
+    fn a_digest_that_is_not_one_refuses_to_deserialize() {
+        for bad in ["\"\"", "\"ab\"", "\"abc\"", "\"zz\"", "\"not hex at all\""] {
+            assert!(
+                serde_json::from_str::<ContentDigest>(bad).is_err(),
+                "{bad} deserialized into a digest",
+            );
+        }
+        let good = format!("\"{}\"", "a".repeat(64));
+        let digest: ContentDigest = serde_json::from_str(&good).expect("64 hex characters");
+        assert_eq!(digest.storage_key(), format!("aa/aa/{}", "a".repeat(64)));
     }
 }

@@ -56,7 +56,7 @@ Every value comes from the environment. Defaults target local development.
 | `COPAL_SESSION_CACHE_SIZE` | `256` | How many caller sessions to hold. Zero disables reuse. |
 
 | `COPAL_PERSISTED_OPERATIONS` | unset | JSON file of sha256 to document; set, GraphQL runs listed operations only. |
-| `COPAL_MAX_SEMANTIC_DISTANCE` | `0.65` | Cosine distance beyond which a passage is not a semantic match (0 identical, 1 unrelated). Without a floor, nearest-neighbour search answers every query with its nearest results however far away they are. |
+| `COPAL_MAX_SEMANTIC_DISTANCE` | `0.65` | Cosine distance beyond which a passage is not a semantic match (0 identical, 1 unrelated). Without a floor, nearest-neighbor search answers every query with its nearest results however far away they are. |
 | `COPAL_WEBHOOK_ALLOW_PRIVATE_TARGETS` | `false` | Permit webhook endpoints resolving to private, loopback, or link-local addresses. Off by default: tenant-supplied URLs pointing inside the deployment are server-side request forgery. Turn on only when receivers are genuinely internal and tenants are trusted. |
 | `COPAL_RESIDENCIES` | unset | JSON map of named storage residencies beyond `local`, e.g. `{"eu": {"scheme": "s3", "bucket": "...", "endpoint": "...", "region": "...", "access_key_id": "...", "secret_access_key": "...", "encryption_key": "<64 hex>"}}`. Filesystem residencies use `{"scheme": "fs", "root": "...", "encryption_key": "<64 hex>"}`; Google Cloud Storage uses `{"scheme": "gcs", "bucket": "...", "credential": "<base64 service-account JSON>"}` (unset credential falls back to the ambient chain, so workload identity needs nothing in the config); Azure Blob Storage uses `{"scheme": "azblob", "container": "...", "endpoint": "https://{account}.blob.core.windows.net", "account_name": "...", "account_key": "..."}`. `encryption_key` is optional and seals that residency's objects under its own key instead of the master; `previous_encryption_key` carries that residency's retiring key during a rotation. Names are lowercase alphanumeric. |
 
@@ -245,7 +245,7 @@ Type-specific behavior lives only in the layers above the bytes:
 
 | Layer | Covers |
 | --- | --- |
-| Sniffing | Documents, images, archives, and the common audio and video containers, including formats that name themselves past their first bytes (RIFF at byte eight, ISO base media brands at byte eight). Anything unrecognised reads as unverifiable and never blocks. |
+| Sniffing | Documents, images, archives, and the common audio and video containers, including formats that name themselves past their first bytes (RIFF at byte eight, ISO base media brands at byte eight). Anything unrecognized reads as unverifiable and never blocks. |
 | Extraction | Text and JSON natively; other documents through `COPAL_EXTRACTOR_ADDR`. Media carries no transcription of its own, though a transformer that produces one lands searchable text. |
 | Renditions | Images, to jpeg or png. |
 | Transformers | Everything else, through the seam. |

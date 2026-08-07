@@ -18,7 +18,7 @@ use std::collections::HashMap;
 /// what the engine's own BM25 uses when the index names no parameters.
 const K1: f64 = 1.2;
 
-/// Length normalisation strength. 0.75 is the same standard default.
+/// Length normalization strength. 0.75 is the same standard default.
 const B: f64 = 0.75;
 
 /// Split text the way the index's analyzer does: class tokenizer,
@@ -217,7 +217,7 @@ mod tests {
             "quick quick quick fox".to_owned(),
         ];
         let ranked = rank("quick fox", &documents);
-        // Length normalisation is the whole reason BM25 beats a term
+        // Length normalization is the whole reason BM25 beats a term
         // count, so the short dense document must come first even
         // though it was second in the input.
         assert_eq!(ranked[0].index, 1, "{ranked:?}");

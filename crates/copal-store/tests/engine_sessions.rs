@@ -1,5 +1,5 @@
 //! Engine facts about per-caller sessions, pinned the same way
-//! `engine_assumptions.rs` pins retrieval behaviour.
+//! `engine_assumptions.rs` pins retrieval behavior.
 //!
 //! The governance roadmap once dispositioned `PERMISSIONS` pushdown
 //! with the claim that the engine cannot tell Copal's callers apart.

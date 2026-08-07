@@ -13,7 +13,7 @@ came out of reading the service against what the market offers.
 1. **Per-chunk authorization.** A chunk is withheld exactly when its
    file is, which is all-or-nothing: a document with one sensitive
    passage is readable or it is not. An earlier version of this file
-   said the coarse behaviour was correct; it was not enforced at all
+   said the coarse behavior was correct; it was not enforced at all
    until the CHANGELOG's entry on retrieval and access, and the fix is
    what makes it coarse rather than absent.
 
@@ -32,7 +32,7 @@ came out of reading the service against what the market offers.
    comes from, since nothing in the upload path, the extractor, or the
    pipeline knows. Per-upload markers put the answer with the uploader,
    who does know, and they fail safe: no markers means today's
-   behaviour.
+   behavior.
 
    A classifier seam is the shape that most resembles the rest of the
    service and is the one to resist. Every seam here fails safe when

@@ -161,7 +161,7 @@ pub struct ExtensionPolicy {
 
 impl ExtensionPolicy {
     /// Build from a comma-separated list (`"exe,bat,ps1"`); entries
-    /// normalise to lowercase without dots.
+    /// normalize to lowercase without dots.
     pub fn from_list(list: &str) -> Self {
         Self {
             blocked: list
@@ -342,7 +342,7 @@ mod tests {
     }
 
     #[test]
-    fn custom_lists_normalise() {
+    fn custom_lists_normalize() {
         let policy = ExtensionPolicy::from_list(" .Foo, BAR ,,baz");
         assert_eq!(policy.blocks("a.foo"), Some("foo"));
         assert_eq!(policy.blocks("a.BAR"), Some("bar"));

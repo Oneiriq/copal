@@ -129,7 +129,7 @@ minimum drill:
    bucket against the restored one, which is the same check the
    conformance harness makes.
 
-Practise the drill against a scratch deployment before needing it.
+Practice the drill against a scratch deployment before needing it.
 An untested backup is a claim rather than a procedure.
 
 ## What this procedure does not cover

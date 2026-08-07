@@ -75,7 +75,7 @@ jobs:
           cargo audit
 
   # No `needs` between the jobs: they are independent, so a second
-  # runner parallelises them the moment one exists. With one runner
+  # runner parallelizes them the moment one exists. With one runner
   # they queue, and the shared cache is what keeps the second cheap.
   sdks:
     name: assemble + validate SDKs

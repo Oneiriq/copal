@@ -2,7 +2,7 @@
 //!
 //! Retrieval answers "which passage says this", so the unit stored
 //! and embedded is a passage, not a file. The split prefers
-//! boundaries a reader would recognise (blank lines, then sentence
+//! boundaries a reader would recognize (blank lines, then sentence
 //! ends) and falls back to a hard cut only when a single run of text
 //! exceeds the window, because a chunk that begins mid-clause embeds
 //! to something nobody asked about.

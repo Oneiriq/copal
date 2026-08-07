@@ -302,3 +302,251 @@ async fn the_tenant_overview_answers_under_both_spellings() {
         assert_eq!(status, StatusCode::OK, "{uri} must answer");
     }
 }
+
+/// Every request the reference offers is one that would actually run.
+///
+/// The page exists so a caller can copy a request out of it. An
+/// example that does not parse is worse than no example, and it fails
+/// silently: the page renders, the text looks right, and nobody finds
+/// out until someone pastes it. This has caught a `mutation` with no
+/// selection set on an action that returns an object, a selection set
+/// on one that returns a scalar, and a REST body carrying comments
+/// that are not JSON.
+///
+/// The check used to live in a Node script beside the repo, which
+/// meant it ran when somebody remembered to run it.
+#[tokio::test]
+async fn every_example_on_the_reference_would_run() {
+    let (router, _dir) = stack().await;
+    let token = seed(&router).await;
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/admin/console/t/acme/reference")
+                .header("authorization", basic())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let page = text(response).await;
+
+    let mut documents = 0;
+    let mut bodies = 0;
+    for block in code_blocks(&page, "GraphQL") {
+        documents += 1;
+        async_graphql::parser::parse_query(&block)
+            .unwrap_or_else(|e| panic!("a GraphQL example does not parse: {e}\n{block}"));
+
+        // Parsing is not enough: a field that does not exist, or a
+        // selection set on a scalar, parses and then refuses on the
+        // way in. So each one is sent to the endpoint this deployment
+        // actually serves. A resolver saying it found nothing is the
+        // example working; the schema saying it will not take the
+        // document is the example being wrong.
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/graphql")
+                    .header("authorization", format!("Bearer {token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(json!({ "query": block }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let said = text(response).await;
+        for refusal in [
+            "Unknown field",
+            "Cannot query field",
+            "must have a selection set",
+            "Unknown argument",
+            "is not defined",
+            "Syntax Error",
+            "expected type",
+            "Unknown type",
+            "Missing argument",
+        ] {
+            assert!(
+                !said.contains(refusal),
+                "the schema will not take an example ({refusal}):\n{block}\n{said}",
+            );
+        }
+    }
+    assert!(documents >= 10, "the page offers examples: {documents}");
+
+    for block in code_blocks(&page, "REST") {
+        // The request line, then a body if there is one.
+        let Some((_, body)) = block.split_once("\n\n") else {
+            continue;
+        };
+        if body.trim().is_empty() {
+            continue;
+        }
+        bodies += 1;
+        serde_json::from_str::<serde_json::Value>(body.trim())
+            .unwrap_or_else(|e| panic!("a REST body is not JSON: {e}\n{body}"));
+    }
+    assert!(bodies > 0, "and at least one carries a body");
+}
+
+/// The schema section rebuilds into a schema.
+///
+/// The section is cut out of the generated SDL by matching braces. A
+/// splitter that drops a block or runs two together still renders
+/// something that looks like a schema.
+#[tokio::test]
+async fn the_schema_the_reference_prints_is_a_schema() {
+    let (router, _dir) = stack().await;
+    seed(&router).await;
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/admin/console/t/acme/reference")
+                .header("authorization", basic())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let page = text(response).await;
+
+    let mut pieces = Vec::new();
+    let mut rest = page.as_str();
+    while let Some(at) = rest.find("<section class=\"definition\"") {
+        rest = &rest[at..];
+        let Some(end) = rest.find("</section>") else {
+            break;
+        };
+        let section = &rest[..end];
+        rest = &rest[end..];
+        match section.find("<pre><code>") {
+            Some(open) => {
+                let body = &section[open + "<pre><code>".len()..];
+                let close = body.find("</code>").unwrap_or(body.len());
+                pieces.push(unescape(strip_tags(&body[..close])));
+            }
+            // A scalar is its own head line and prints no body.
+            None => {
+                if let Some(kind) = between(section, "<span class=\"chip\">", "</span>") {
+                    if let Some(name) =
+                        between(section, "<code class=\"definition-name\">", "</code>")
+                    {
+                        pieces.push(format!("{kind} {name}"));
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        pieces.len() >= 10,
+        "the page prints a schema: {}",
+        pieces.len()
+    );
+    let sdl = pieces.join("\n\n");
+    async_graphql::parser::parse_schema(&sdl)
+        .unwrap_or_else(|e| panic!("the printed schema does not parse: {e}\n{sdl}"));
+}
+
+/// The text of every `<pre><code>` under a heading, unescaped.
+fn code_blocks(page: &str, heading: &str) -> Vec<String> {
+    let opener = format!("{heading}</div><pre><code>");
+    let mut out = Vec::new();
+    let mut rest = page;
+    while let Some(at) = rest.find(&opener) {
+        let body = &rest[at + opener.len()..];
+        let end = body.find("</code>").unwrap_or(body.len());
+        out.push(unescape(strip_tags(&body[..end])));
+        rest = &body[end..];
+    }
+    out
+}
+
+fn between<'a>(haystack: &'a str, open: &str, close: &str) -> Option<&'a str> {
+    let start = haystack.find(open)? + open.len();
+    let end = haystack[start..].find(close)? + start;
+    Some(&haystack[start..end])
+}
+
+/// Type names inside the printed SDL are links, so the tags come out
+/// before the text is read as a schema.
+fn strip_tags(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut inside = false;
+    for ch in raw.chars() {
+        match ch {
+            '<' => inside = true,
+            '>' => inside = false,
+            other if !inside => out.push(other),
+            _ => {}
+        }
+    }
+    out
+}
+
+fn unescape(raw: String) -> String {
+    raw.replace("&quot;", "\"")
+        .replace("&#x27;", "'")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&")
+}
+
+/// The refusal words the check above watches for are the words the
+/// schema actually uses.
+///
+/// That check is only as good as its list: if async-graphql changes
+/// how it phrases a refusal, the examples would stop being checked
+/// and every one of them would pass. So four documents that are wrong
+/// in four different ways are sent through, and each has to be
+/// caught by the same list.
+#[tokio::test]
+async fn the_refusal_words_are_the_right_words() {
+    let (router, _dir) = stack().await;
+    let token = seed(&router).await;
+    for bad in [
+        "{ nosuchfield { id } }",
+        "{ files { items { nosuchsubfield } } }",
+        "{ files(nosucharg: 1) { items { id } } }",
+        "mutation { fileIssueUrl(id: \"x\", ttlSecs: 1) { nope } }",
+    ] {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/graphql")
+                    .header("authorization", format!("Bearer {token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(json!({ "query": bad }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let said = text(response).await;
+        let caught = [
+            "Unknown field",
+            "Cannot query field",
+            "must have a selection set",
+            "Unknown argument",
+            "is not defined",
+            "Syntax Error",
+            "expected type",
+            "Unknown type",
+            "Missing argument",
+        ]
+        .iter()
+        .any(|w| said.contains(w));
+        assert!(
+            caught,
+            "a broken document was not caught: {bad}
+{said}"
+        );
+    }
+}

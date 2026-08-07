@@ -4,3 +4,6 @@ Cargo.lock.orig
 /data
 sdks/dist/
 __pycache__/
+
+# Installed by console/run.sh.
+console/node_modules/

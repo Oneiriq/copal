@@ -1,0 +1,12 @@
+{
+  "name": "copal-console-checks",
+  "private": true,
+  "type": "module",
+  "description": "Layout checks against a running console, in a real browser.",
+  "scripts": {
+    "check": "node frame.mjs && node clipping.mjs"
+  },
+  "dependencies": {
+    "playwright-core": "^1.49.0"
+  }
+}

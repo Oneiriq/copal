@@ -100,10 +100,20 @@ pub(crate) fn blob_link_residency(raw: &str) -> String {
 
 /// Map a surql-rs error into the workspace taxonomy, promoting unique
 /// index violations to `Conflict` so callers can branch on them.
+///
+/// A `Store` error is redacted at the API boundary and logged in full.
+/// A `Conflict` is answered verbatim, because a caller who asked for
+/// something that already exists should be told so, and that made the
+/// engine's own words part of the response: the index name, the values
+/// it holds, and the id of the record already holding them. That is a
+/// description of stored data, handed to whoever guessed at it. The
+/// conflict now says that something already exists and the log keeps
+/// the rest.
 pub(crate) fn map_store_err(context: &str, err: surql::error::SurqlError) -> CopalError {
     let text = err.to_string();
     if text.contains("already contains") || text.contains("already exists") {
-        CopalError::conflict(format!("{context}: {text}"))
+        tracing::warn!(context, error = %text, "unique index violation");
+        CopalError::conflict(format!("{context}: already exists"))
     } else {
         CopalError::Store(format!("{context}: {text}"))
     }
@@ -112,6 +122,46 @@ pub(crate) fn map_store_err(context: &str, err: surql::error::SurqlError) -> Cop
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A conflict says something already exists and stops there.
+    ///
+    /// The engine names the index, the values it holds and the record
+    /// already holding them. A `Store` error is redacted at the API
+    /// boundary, but a `Conflict` is answered word for word, so all
+    /// of that was reaching whoever asked for a path that was taken:
+    /// `create_file: database error: Database index
+    /// `uniq_file_live_path` already contains ['alpha',
+    /// 'alpha-secret.txt', ''], with record `file:01kzea32g4wv...``.
+    #[test]
+    fn a_conflict_does_not_carry_the_engine_words() {
+        let engine = surql::error::SurqlError::Query {
+            reason: "Database index `uniq_file_live_path` already contains \
+                     ['alpha', 'secret.txt', ''], with record `file:01kzea32g4wv`"
+                .to_owned(),
+        };
+        let mapped = map_store_err("create_file", engine);
+        let said = mapped.to_string();
+        assert!(
+            matches!(mapped, CopalError::Conflict(_)),
+            "a uniqueness violation is still a conflict: {said}",
+        );
+        for leaked in [
+            "uniq_file_live_path",
+            "file:01kzea32g4wv",
+            "secret.txt",
+            "alpha",
+            "Database index",
+        ] {
+            assert!(
+                !said.contains(leaked),
+                "the conflict carried {leaked}: {said}",
+            );
+        }
+        assert!(
+            said.contains("already exists"),
+            "and it still says what happened: {said}"
+        );
+    }
 
     #[test]
     fn strips_plain_and_bracketed_ids() {

@@ -42,7 +42,7 @@ pub struct Limits {
     pub tus_session_ttl_secs: u32,
     /// How far a passage may be from a query and still count as a
     /// match, in cosine distance: 0 is identical, 1 is unrelated.
-    /// Without a floor, nearest-neighbour search returns its nearest
+    /// Without a floor, nearest-neighbor search returns its nearest
     /// results however far away they are, so no query ever misses.
     pub max_semantic_distance: f64,
     /// How long one subscription may stay open before the server ends

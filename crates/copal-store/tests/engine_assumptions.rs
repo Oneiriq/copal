@@ -1,4 +1,4 @@
-//! Engine behaviour Copal's retrieval design depends on.
+//! Engine behavior Copal's retrieval design depends on.
 //!
 //! These are not tests of Copal. They pin the SurrealDB facts that
 //! decided how search works here, so an engine upgrade that changes
@@ -94,7 +94,7 @@ async fn the_full_text_scan_does_not_rank() {
     assert_eq!(bodies.len(), 2, "{bodies:?}");
     // The long rambling document was inserted first and comes back
     // first, even though the short term-dense one is the better BM25
-    // match by both term frequency and length normalisation. If this
+    // match by both term frequency and length normalization. If this
     // ever fails, the engine learned to rank and the local scorer can
     // be reconsidered.
     assert!(

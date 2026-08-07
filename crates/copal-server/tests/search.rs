@@ -199,8 +199,8 @@ async fn a_re_upload_replaces_what_search_finds() {
         .method("PUT")
         .uri(format!("/v1/files/{id}/content"))
         .header("x-copal-tenant", "acme")
-        .header("content-length", "23")
-        .body(Body::from("cancelled until further"))
+        .header("content-length", "22")
+        .body(Body::from("canceled until further"))
         .unwrap();
     assert_eq!(
         router.clone().oneshot(put).await.unwrap().status(),
@@ -212,10 +212,10 @@ async fn a_re_upload_replaces_what_search_finds() {
         search(&router, "maintenance").await.is_empty(),
         "superseded text stops matching",
     );
-    assert_eq!(search(&router, "cancelled").await.len(), 1);
+    assert_eq!(search(&router, "canceled").await.len(), 1);
     let get = req("GET", &format!("/v1/files/{id}/text"), Body::empty());
     let body = json_body(router.clone().oneshot(get).await.unwrap()).await;
-    assert!(body["text"].as_str().unwrap().contains("cancelled"));
+    assert!(body["text"].as_str().unwrap().contains("canceled"));
 }
 
 #[tokio::test]
@@ -250,7 +250,7 @@ async fn search_is_tenant_scoped_and_bounded() {
 
 /// An embedding service in the OpenAI shape whose vectors encode a
 /// crude "topic": the returned vector leans toward whichever keyword
-/// the text contains, so semantic neighbours are predictable.
+/// the text contains, so semantic neighbors are predictable.
 async fn fake_embedder() -> String {
     use axum::routing::post;
     let app = Router::new().route(
@@ -493,9 +493,9 @@ async fn passages_are_embedded_individually_and_replaced_together() {
     );
     assert!(engine.tick("w").await.unwrap());
 
-    // Asked lexically, because nearest-neighbour search always
+    // Asked lexically, because nearest-neighbor search always
     // returns its k nearest however far away they are: in a corpus
-    // this small every passage is somebody's neighbour, so a semantic
+    // this small every passage is somebody's neighbor, so a semantic
     // query cannot express "no longer present".
     let gone = search_mode(&router, "revenue", "lexical").await;
     assert!(
@@ -508,7 +508,7 @@ async fn passages_are_embedded_individually_and_replaced_together() {
 
 #[tokio::test]
 async fn a_semantic_query_about_nothing_stored_returns_nothing() {
-    // Without a relevance floor, nearest-neighbour search answers
+    // Without a relevance floor, nearest-neighbor search answers
     // every query with its nearest results however far away they
     // are, so no semantic search ever misses and "no matches" cannot
     // be expressed. The floor is what makes absence reportable.
@@ -895,7 +895,7 @@ async fn filters_narrow_the_counts_too() {
 /// A reranker that answers by a rule the test controls, so the
 /// assertions are about ordering rather than about a model.
 ///
-/// `mode` picks the behaviour: `reverse` scores the last document
+/// `mode` picks the behavior: `reverse` scores the last document
 /// best, `top_one` scores only one, and `broken` refuses.
 async fn fake_reranker(mode: &'static str) -> String {
     #[derive(serde::Deserialize)]

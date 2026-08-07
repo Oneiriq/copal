@@ -28,7 +28,7 @@ copal-flow = { path = "crates/copal-flow" }
 # Schema, query building, and the SurrealDB client all come from surql-rs.
 # Pinned to the rolling feature branch that accumulates every capability
 # Copal needs; the batch release replaces this with a plain version once
-# the pair stabilises.
+# the pair stabilizes.
 oneiriq-surql = { version = "0.31", default-features = false, features = ["client-rustls"] }
 
 serde = { version = "1", features = ["derive"] }

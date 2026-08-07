@@ -131,7 +131,7 @@ pub async fn rerank(
 ///
 /// Kept separate from the call so the ordering rules are testable
 /// without a service: an out-of-range index is dropped rather than
-/// panicking a search, a repeated index is honoured once, and whatever
+/// panicking a search, a repeated index is honored once, and whatever
 /// went unscored trails in its original order.
 fn order_from(mut scored: Vec<Scored>, count: usize) -> Vec<usize> {
     scored.retain(|s| s.index < count);
@@ -198,7 +198,7 @@ mod tests {
         assert_eq!(
             order,
             vec![1, 0, 2],
-            "out of range dropped, repeat honoured once"
+            "out of range dropped, repeat honored once"
         );
         assert_eq!(order.len(), 3, "every position comes back exactly once");
     }

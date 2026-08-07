@@ -36,7 +36,7 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
   `facets` takes several values at once, which a menu cannot express,
   so it is declared as such and renders as a row of boxes. Ticking two
   reaches the wire as one comma-separated value and both counts come
-  back. The console also follows the reader's colour scheme now
+  back. The console also follows the reader's color scheme now
   rather than assuming a dark room.
 
 ### Operator console
@@ -74,7 +74,7 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
   five-file listing from three thousand pixels to one screen; digests
   cut to a stub and timestamps lose their sub-seconds, both keeping
   the exact value one hover away; and a file's state reads as a
-  coloured chip. Access levels stay uncoloured deliberately, since
+  colored chip. Access levels stay uncolored deliberately, since
   green reads as healthy and `public` is the most exposed a file gets.
 
 ### Security
@@ -166,7 +166,7 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
   search that asks for no facets runs no facet query. An unsupported
   field is a `400` naming the fields that work, since an empty list
   would read as "nothing matched". `tests/engine_assumptions.rs` pins
-  the engine behaviour this rests on: `count::distinct` does not
+  the engine behavior this rests on: `count::distinct` does not
   exist, `SELECT DISTINCT a, b` is a parse error, and
   `array::len(array::distinct(array::group(file)))` is the form that
   survives `GROUP BY`.
@@ -338,7 +338,7 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
   went from zero search hits to answering `q=h264`. Image renditions
   still land ready directly, since they are generated in process
   from content that already passed its own pipeline.
-- **An executable is recognised by its structure.** `MZ` is two
+- **An executable is recognized by its structure.** `MZ` is two
   ordinary letters, so a document opening with them was read as a
   Windows binary, and with `COPAL_ENFORCE_TYPE_MATCH` set that
   quarantined it. A real binary says at byte `0x3c` where its PE
@@ -952,7 +952,7 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
   wrong ones, and hybrid retrieval fused a meaningless lexical rank against a
   real semantic one. BM25 is now scored in Copal over a bounded window of
   matches, using the same English Snowball stemmer the index's analyzer uses so
-  a stemmed match is scored rather than buried. The engine behaviour that forced
+  a stemmed match is scored rather than buried. The engine behavior that forced
   this is pinned by tests, so an engine that learns to rank fails them loudly.
 - **Semantic search reaches its index.** The KNN operator's second operand
   decides the plan: an integer is the HNSW search effort, a metric name makes

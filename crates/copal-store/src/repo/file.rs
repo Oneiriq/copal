@@ -766,7 +766,7 @@ pub async fn transition(
     .into_domain()
 }
 
-/// Shared CAS core: `extra` customises the UPDATE (payload columns or a
+/// Shared CAS core: `extra` customizes the UPDATE (payload columns or a
 /// fresh lease) before the guards land. Returns the raw row so
 /// orchestration (completion) can read link ids the domain type does
 /// not carry.

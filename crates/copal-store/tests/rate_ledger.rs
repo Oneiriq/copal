@@ -16,7 +16,7 @@ async fn charges_admit_refuse_and_spend_nothing_on_refusal() {
     assert!(rate::try_charge(&store, &key, 6, 10).await.unwrap());
     assert!(rate::try_charge(&store, &key, 4, 10).await.unwrap());
     // Exactly spent: the refusal records nothing, so a fitting charge
-    // afterwards still passes.
+    // afterward still passes.
     assert!(!rate::try_charge(&store, &key, 1, 10).await.unwrap());
     assert!(rate::try_charge(&store, &key, 0, 10).await.unwrap());
 

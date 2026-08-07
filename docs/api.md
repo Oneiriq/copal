@@ -420,7 +420,7 @@ insertion order, so ranking them is Copal's job. It scores a bounded
 window of matches, which means a query matching more than a few
 hundred passages ranks that window rather than every match. Semantic modes need an embedding service; without
 one they answer lexically and the response's `mode` field says which
-retrieval actually ran, so a client can tell. An unrecognised mode is
+retrieval actually ran, so a client can tell. An unrecognized mode is
 a request error rather than a silent default.
 
 Uploads run through a text-extraction step, and what it produces is
@@ -431,7 +431,7 @@ extractor service to be configured (see
 answers 404 on its text rather than an empty document.
 
 Retrieval works over passages, not whole documents. Extraction splits
-text at boundaries a reader would recognise (blank lines, then
+text at boundaries a reader would recognize (blank lines, then
 sentence ends) into overlapping windows, and each passage is indexed
 and embedded on its own. A hit therefore names the passage that
 matched, and its excerpt is the window around the matching words

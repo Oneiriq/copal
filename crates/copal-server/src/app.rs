@@ -2722,6 +2722,14 @@ async fn list_renditions<B: BlobStore>(
     let auth = crate::auth::authorize_scoped(&state, &headers, crate::auth::Scope::Read, 1).await?;
     let tenant = &auth.tenant;
     let id = parse_id(&id)?;
+    // Tenancy and tombstone filtering ride the file fetch, the way
+    // they do for versions. Listing straight from the child table
+    // answered an empty page for a parent this caller cannot see,
+    // which is the same answer as for a parent with no renditions:
+    // it disclosed nothing, and it told a caller nothing either.
+    file_repo::get_file(&auth.store, tenant, &id)
+        .await?
+        .ok_or_else(|| CopalError::not_found(format!("file {id}")))?;
     let rows = file_repo::list_renditions(&auth.store, tenant, &id).await?;
     let items: Vec<_> = rows.iter().map(crate::wire::wire_file).collect();
     Ok(Json(json!({ "items": items })))

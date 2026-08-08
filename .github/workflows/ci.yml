@@ -112,3 +112,74 @@ jobs:
 
       - name: Assemble and validate the four SDKs
         run: bash sdks/build.sh
+
+  # The console is generated markup, and the Rust tests already assert
+  # it renders, its links resolve, every example the reference offers
+  # runs, and the schema it prints parses. What they cannot see is
+  # layout, and answering that takes an engine that lays out boxes.
+  #
+  # On a GitHub-hosted runner rather than aur0: Playwright's browsers
+  # need a newer base than the runner container's Ubuntu 20.04, and
+  # driving them from a sibling container through the mounted docker
+  # socket puts the browser in the host's network namespace, where it
+  # cannot reach a server started inside the runner. The Rust cache the
+  # check job writes restores here, so the build is incremental despite
+  # the different machine.
+  console:
+    name: Console layout
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      # This job builds the server, so it needs the private dependency
+      # the same way the check job does. `.cargo/config.toml` routes
+      # cargo through the git CLI, which honors insteadOf.
+      - name: Authorize private git dependencies
+        run: |
+          git config --global url."https://x-access-token:${ONEIRIQ_READ_PAT}@github.com/Oneiriq/".insteadOf "ssh://git@github.com/Oneiriq/"
+        env:
+          ONEIRIQ_READ_PAT: ${{ secrets.ONEIRIQ_READ_PAT }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      # Restores what the check job wrote and writes nothing back: two
+      # jobs saving one key is a race whose loser uploaded for nothing.
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: "v1-copal"
+          shared-key: "workspace"
+          save-if: "false"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: console/package-lock.json
+
+      - name: Install the checks
+        run: npm --prefix console ci
+
+      # Cached across runs by version, because the download is larger
+      # than everything else this job installs put together.
+      - name: Cache the browser
+        id: browser
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ hashFiles('console/package-lock.json') }}
+
+      - name: Install the browser
+        if: steps.browser.outputs.cache-hit != 'true'
+        run: npx --prefix console playwright install --with-deps chromium
+
+      # The system libraries are outside the cache, so they are asked
+      # for either way.
+      - name: Install the browser's dependencies
+        if: steps.browser.outputs.cache-hit == 'true'
+        run: npx --prefix console playwright install-deps chromium
+
+      - name: Ask the browser what the console looks like
+        run: ./console/run.sh

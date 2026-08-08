@@ -3569,8 +3569,6 @@ dependencies = [
 [[package]]
 name = "oneiriq-surql"
 version = "0.31.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a0280dfa681310cb85c7121c3b97bb12a0f4cab07d308d26c970ea3a682516d2"
 dependencies = [
  "chrono",
  "futures",

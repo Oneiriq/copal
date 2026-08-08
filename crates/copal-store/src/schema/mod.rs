@@ -168,9 +168,8 @@ pub fn code_snapshot(
     }
     surql::migration::diff::SchemaSnapshot {
         tables,
-        edges: Vec::new(),
-        buckets: Vec::new(),
         analyzers: text::analyzers(),
+        ..Default::default()
     }
 }
 

@@ -209,9 +209,8 @@ impl Store {
         }
         Ok(surql::migration::diff::SchemaSnapshot {
             tables,
-            edges: Vec::new(),
-            buckets: Vec::new(),
             analyzers: parsed.analyzers.into_values().collect(),
+            ..Default::default()
         })
     }
 

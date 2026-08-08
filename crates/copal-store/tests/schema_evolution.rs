@@ -41,9 +41,8 @@ async fn db_snapshot(client: &DatabaseClient) -> SchemaSnapshot {
     }
     SchemaSnapshot {
         tables,
-        edges: Vec::new(),
-        buckets: Vec::new(),
         analyzers: parsed.analyzers.into_values().collect(),
+        ..Default::default()
     }
 }
 

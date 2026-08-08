@@ -32,7 +32,7 @@ use copal_core::{
     sniff_content_type, ContentDigest, CopalError, ExtensionPolicy, FileId, FileState, TenantId,
 };
 use copal_flow::FlowRegistry;
-use copal_store::repo::{blob as blob_repo, file as file_repo};
+use copal_store::repo::{blob as blob_repo, completion as completion_repo, file as file_repo};
 use copal_store::Store;
 
 /// The derivatives workflow key.
@@ -505,7 +505,7 @@ async fn fetch_source<B: BlobStore>(
             file_repo::set_content_type(store, &tenant, &file, served).await?;
         }
     }
-    let record = file_repo::complete_upload(
+    let record = completion_repo::complete_upload(
         store,
         &tenant,
         &file,
@@ -675,7 +675,7 @@ async fn transform_external<B: BlobStore>(
     // scanned, and extracted. Extraction is the point for a
     // transformer that produces text, since a transcript nobody
     // indexed is a transcript nobody can find.
-    let record = file_repo::complete_upload(
+    let record = completion_repo::complete_upload(
         store,
         &tenant,
         &derived,
@@ -772,7 +772,7 @@ async fn render_rendition<B: BlobStore>(
     )
     .await?;
     file_repo::claim_upload(store, &tenant, &derived, "derive-worker", 900).await?;
-    let record = file_repo::complete_upload(
+    let record = completion_repo::complete_upload(
         store,
         &tenant,
         &derived,

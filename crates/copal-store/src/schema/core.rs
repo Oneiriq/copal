@@ -259,12 +259,16 @@ fn file_version_table() -> TableDefinition {
     table_schema("file_version")
         .with_mode(TableMode::Schemafull)
         .with_fields([
-            // Scalars are READONLY and land at CREATE. Record links
-            // cannot ride a CREATE payload (JSON strings do not coerce
-            // to records), so the row is created un-armed and one
-            // arming UPDATE sets the links plus `armed = true`; the
-            // freeze event admits exactly that one UPDATE and THROWs
-            // on everything after.
+            // Scalars are READONLY and land at CREATE, and so do the
+            // links: a version row is created armed, in one statement,
+            // inside the completion transaction. It was two statements
+            // once, because a JSON payload cannot carry a record link
+            // (a `table:id` string does not coerce), so the row was
+            // created un-armed and an arming UPDATE set the links. A
+            // raw CONTENT literal has no such trouble, and one
+            // statement is the stronger arrangement: the freeze event
+            // fires on UPDATE, so a row born armed has no update left
+            // to be frozen after it, and never exists unarmed.
             built(string_field("tenant_id").readonly(true)),
             built(int_field("number").assertion("$value >= 1").readonly(true)),
             built(string_field("content_type").readonly(true)),
@@ -301,10 +305,10 @@ fn file_version_table() -> TableDefinition {
         .with_events([event(
             "file_version_frozen",
             // Scalars defend themselves through READONLY; this event
-            // guards what READONLY cannot: the links (set at arming)
-            // and the armed flag itself. Retention columns move after
-            // arming by design, so the condition names the frozen set
-            // rather than refusing every update.
+            // guards what READONLY cannot: the links and the armed
+            // flag itself, all of which land at CREATE. Retention
+            // columns move after arming by design, so the condition
+            // names the frozen set rather than refusing every update.
             "$event = 'UPDATE' AND $before.armed = true AND ($after.file != $before.file OR \
              $after.blob != $before.blob OR $after.prior != $before.prior OR \
              $after.armed != $before.armed)",

@@ -9,6 +9,37 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Finishing an upload is one transaction.** Completion was a
+  sequence of guarded statements, each atomic alone and none atomic
+  together. The compare-and-swap moved the file out of `uploading` and
+  incremented `version_count`, and only several round trips later did
+  an update point `current_version` at the version that increment had
+  named. In between, every face could read a file counted to version N
+  while still serving N-1, and a crash in the window left it that way
+  for good. The old code knew: it reported "the current truth" when it
+  found the file had moved underneath it.
+
+  The whole write is now one `BEGIN … COMMIT`: the state change, the
+  payload columns, the blob link, the version row, the retention stamp
+  the tenant's policy calls for, the pruning of erasable history, and
+  the event announcing it. A reader sees the file before all of that
+  or after all of it. The compare-and-swap is unchanged and still
+  decides who wins, so two writers racing the same claim still resolve
+  at the engine and the loser still gets a conflict, but the loser now
+  writes nothing at all rather than losing partway through. Version
+  rows are created already armed, in one statement rather than two,
+  which leaves no moment when history exists unfrozen.
+
+  The tenant's retention policy is read before the transaction opens,
+  and it is the only step left outside. It stays a snapshot: what a
+  version is stamped with is the policy as it stood at that
+  completion, never recomputed, because a policy change must not
+  shorten what already exists.
+
+  Completion went from five to ten round trips to two.
+
 ### Operator console
 
 - **The console reads like somewhere to work.** Navigation moved into

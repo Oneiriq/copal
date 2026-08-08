@@ -6,10 +6,17 @@
 //! `namespace` fails a unit test here instead of parsing strangely in
 //! production.
 //!
-//! The definitions in this module are the single migration source of
-//! truth. `ensure_schema` renders and applies them idempotently for
-//! development and tests; versioned migration files are generated from
-//! the same definitions via the surql toolchain.
+//! The definitions in this module are the only description of the
+//! schema there is. There are no migration files: [`crate::Store`]
+//! introspects the live database on connect, diffs it against the
+//! snapshot these definitions render, and applies the difference as
+//! `OVERWRITE` forms. Development, tests and deployment all take that
+//! one path, so a database created by an older release picks up every
+//! later definition on its first boot under newer code, and a database
+//! that already matches runs no DDL at all. Nothing is versioned and
+//! nothing rolls back: definitions the database holds that the code no
+//! longer declares are logged and left standing, because removing them
+//! is an operator's decision and not a deploy's.
 
 pub mod auth;
 pub mod core;

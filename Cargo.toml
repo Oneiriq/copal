@@ -47,8 +47,6 @@ futures = "0.3"
 bytes = "1"
 rand = "0.9"
 
-[patch.crates-io]
-oneiriq-surql = { git = "https://github.com/Oneiriq/surql-rs", branch = "feat/copal-janus" }
 
 # Full debug info costs more than it returns here. The workspace links
 # surrealdb into every one of its test binaries, and on Windows each

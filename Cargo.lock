@@ -3555,7 +3555,7 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 [[package]]
 name = "oneiriq-janus"
 version = "0.1.0"
-source = "git+ssh://git@github.com/Oneiriq/janus.git?branch=main#bdba543d3f21dcbb4ce9a83bc0dc0987049776ad"
+source = "git+ssh://git@github.com/Oneiriq/janus.git?branch=main#248302b1fddb3fb1a3cabb9f2f40da3fdc03cc7d"
 dependencies = [
  "async-graphql",
  "futures-core",
@@ -3569,7 +3569,8 @@ dependencies = [
 [[package]]
 name = "oneiriq-surql"
 version = "0.31.0"
-source = "git+https://github.com/Oneiriq/surql-rs?branch=feat%2Fcopal-janus#fe7e9afaf6a5ac493b18140eb9e045523b6e2196"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a0280dfa681310cb85c7121c3b97bb12a0f4cab07d308d26c970ea3a682516d2"
 dependencies = [
  "chrono",
  "futures",

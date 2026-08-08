@@ -241,7 +241,10 @@ impl Store {
             .query("INFO FOR DB;")
             .await
             .map_err(|e| CopalError::Store(format!("introspect: {e}")))?;
-        let parsed = surql::schema::parser::parse_db_info(&info[0])
+        // parse_db_info unwraps the client's statement-result wrapper
+        // itself; parse_table_full below does not, so that call still
+        // indexes into the response.
+        let parsed = surql::schema::parser::parse_db_info(&info)
             .map_err(|e| CopalError::Store(format!("introspect: {e}")))?;
         let mut tables = Vec::new();
         for (name, shallow) in &parsed.tables {

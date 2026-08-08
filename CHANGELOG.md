@@ -172,6 +172,21 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ### Deployment
 
+- **Index builds no longer block boot.** A changed or new index
+  applied at startup rebuilt synchronously, so a big table held the
+  whole boot for the duration - and the HNSW vector index, applied at
+  startup whenever embeddings are configured, is exactly the index
+  that gets big. Non-unique index definitions now carry
+  `CONCURRENTLY`: the statement returns at once, the engine populates
+  the index behind it, and the log names `INFO FOR INDEX` for
+  watching the build (probed: `OVERWRITE` composes with the
+  directive, and the build directive is excluded from diffs upstream,
+  so a backgrounded index does not re-apply every boot). Unique
+  indexes stay synchronous on purpose: they are constraints, not
+  accelerators, and a backgrounded constraint is silently unenforced
+  for the width of its build - `uniq_file_live_path` is what the
+  completion CAS leans on, so that window must not exist.
+
 - **Debug builds carry line tables instead of full symbols.** The
   workspace links surrealdb into every test binary, and on Windows
   each gets its own PDB that Cargo never collects when it goes stale.

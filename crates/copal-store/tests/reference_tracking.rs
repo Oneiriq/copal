@@ -248,6 +248,18 @@ async fn a_second_apply_renders_zero_statements() {
     assert_eq!(statements, 0);
 }
 
+/// Same property with the vector index folded in: the CONCURRENTLY
+/// build directive is excluded from diffs upstream (and echoed back
+/// by INFO without it), so a backgrounded build does not re-apply on
+/// every boot.
+#[tokio::test]
+async fn the_backgrounded_vector_index_does_not_flap() {
+    let store = seeded_store().await;
+    store.ensure_vector_index(384).await.expect("first ensure");
+    let statements = store.apply_schema(None, Some(384)).await.expect("re-apply");
+    assert_eq!(statements, 0);
+}
+
 /// The in-place upgrade: a database created BEFORE the REFERENCE
 /// clause, carrying rows, must recount correctly after its first boot
 /// under this code. Without the backfill the inbound sets would be

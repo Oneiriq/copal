@@ -118,15 +118,20 @@ impl Store {
     /// declares are logged and left alone: removal is an operator
     /// decision.
     ///
-    /// One departure from a straight replay of the diff: the blob
-    /// table's computed reverse-reference fields apply LAST, behind
-    /// the reference backfill. Their absence from the database is the
-    /// durable sign that pre-existing blob links are not yet
-    /// registered with the engine's reference tracking, so a crash
-    /// anywhere before they exist makes the next boot repeat the
-    /// (idempotent) backfill rather than silently undercount and let
-    /// the GC erase live content. See
-    /// [`schema::reference_backfill_script`].
+    /// Two departures from a straight replay of the diff:
+    ///
+    /// - Non-unique index builds run `CONCURRENTLY`, so a new or
+    ///   changed index over a big table (the HNSW vector index above
+    ///   all) populates behind a boot instead of blocking it. See
+    ///   [`index_add_statement`].
+    /// - The blob table's computed reverse-reference fields apply
+    ///   LAST, behind the reference backfill. Their absence from the
+    ///   database is the durable sign that pre-existing blob links
+    ///   are not yet registered with the engine's reference tracking,
+    ///   so a crash anywhere before they exist makes the next boot
+    ///   repeat the (idempotent) backfill rather than silently
+    ///   undercount and let the GC erase live content. See
+    ///   [`schema::reference_backfill_script`].
     ///
     /// Concurrent boots race benignly: identical `OVERWRITE`
     /// statements are idempotent, and a DDL conflict retries once.
@@ -166,6 +171,7 @@ impl Store {
                 Op::AddAnalyzer | Op::ModifyAnalyzer => {
                     analyzer_ops.push(diff.forward_sql.clone());
                 }
+                Op::AddIndex => apply.push(index_add_statement(&code, diff)),
                 Op::AddField if adds_reverse_reference(&code, diff) => {
                     reverse_fields.push(diff.forward_sql.clone());
                 }
@@ -371,6 +377,46 @@ impl Store {
     }
 }
 
+/// The statement for an index the database lacks.
+///
+/// Non-unique indexes build `CONCURRENTLY`: the `DEFINE` returns at
+/// once and the engine populates the index behind it, so a new or
+/// changed index over a big table (the HNSW vector index above all)
+/// no longer holds boot hostage to the rebuild. Probed on mem://:
+/// `OVERWRITE` composes with `CONCURRENTLY`, the build reaches
+/// `status: ready`, and `INFO FOR INDEX <name> ON <table>` reports
+/// its progress, which the log line names for whoever wants to
+/// watch. Unique indexes stay synchronous ON PURPOSE: they are
+/// constraints, not accelerators, and a backgrounded constraint is
+/// silently unenforced for the width of its build -
+/// `uniq_file_live_path` is what the completion CAS leans on, so
+/// that window must not exist.
+fn index_add_statement(
+    code: &surql::migration::diff::SchemaSnapshot,
+    diff: &surql::migration::models::SchemaDiff,
+) -> String {
+    let definition = diff.index.as_deref().and_then(|name| {
+        code.tables
+            .iter()
+            .find(|table| table.name == diff.table)
+            .and_then(|table| table.indexes.iter().find(|index| index.name == name))
+    });
+    match definition {
+        Some(index) if index.index_type != surql::schema::IndexType::Unique => {
+            tracing::info!(
+                index = %index.name,
+                table = %diff.table,
+                "index build backgrounded (CONCURRENTLY); watch it with INFO FOR INDEX",
+            );
+            index
+                .clone()
+                .with_concurrently(true)
+                .to_surql_overwrite(&diff.table)
+        }
+        _ => diff.forward_sql.clone(),
+    }
+}
+
 /// Whether this diff adds a computed reverse-reference field (`<~`):
 /// the fields the reference backfill must precede, held out of the
 /// main script by [`Store::apply_schema`].
@@ -404,6 +450,26 @@ mod tests {
         let empty = surql::migration::diff::SchemaSnapshot::default();
         let diffs = surql::migration::diff::diff_schemas(&code, &empty);
         (code, diffs)
+    }
+
+    #[test]
+    fn non_unique_index_adds_are_backgrounded_and_unique_ones_are_not() {
+        let (code, diffs) = fresh_diffs();
+        let hnsw = diffs
+            .iter()
+            .find(|d| d.index.as_deref() == Some("idx_chunk_embedding"))
+            .expect("the vector index is in the fresh diff");
+        let sql = index_add_statement(&code, hnsw);
+        assert!(sql.contains("HNSW"), "{sql}");
+        assert!(sql.contains(" OVERWRITE "), "{sql}");
+        assert!(sql.ends_with("CONCURRENTLY;"), "{sql}");
+
+        let unique = diffs
+            .iter()
+            .find(|d| d.index.as_deref() == Some("uniq_file_live_path"))
+            .expect("the live-path constraint is in the fresh diff");
+        let sql = index_add_statement(&code, unique);
+        assert!(!sql.contains("CONCURRENTLY"), "{sql}");
     }
 
     #[test]

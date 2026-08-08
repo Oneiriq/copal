@@ -132,6 +132,15 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # This job builds the server, so it needs the private dependency
+      # the same way the check job does. `.cargo/config.toml` routes
+      # cargo through the git CLI, which honors insteadOf.
+      - name: Authorize private git dependencies
+        run: |
+          git config --global url."https://x-access-token:${ONEIRIQ_READ_PAT}@github.com/Oneiriq/".insteadOf "ssh://git@github.com/Oneiriq/"
+        env:
+          ONEIRIQ_READ_PAT: ${{ secrets.ONEIRIQ_READ_PAT }}
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 

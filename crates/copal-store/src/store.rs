@@ -101,7 +101,9 @@ impl Store {
         Ok(store)
     }
 
-    /// Bring the database up to the code's schema.
+    /// Bring the database up to the code's schema. Returns how many
+    /// statements were applied: a database that already matches
+    /// applies zero, the boot-loop property the tests pin.
     ///
     /// The database is introspected live (`INFO FOR DB` for modes,
     /// permissions, analyzers, and access methods; `INFO FOR TABLE`
@@ -116,13 +118,23 @@ impl Store {
     /// declares are logged and left alone: removal is an operator
     /// decision.
     ///
+    /// One departure from a straight replay of the diff: the blob
+    /// table's computed reverse-reference fields apply LAST, behind
+    /// the reference backfill. Their absence from the database is the
+    /// durable sign that pre-existing blob links are not yet
+    /// registered with the engine's reference tracking, so a crash
+    /// anywhere before they exist makes the next boot repeat the
+    /// (idempotent) backfill rather than silently undercount and let
+    /// the GC erase live content. See
+    /// [`schema::reference_backfill_script`].
+    ///
     /// Concurrent boots race benignly: identical `OVERWRITE`
     /// statements are idempotent, and a DDL conflict retries once.
     pub async fn apply_schema(
         &self,
         engine_access_key: Option<&str>,
         embedding_dimension: Option<u32>,
-    ) -> copal_core::Result<()> {
+    ) -> copal_core::Result<usize> {
         let db = self.introspect().await?;
         let code = schema::code_snapshot(embedding_dimension, &self.engine_policy);
         let diffs = surql::migration::diff::diff_schemas(&code, &db);
@@ -132,6 +144,7 @@ impl Store {
         // transaction.
         let mut analyzer_ops: Vec<String> = Vec::new();
         let mut apply: Vec<String> = Vec::new();
+        let mut reverse_fields: Vec<String> = Vec::new();
         for diff in &diffs {
             use surql::migration::models::DiffOperation as Op;
             match diff.operation {
@@ -140,7 +153,10 @@ impl Store {
                 | Op::DropIndex
                 | Op::DropEvent
                 | Op::DropAnalyzer
-                | Op::DropBucket => {
+                | Op::DropBucket
+                | Op::DropSequence
+                | Op::DropFunction
+                | Op::DropParam => {
                     tracing::warn!(
                         change = %diff.description,
                         "the database defines this and the code no longer does; remove it \
@@ -149,6 +165,9 @@ impl Store {
                 }
                 Op::AddAnalyzer | Op::ModifyAnalyzer => {
                     analyzer_ops.push(diff.forward_sql.clone());
+                }
+                Op::AddField if adds_reverse_reference(&code, diff) => {
+                    reverse_fields.push(diff.forward_sql.clone());
                 }
                 _ => apply.push(diff.forward_sql.clone()),
             }
@@ -163,23 +182,46 @@ impl Store {
             // can never compare equal.
             apply.push(schema::access_overwrite(key)?);
         }
-        if apply.is_empty() {
-            return Ok(());
+        let applied = apply.len() + reverse_fields.len();
+        if applied == 0 {
+            return Ok(0);
         }
         tracing::info!(
-            statements = apply.len(),
+            statements = applied,
             "bringing the database up to the code's schema",
         );
-        let script = apply.join("\n");
-        if let Err(first) = self.client.query(&script).await {
+        if !apply.is_empty() {
+            self.run_ddl(&apply.join("\n"), "apply_schema").await?;
+        }
+        if !reverse_fields.is_empty() {
+            // Backfill first, computed fields after: once the fields
+            // exist the recount trusts the inbound sets, so they may
+            // only come into being over a database whose every link
+            // is registered.
+            tracing::info!(
+                "registering pre-existing blob links with the engine's reference tracking",
+            );
+            self.run_ddl(&schema::reference_backfill_script(), "reference backfill")
+                .await?;
+            self.run_ddl(&reverse_fields.join("\n"), "reverse reference fields")
+                .await?;
+        }
+        Ok(applied)
+    }
+
+    /// Run one DDL script, retrying once on an engine-level conflict
+    /// (two replicas booting at the same moment race the same
+    /// idempotent statements).
+    async fn run_ddl(&self, script: &str, what: &str) -> copal_core::Result<()> {
+        if let Err(first) = self.client.query(script).await {
             if first.to_string().contains("conflict") {
                 tokio::time::sleep(std::time::Duration::from_millis(250)).await;
                 self.client
-                    .query(&script)
+                    .query(script)
                     .await
-                    .map_err(|e| CopalError::Store(format!("apply_schema retry: {e}")))?;
+                    .map_err(|e| CopalError::Store(format!("{what} retry: {e}")))?;
             } else {
-                return Err(CopalError::Store(format!("apply_schema: {first}")));
+                return Err(CopalError::Store(format!("{what}: {first}")));
             }
         }
         Ok(())
@@ -241,7 +283,7 @@ impl Store {
     /// property of the schema: a deployment without embeddings never
     /// defines this index, and one that changes models redefines it.
     pub async fn ensure_vector_index(&self, dimension: u32) -> copal_core::Result<()> {
-        self.apply_schema(None, Some(dimension)).await
+        self.apply_schema(None, Some(dimension)).await.map(|_| ())
     }
 
     /// One cheap round trip proving the metadata plane answers.
@@ -326,5 +368,53 @@ impl Store {
             Ok(notification) => Ok(notification.data),
             Err(error) => Err(CopalError::Store(format!("live query: {error}"))),
         }))
+    }
+}
+
+/// Whether this diff adds a computed reverse-reference field (`<~`):
+/// the fields the reference backfill must precede, held out of the
+/// main script by [`Store::apply_schema`].
+fn adds_reverse_reference(
+    code: &surql::migration::diff::SchemaSnapshot,
+    diff: &surql::migration::models::SchemaDiff,
+) -> bool {
+    diff.field
+        .as_deref()
+        .and_then(|name| {
+            code.tables
+                .iter()
+                .find(|table| table.name == diff.table)?
+                .fields
+                .iter()
+                .find(|field| field.name == name)
+        })
+        .and_then(|field| field.computed.as_deref())
+        .is_some_and(|expression| expression.trim_start().starts_with("<~"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fresh_diffs() -> (
+        surql::migration::diff::SchemaSnapshot,
+        Vec<surql::migration::models::SchemaDiff>,
+    ) {
+        let code = crate::schema::code_snapshot(Some(384), &crate::schema::EnginePolicy::default());
+        let empty = surql::migration::diff::SchemaSnapshot::default();
+        let diffs = surql::migration::diff::diff_schemas(&code, &empty);
+        (code, diffs)
+    }
+
+    #[test]
+    fn only_the_computed_reverse_fields_are_deferred() {
+        let (code, diffs) = fresh_diffs();
+        use surql::migration::models::DiffOperation;
+        let deferred: Vec<&str> = diffs
+            .iter()
+            .filter(|d| d.operation == DiffOperation::AddField && adds_reverse_reference(&code, d))
+            .filter_map(|d| d.field.as_deref())
+            .collect();
+        assert_eq!(deferred, ["inbound_files", "inbound_versions"]);
     }
 }

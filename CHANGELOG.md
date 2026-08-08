@@ -9,6 +9,43 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ## [Unreleased]
 
+### Storage and tenancy
+
+- **The engine keeps the blob reference count now.** The GC recount
+  ran two aggregates per candidate: a count over `file` and a count
+  over `file_version`, each scanning for rows whose `blob` column
+  matched. Correct, and paid for by walking both tables for every
+  blob on every sweep. The `blob` links on both tables now carry
+  `REFERENCE` (with `ON DELETE IGNORE` spelled out: blob collection
+  stays copal's job - mark, grace, erase - and engine-side cascade
+  would be new behavior, not adoption), so every link registers
+  itself on the blob row as it is written, and the blob table reads
+  the inbound sets back through computed `<~file` and
+  `<~file_version` fields. The recount became one round trip that
+  filters those sets by the same retention predicate as before,
+  single-sourced so the old and new readings cannot drift: engine
+  work per candidate fell from O(file rows + version rows) to
+  O(inbound links). The two `blob`-column indexes existed only for
+  those aggregates and are gone; the aggregate itself stays in the
+  tree as a test oracle, asserted equal to the engine's answer across
+  the whole retention matrix, because an undercount here erases live
+  content.
+
+  References do not backfill - probed, and the probe is why this
+  entry is longer than the diff. A row written before its field
+  carried `REFERENCE` stays invisible to `<~` forever, and a
+  self-assignment does not register it; only an actual value change
+  does. So the first boot over an existing database rewrites every
+  blob link to NONE and back inside one transaction per table, with
+  the `file_version` freeze event lifted for the duration and
+  restored after. The computed fields are defined only once that
+  completes: their absence is the durable sign the backfill still
+  owes, so a crash at any point makes the next boot repeat the
+  idempotent dance rather than quietly undercount. The one visible
+  scar is `updated_at` on file rows, recomputed by the rewrite. Blob
+  point reads project explicit columns now, so serving a download
+  never resolves an inbound set.
+
 ### Fixed
 
 - **Finishing an upload is one transaction.** Completion was a

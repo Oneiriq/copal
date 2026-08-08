@@ -173,6 +173,59 @@ pub fn code_snapshot(
     }
 }
 
+/// The one-time migration that registers pre-existing blob links with
+/// the engine's reference tracking.
+///
+/// Probed on mem://: references do NOT backfill. A row written before
+/// its field carried `REFERENCE` stays invisible to `<~` forever, and
+/// a self-assignment (`SET blob = blob`) does not register it either -
+/// only an actual value change does. Left alone, a deployment
+/// upgrading in place would recount to zero and the GC would erase
+/// live content. So each row's link is written to NONE and back
+/// inside one transaction per table (the transaction is what keeps a
+/// crash from stranding a severed link), which registers it.
+///
+/// `file_version`'s freeze event THROWs on any blob change of an
+/// armed row, so it is removed for the duration and restored from the
+/// code definition afterward. Every step tolerates a crash: the
+/// caller only runs this while the blob table's computed inbound
+/// fields are still missing and defines them after it succeeds, so an
+/// interrupted run is simply run again (re-registering is a no-op,
+/// probed), and a missing freeze event is re-added by the next boot's
+/// ordinary diff.
+///
+/// The rewrite recomputes `file.updated_at` (a VALUE column recomputes
+/// on every update); a one-time timestamp bump is the price of
+/// registration.
+pub fn reference_backfill_script() -> String {
+    let freeze = core::tables()
+        .into_iter()
+        .find(|table| table.name == "file_version")
+        .and_then(|table| {
+            table
+                .events
+                .into_iter()
+                .find(|event| event.name == "file_version_frozen")
+        })
+        .expect("the file_version freeze event is part of the static schema");
+    // `?? []`: an empty selection evaluates to NONE, which FOR refuses
+    // to iterate (probed), and a fresh database's tables are empty.
+    let dance = |table: &str| {
+        format!(
+            "BEGIN; FOR $rid IN ((SELECT VALUE id FROM {table} WHERE blob IS NOT NONE) ?? []) \
+             {{ LET $b = $rid.blob; UPDATE $rid SET blob = NONE; UPDATE $rid SET blob = $b; }}; \
+             COMMIT;"
+        )
+    };
+    [
+        "REMOVE EVENT IF EXISTS file_version_frozen ON TABLE file_version;".to_owned(),
+        dance("file"),
+        dance("file_version"),
+        freeze.to_surql_overwrite("file_version"),
+    ]
+    .join("\n")
+}
+
 /// The caller access method's `OVERWRITE` form. Applied whenever the
 /// key is configured rather than diffed: the engine redacts keys in
 /// its echo, so an access definition can never compare equal, and

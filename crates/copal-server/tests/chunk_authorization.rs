@@ -873,3 +873,81 @@ async fn the_semantic_leg_withholds_the_same_passages() {
     assert_eq!(raw.len(), 1, "{raw:?}");
     assert!(raw[0].body.contains("acquisition price"), "{raw:?}");
 }
+
+/// Leak surface six, the layer under all of the above: the engine's
+/// compiled PERMISSIONS carry the chunk conjunct, so a caller-bound
+/// session meets the refusal even when the application clause is
+/// GONE. The dropped-clause bug is played by a real production query
+/// (`chunks_without_embedding` carries no disclosure clause at all,
+/// because the embed worker runs on the service store); run through a
+/// caller session, the engine withholds the marked chunk anyway.
+///
+/// Non-vacuity: the service store beside it sees both chunks, so the
+/// row the caller cannot see exists and the filtering is the second
+/// layer's work.
+#[tokio::test]
+async fn the_engine_second_layer_withholds_chunks_on_its_own() {
+    let mut config = StoreConfig::memory_with_engine_access("chunk-engine-key");
+    config.engine_policy = copal_server::engine::engine_policy().unwrap();
+    let store = Store::connect(config).await.unwrap();
+
+    let tenant = copal_core::TenantId::parse("acme").unwrap();
+    let spec = copal_core::FileSpec {
+        path: "docs/engine.txt".to_owned(),
+        content_type: "text/plain".to_owned(),
+        access: copal_core::AccessLevel::Private,
+        metadata: json!({}),
+        idempotency_key: None,
+    };
+    let file = copal_store::repo::file::create_file(&store, &tenant, &spec, "tester")
+        .await
+        .unwrap()
+        .record
+        .id;
+    text_repo::put_chunks(
+        &store,
+        &tenant,
+        &file,
+        "digest",
+        &[
+            text_repo::ChunkInput::plain("an open passage".to_owned()),
+            text_repo::ChunkInput {
+                body: "a withheld passage carrying the secret".to_owned(),
+                access: Some(copal_core::AccessLevel::Grant),
+            },
+        ],
+    )
+    .await
+    .unwrap();
+
+    let access = copal_server::engine::EngineAccess {
+        key: "chunk-engine-key".to_owned(),
+        namespace: "copal_test".to_owned(),
+        database: "copal".to_owned(),
+    };
+    let token = copal_server::engine::mint_caller_token(
+        &access,
+        &tenant,
+        &ulid::Ulid::new().to_string().to_ascii_lowercase(),
+        &["read".to_owned()],
+        None,
+    );
+    let caller = store.caller(&token).await.expect("minted token binds");
+
+    let through_caller = text_repo::chunks_without_embedding(&caller, &file)
+        .await
+        .unwrap();
+    assert_eq!(
+        through_caller.len(),
+        1,
+        "the engine filtered without any application clause: {through_caller:?}",
+    );
+    assert_eq!(through_caller[0].body, "an open passage");
+
+    // The service store sees both rows, so the caller's view above
+    // is the permission clause at work rather than a missing row.
+    let through_service = text_repo::chunks_without_embedding(&store, &file)
+        .await
+        .unwrap();
+    assert_eq!(through_service.len(), 2, "{through_service:?}");
+}

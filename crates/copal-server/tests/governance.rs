@@ -444,6 +444,15 @@ fn engine_policy_derives_from_the_contract() {
         .select_conjuncts
         .iter()
         .any(|(table, _)| table == "file_version"));
+    // The per-chunk conjunct is copal-side policy stated beside the
+    // retention clause, not derived: the contract does not expose the
+    // chunk table, and the second layer must carry the withholding
+    // rule anyway.
+    assert!(policy.select_conjuncts.iter().any(|(table, clause)| {
+        table == "text_chunk"
+            && clause.contains("access IS NONE OR access != 'grant'")
+            && clause.contains("file.access != 'grant'")
+    }));
 
     let tables = copal_store::schema::tables_with_policy(&policy);
     let version_table = tables.iter().find(|t| t.name == "file_version").unwrap();

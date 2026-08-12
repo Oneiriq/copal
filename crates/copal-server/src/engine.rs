@@ -57,6 +57,28 @@ pub fn engine_policy() -> copal_core::Result<copal_store::schema::EnginePolicy> 
         "file_version".to_owned(),
         "legal_hold != true AND (retain_until IS NONE OR retain_until < time::now())".to_owned(),
     ));
+    // Per-chunk authorization is the same kind of copal-side policy:
+    // the contract cannot declare a row-level access rule over a
+    // table it does not expose, so the conjunct is stated here, where
+    // the retention clause is. The chunk half is the SAME string the
+    // application queries conjoin (one statement of the rule, two
+    // layers reading it); the file half restates the grant refusal
+    // from FILE_DISCLOSABLE because the engine clause traverses the
+    // record link itself (pinned in copal-store's engine_sessions
+    // tests). A caller-bound session therefore meets the refusal even
+    // when a request-path bug drops the application clause, which is
+    // the entire point of the second layer and the same treatment
+    // tenancy and retention received. Like the application clause,
+    // only `grant` is operative until principals split the read path;
+    // the vocabulary persists all four levels so the divergence lands
+    // in these constants when it comes.
+    policy.select_conjuncts.push((
+        "text_chunk".to_owned(),
+        format!(
+            "{} AND file.access != 'grant'",
+            copal_store::repo::text::CHUNK_DISCLOSABLE,
+        ),
+    ));
     Ok(policy)
 }
 

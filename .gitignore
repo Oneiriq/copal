@@ -7,3 +7,4 @@ __pycache__/
 
 # Installed by console/run.sh.
 console/node_modules/
+.claude/

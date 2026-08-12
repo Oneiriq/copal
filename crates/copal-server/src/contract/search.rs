@@ -4,12 +4,27 @@
 //! nothing here is anything else. `super::contract` puts them
 //! together, because what janus validates is the whole.
 
-use janus::{ActionField, Query, TypeRef};
+use janus::{ActionField, Query, SearchBacking, SearchKind, TypeRef};
 
 pub fn query() -> Query {
     Query {
         name: "search".into(),
         path: "/v1/search".into(),
+        // The lexical half of the fused search, declared: validation
+        // holds idx_chunk_body to being a FULLTEXT index over body,
+        // the differ calls dropping it breaking, and verify --db can
+        // ask the planner whether the index actually serves. The
+        // vector half stays undeclared because the contract is
+        // static and idx_chunk_embedding is not: it exists only in
+        // deployments that configure an embedding model, applied at
+        // startup beside the dimension. A claim that is true only
+        // sometimes is not a claim this contract makes.
+        backing: vec![SearchBacking {
+            table: "text_chunk".into(),
+            column: "body".into(),
+            index: "idx_chunk_body".into(),
+            kind: SearchKind::Lexical,
+        }],
         input: vec![
             ActionField {
                 name: "q".into(),

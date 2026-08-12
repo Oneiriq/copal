@@ -25,11 +25,10 @@ copal-blob = { path = "crates/copal-blob" }
 copal-sign = { path = "crates/copal-sign" }
 copal-flow = { path = "crates/copal-flow" }
 
-# Schema, query building, and the SurrealDB client all come from surql-rs.
-# Registry 0.31 plus a local path patch (see [patch.crates-io] below)
-# carrying the pre-release features; the batched release deletes the
-# patch line and bumps this version.
-oneiriq-surql = { version = "0.31", default-features = false, features = ["client-rustls"] }
+# Schema, query building, and the SurrealDB client all come from
+# surql-rs, taken from the registry. 0.32 is the batched release the
+# adoption work was written against.
+oneiriq-surql = { version = "0.32", default-features = false, features = ["client-rustls"] }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -46,12 +45,6 @@ tempfile = "3"
 futures = "0.3"
 bytes = "1"
 rand = "0.9"
-
-# One oneiriq-surql for the whole graph, the janus git dependency's own
-# requirement included: without the unification janus's TableDefinition
-# and copal's would be two different types.
-[patch.crates-io]
-oneiriq-surql = { path = "../surql-rs" }
 
 # Full debug info costs more than it returns here. The workspace links
 # surrealdb into every one of its test binaries, and on Windows each

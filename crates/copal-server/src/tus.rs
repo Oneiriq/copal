@@ -146,6 +146,19 @@ async fn create_session<B: BlobStore>(
         Some(raw) => serde_json::from_value(serde_json::Value::String(raw.to_owned()))
             .map_err(|_| CopalError::validation(format!("unknown access {raw:?}")))?,
     };
+    // Markers ride Upload-Metadata base64 like their peers, validated
+    // against the session's own access level before the file record
+    // exists: 400 before any byte moves, on this face like the others.
+    // The session row carries the accepted declaration to the final
+    // PATCH, where completion persists it on the version row.
+    let markers = match metadata.get("markers") {
+        None => None,
+        Some(raw) => {
+            let parsed: serde_json::Value = serde_json::from_str(raw)
+                .map_err(|_| CopalError::validation("Upload-Metadata markers must be JSON"))?;
+            Some(crate::markers::accept_declaration(&parsed, access)?)
+        }
+    };
     let spec = FileSpec {
         path,
         content_type: metadata
@@ -177,7 +190,7 @@ async fn create_session<B: BlobStore>(
         &file_id,
         upload_length,
         &staging_key,
-        None,
+        markers.as_ref(),
     )
     .await?;
 
@@ -342,6 +355,9 @@ async fn append<B: BlobStore>(
             stored.size_bytes,
             &stored.storage_path,
             "tus",
+            // The declaration Upload-Metadata carried at creation,
+            // held on the session row across every PATCH between.
+            session.markers.as_ref(),
         )
         .await?;
         // The session reserved its declared length at creation;

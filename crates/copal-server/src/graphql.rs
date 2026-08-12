@@ -386,6 +386,7 @@ pub(crate) fn dispatcher<B: BlobStore + 'static>(
                         .get("idempotency_key")
                         .and_then(|v| v.as_str())
                         .map(|v| v.to_owned()),
+                    markers: args.input.get("markers").filter(|v| !v.is_null()).cloned(),
                 };
                 crate::app::fetch_core(&state, &tenant, &spec)
                     .await

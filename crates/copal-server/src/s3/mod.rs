@@ -954,6 +954,9 @@ async fn put_object<B: BlobStore>(
         size_bytes,
         &storage_path,
         caller.principal.as_deref().unwrap_or("s3"),
+        // The S3 face carries no markers: S3's vocabulary has no
+        // such concept, and absence means the file's level.
+        None,
     )
     .await
     {

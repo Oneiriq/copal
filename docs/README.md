@@ -43,5 +43,6 @@ signing key anywhere.
 - [principals.md](principals.md): principals within tenants, designed ahead of the code.
 - [design/per-chunk-authorization.md](design/per-chunk-authorization.md): chunk-level access from per-upload markers, proposed ahead of any decision.
 - [design/multi-region-replication.md](design/multi-region-replication.md): a single-writer primary with read replicas over the changefeed, proposed ahead of any decision.
+- [design/lifecycle-tiering.md](design/lifecycle-tiering.md): cold bytes moving to cheaper storage and the recall path back, proposed ahead of any decision.
 - [backup.md](backup.md): what to back up, in what order, and how to prove a restore worked.
 - [../bench/README.md](../bench/README.md): the performance envelope, how it is measured, and what the numbers do not claim.

@@ -434,12 +434,52 @@ pub async fn semantic_search(
     max_distance: f64,
     filters: &SearchFilters,
 ) -> copal_core::Result<Vec<SearchHit>> {
+    semantic_search_impl(store, tenant, embedding, limit, max_distance, filters, true).await
+}
+
+/// Test oracle: the semantic leg with the chunk conjunct dropped, so
+/// a test can prove a withheld passage WOULD have been a nearest
+/// neighbor - that the filter does work rather than the corpus
+/// lacking a hit. Never called by production code.
+#[doc(hidden)]
+pub async fn semantic_search_ignoring_chunk_levels(
+    store: &Store,
+    tenant: &TenantId,
+    embedding: &[f64],
+    limit: i64,
+    max_distance: f64,
+    filters: &SearchFilters,
+) -> copal_core::Result<Vec<SearchHit>> {
+    semantic_search_impl(
+        store,
+        tenant,
+        embedding,
+        limit,
+        max_distance,
+        filters,
+        false,
+    )
+    .await
+}
+
+async fn semantic_search_impl(
+    store: &Store,
+    tenant: &TenantId,
+    embedding: &[f64],
+    limit: i64,
+    max_distance: f64,
+    filters: &SearchFilters,
+    enforce_chunk_levels: bool,
+) -> copal_core::Result<Vec<SearchHit>> {
     if embedding.is_empty() {
         return Err(CopalError::validation("query embedding must not be empty"));
     }
     // The tenant equality is a residual filter over the index's k
     // nearest, so a tenant with few passages in a large corpus would
-    // see fewer than `limit`; over-fetch and let the limit trim.
+    // see fewer than `limit`; over-fetch and let the limit trim. The
+    // chunk-level clause is a residual the same way, and the same
+    // over-fetch absorbs it: the trimmed limit means result counts
+    // reveal nothing about how many neighbors were withheld.
     let over_fetch = (limit * 10).clamp(limit, 500);
     let mut query = Query::new()
         .select(Some(vec![
@@ -450,9 +490,12 @@ pub async fn semantic_search(
         .from_table(CHUNK_TABLE)
         .map_err(|e| map_store_err("semantic_search", e))?
         .where_(eq("tenant_id", tenant.as_str()))
-        .where_str(DISCLOSABLE)
+        .where_str(FILE_DISCLOSABLE)
         .vector_search_indexed("embedding", embedding.to_vec(), over_fetch, HNSW_EF)
         .map_err(|e| map_store_err("semantic_search", e))?;
+    if enforce_chunk_levels {
+        query = query.where_str(CHUNK_DISCLOSABLE);
+    }
     for clause in filters.clauses() {
         query = query.where_str(clause);
     }
@@ -556,6 +599,32 @@ pub async fn facet_counts(
     field: FacetField,
     filters: &SearchFilters,
 ) -> copal_core::Result<Vec<FacetBucket>> {
+    facet_counts_impl(store, tenant, terms, field, filters, true).await
+}
+
+/// Test oracle: the same counts with the chunk conjunct dropped, so a
+/// test can prove a file whose only matching passages are withheld
+/// WOULD have counted - that a bucket's number cannot reveal that a
+/// match exists. Never called by production code.
+#[doc(hidden)]
+pub async fn facet_counts_ignoring_chunk_levels(
+    store: &Store,
+    tenant: &TenantId,
+    terms: &str,
+    field: FacetField,
+    filters: &SearchFilters,
+) -> copal_core::Result<Vec<FacetBucket>> {
+    facet_counts_impl(store, tenant, terms, field, filters, false).await
+}
+
+async fn facet_counts_impl(
+    store: &Store,
+    tenant: &TenantId,
+    terms: &str,
+    field: FacetField,
+    filters: &SearchFilters,
+    enforce_chunk_levels: bool,
+) -> copal_core::Result<Vec<FacetBucket>> {
     if terms.trim().is_empty() {
         return Err(CopalError::validation("search terms must not be empty"));
     }
@@ -565,6 +634,10 @@ pub async fn facet_counts(
         files: Option<i64>,
     }
 
+    // The same WHERE the ranked page runs, chunk clause included, so
+    // the counts are computed over the caller-visible match set: a
+    // file whose only matching passages are withheld contributes to
+    // no bucket, and a count cannot reveal that a match exists.
     let mut query = Query::new()
         .select(Some(vec![
             format!("file.{} AS value", field.as_str()),
@@ -573,9 +646,12 @@ pub async fn facet_counts(
         .from_table(CHUNK_TABLE)
         .map_err(|e| map_store_err("facet_counts", e))?
         .where_(eq("tenant_id", tenant.as_str()))
-        .where_str(DISCLOSABLE)
+        .where_str(FILE_DISCLOSABLE)
         .fulltext_search("body", 1, terms)
         .map_err(|e| map_store_err("facet_counts", e))?;
+    if enforce_chunk_levels {
+        query = query.where_str(CHUNK_DISCLOSABLE);
+    }
     for clause in filters.clauses() {
         query = query.where_str(clause);
     }
@@ -619,9 +695,30 @@ pub async fn facet_counts(
 ///
 /// This lives on the queries rather than on [`SearchFilters`] because
 /// a filter is something a caller chooses and this is not.
-const DISCLOSABLE: &str = "file.access != 'grant' \
+///
+/// Public beside [`CHUNK_DISCLOSABLE`] because the engine's second
+/// layer composes its `text_chunk` conjunct from these same strings:
+/// one statement of the rule, read by the application queries here
+/// and by the compiled `PERMISSIONS` clause, so the two enforcement
+/// layers cannot drift apart.
+pub const FILE_DISCLOSABLE: &str = "file.access != 'grant' \
                            AND file.state != 'quarantined' \
                            AND file.state != 'deleted'";
+
+/// The chunk half of the same rule: a passage whose own level is
+/// `grant` answers no search, whatever its file's level admits. NONE
+/// means the file's level, so the file clause above already decided
+/// for unmarked passages, and every row from before markers existed
+/// reads NONE.
+///
+/// Stated honestly, as the design does: the vocabulary persists all
+/// four levels, and only `grant` is operative here, because search
+/// is tenant-authenticated and read-scoped on every face, so
+/// `public`, `private`, and `tenant` passages all answer the same
+/// callers today. When principals split the read path, the divergence
+/// lands in this constant, once, and both enforcement layers and both
+/// retrieval legs follow.
+pub const CHUNK_DISCLOSABLE: &str = "(access IS NONE OR access != 'grant')";
 
 /// Lexical search over a tenant's extracted text, in relevance order.
 ///
@@ -648,6 +745,33 @@ pub async fn search(
     limit: i64,
     filters: &SearchFilters,
 ) -> copal_core::Result<Vec<SearchHit>> {
+    search_impl(store, tenant, terms, limit, filters, true).await
+}
+
+/// Test oracle: the same retrieval with the chunk conjunct dropped,
+/// so a test can prove a withheld passage WOULD have matched - that
+/// the filter is doing work rather than the corpus lacking a hit.
+/// Never called by production code, like `tamper_for_test` beside
+/// the version freeze.
+#[doc(hidden)]
+pub async fn search_ignoring_chunk_levels(
+    store: &Store,
+    tenant: &TenantId,
+    terms: &str,
+    limit: i64,
+    filters: &SearchFilters,
+) -> copal_core::Result<Vec<SearchHit>> {
+    search_impl(store, tenant, terms, limit, filters, false).await
+}
+
+async fn search_impl(
+    store: &Store,
+    tenant: &TenantId,
+    terms: &str,
+    limit: i64,
+    filters: &SearchFilters,
+    enforce_chunk_levels: bool,
+) -> copal_core::Result<Vec<SearchHit>> {
     if terms.trim().is_empty() {
         return Err(CopalError::validation("search terms must not be empty"));
     }
@@ -658,6 +782,11 @@ pub async fn search(
         .min(RESCORE_WINDOW)
         .max(limit)
         .max(1);
+    // Enforcement sits INSIDE the query, chunk clause beside the file
+    // clause, so a withheld passage is never a candidate: it
+    // contributes no snippet and no rank, it never reaches the
+    // rescore below or the rerank window downstream, and a file whose
+    // only matching passages are withheld never surfaces at all.
     let mut query = Query::new()
         .select(Some(vec![
             "file".to_owned(),
@@ -667,9 +796,12 @@ pub async fn search(
         .from_table(CHUNK_TABLE)
         .map_err(|e| map_store_err("search", e))?
         .where_(eq("tenant_id", tenant.as_str()))
-        .where_str(DISCLOSABLE)
+        .where_str(FILE_DISCLOSABLE)
         .fulltext_search("body", 1, terms)
         .map_err(|e| map_store_err("search", e))?;
+    if enforce_chunk_levels {
+        query = query.where_str(CHUNK_DISCLOSABLE);
+    }
     for clause in filters.clauses() {
         query = query.where_str(clause);
     }

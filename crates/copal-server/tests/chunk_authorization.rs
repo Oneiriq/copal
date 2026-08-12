@@ -472,3 +472,404 @@ async fn tus_markers_ride_upload_metadata_to_chunk_levels() {
         "the refusal preceded the file record",
     );
 }
+
+/// Leak surface one, the search results themselves: a withheld chunk
+/// contributes no snippet and no rank, and a file whose ONLY matching
+/// passages are withheld does not surface at all - while its open
+/// passages keep answering their own questions, because partial
+/// availability is the point of per-chunk granularity.
+///
+/// Non-vacuity: the oracle runs the same retrieval with the chunk
+/// conjunct dropped and finds the withheld passage, so the empty
+/// answer above is the filter working, not the corpus lacking a hit.
+#[tokio::test]
+async fn search_never_surfaces_a_withheld_passage() {
+    let (router, engine, store, _dir) = stack().await;
+    let document = marked_document();
+    let id = upload_marked(
+        &router,
+        &engine,
+        "docs/leak1.txt",
+        &document,
+        Some(&marker_json()),
+    )
+    .await;
+
+    // The secret's term matches nothing through the API.
+    let get = req("GET", "/v1/search?q=zanzibar", Body::empty());
+    let body = json_body(router.clone().oneshot(get).await.unwrap()).await;
+    assert_eq!(body["items"], json!([]), "{body}");
+
+    // The oracle proves the leak WOULD happen without the conjunct:
+    // the withheld passage matches, names this file, and carries the
+    // secret in its body - exactly what must never reach a caller.
+    let tenant = copal_core::TenantId::parse("acme").unwrap();
+    let would_leak = text_repo::search_ignoring_chunk_levels(
+        &store,
+        &tenant,
+        "zanzibar",
+        10,
+        &Default::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(would_leak.len(), 1, "the planted chunk must match");
+    assert_eq!(would_leak[0].file_id().as_deref(), Some(id.as_str()));
+    assert!(would_leak[0].body.contains("zanzibar"));
+
+    // The file's OPEN passages still answer: withholding one passage
+    // does not withhold the document.
+    let get = req("GET", "/v1/search?q=housekeeping", Body::empty());
+    let body = json_body(router.clone().oneshot(get).await.unwrap()).await;
+    let items = body["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1, "{body}");
+    assert_eq!(items[0]["file"], json!(id.as_str()));
+    assert!(
+        !items[0]["excerpt"].as_str().unwrap().contains("zanzibar"),
+        "an open hit must not excerpt withheld text: {body}",
+    );
+}
+
+/// Leak surface two, facet counts: computed over the caller-visible
+/// match set, so a file whose only matching passages are withheld
+/// contributes to no bucket. The oracle counts the raw match set and
+/// finds one more file, which is the difference between a count and
+/// a disclosure.
+#[tokio::test]
+async fn facet_counts_run_over_the_caller_visible_match_set() {
+    let (router, engine, store, _dir) = stack().await;
+    let marked = marked_document();
+    upload_marked(
+        &router,
+        &engine,
+        "docs/facet-marked.txt",
+        &marked,
+        Some(&marker_json()),
+    )
+    .await;
+    // A second document says the term openly, so the bucket exists
+    // either way and the assertion is about its NUMBER.
+    let open = "an open memo mentioning zanzibar in plain sight, twice over: zanzibar. ".repeat(3);
+    upload_marked(&router, &engine, "docs/facet-open.txt", &open, None).await;
+
+    let get = req(
+        "GET",
+        "/v1/search?q=zanzibar&facets=content_type",
+        Body::empty(),
+    );
+    let body = json_body(router.clone().oneshot(get).await.unwrap()).await;
+    assert_eq!(
+        body["facets"]["content_type"],
+        json!([{ "value": "text/plain", "files": 1 }]),
+        "only the openly matching document counts: {body}",
+    );
+
+    // The oracle: without the chunk conjunct the marked file counts
+    // too, so the enforced number above is the filter at work.
+    let tenant = copal_core::TenantId::parse("acme").unwrap();
+    let raw = text_repo::facet_counts_ignoring_chunk_levels(
+        &store,
+        &tenant,
+        "zanzibar",
+        text_repo::FacetField::ContentType,
+        &Default::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(raw.len(), 1);
+    assert_eq!(
+        raw[0].files, 2,
+        "the raw match set holds both files; the visible one must not",
+    );
+}
+
+/// Leak surface three, the rerank window: withheld chunks are
+/// filtered BEFORE reranking, so the external service never receives
+/// withheld text - not even to discard it, because shipping a secret
+/// to a reranker is already the disclosure. The recording service
+/// stands in for the real one and keeps everything it was sent.
+///
+/// Non-vacuity: the oracle shows the withheld passage in the raw
+/// candidate set, and the window is built from the head of the
+/// candidates, so without the filter it would have been read.
+#[tokio::test]
+async fn the_rerank_window_never_receives_withheld_text() {
+    let received = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let recorder = received.clone();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    let app = axum::Router::new().route(
+        "/rerank",
+        axum::routing::post(move |body: axum::Json<Value>| {
+            let recorder = recorder.clone();
+            async move {
+                let documents: Vec<String> = body.0["documents"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default()
+                    .iter()
+                    .filter_map(|d| d.as_str().map(|s| s.to_owned()))
+                    .collect();
+                let scored: Vec<Value> = (0..documents.len())
+                    .map(|index| json!({ "index": index, "relevance_score": 0.5 }))
+                    .collect();
+                recorder.lock().unwrap().extend(documents);
+                axum::Json(json!({ "results": scored }))
+            }
+        }),
+    );
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+
+    let store = Store::connect(StoreConfig::memory()).await.unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let blobs = ObjectStore::open(dir.path().to_str().unwrap()).unwrap();
+    let registry = standard_registry(
+        store.clone(),
+        Residencies::local_only(blobs.clone()),
+        ExtensionPolicy::standard(),
+        false,
+        None,
+        None,
+        None,
+        std::collections::HashMap::new(),
+        FetchPolicy::default(),
+    );
+    let state = AppState::new(store.clone(), blobs)
+        .with_flow(registry)
+        .with_reranker(Some(copal_server::rerank::Reranker {
+            addr: format!("http://{addr}/rerank"),
+            model: None,
+            token: None,
+            depth: 10,
+        }));
+    let engine = state.flow.clone();
+    let router = build_router(state);
+
+    // The marked document plus two open ones, so the reranker has a
+    // window to read (it only runs past one candidate) and the test
+    // can tell "filtered" from "never called".
+    upload_marked(
+        &router,
+        &engine,
+        "docs/rerank-marked.txt",
+        &marked_document(),
+        Some(&marker_json()),
+    )
+    .await;
+    for (path, filler) in [
+        (
+            "docs/rerank-a.txt",
+            "first open memo about zanzibar ferries and harbor schedules. ",
+        ),
+        (
+            "docs/rerank-b.txt",
+            "second open memo about zanzibar spice markets and tides. ",
+        ),
+    ] {
+        upload_marked(&router, &engine, path, &filler.repeat(3), None).await;
+    }
+
+    let get = req("GET", "/v1/search?q=zanzibar", Body::empty());
+    let body = json_body(router.clone().oneshot(get).await.unwrap()).await;
+    assert_eq!(
+        body["reranked"],
+        json!(2),
+        "the reranker read exactly the two open documents: {body}",
+    );
+
+    let seen = received.lock().unwrap().clone();
+    assert_eq!(seen.len(), 2, "{seen:?}");
+    assert!(
+        seen.iter()
+            .all(|document| !document.contains("acquisition price")),
+        "withheld text reached the reranker: {seen:?}",
+    );
+
+    // The oracle: the withheld passage IS in the raw candidate set,
+    // and the window is the head of the candidates, so without the
+    // filter the service would have received the secret.
+    let tenant = copal_core::TenantId::parse("acme").unwrap();
+    let raw = text_repo::search_ignoring_chunk_levels(
+        &store,
+        &tenant,
+        "zanzibar",
+        10,
+        &Default::default(),
+    )
+    .await
+    .unwrap();
+    assert!(
+        raw.iter().any(|hit| hit.body.contains("acquisition price")),
+        "{raw:?}",
+    );
+}
+
+/// Leak surface four, the full-text read: the second door beside
+/// search. Marked spans are elided rather than the document refused,
+/// the response carries a count of elided regions and no positions,
+/// and chars counts the served text. The raw row is the oracle: it
+/// still holds the secret, which is exactly why the route must not.
+#[tokio::test]
+async fn file_text_elides_marked_spans_and_counts_them() {
+    let (router, engine, store, _dir) = stack().await;
+    let document = marked_document();
+    let id = upload_marked(
+        &router,
+        &engine,
+        "docs/text-door.txt",
+        &document,
+        Some(&marker_json()),
+    )
+    .await;
+
+    let get = req("GET", &format!("/v1/files/{id}/text"), Body::empty());
+    let body = json_body(router.clone().oneshot(get).await.unwrap()).await;
+    let served = body["text"].as_str().unwrap();
+    assert!(!served.contains("zanzibar"), "the marked span served");
+    assert!(!served.contains("BEGIN CONFIDENTIAL"), "{served}");
+    assert!(
+        served.contains("alpha section") && served.contains("omega section"),
+        "elision serves the rest of the document: {served}",
+    );
+    assert_eq!(body["withheld"], json!(1), "{body}");
+    assert_eq!(
+        body["chars"],
+        json!(served.chars().count()),
+        "chars counts the SERVED text: {body}",
+    );
+    // No span positions anywhere in the answer: the length of a
+    // secret is part of the secret.
+    for key in ["start", "end", "spans", "positions"] {
+        assert!(body.get(key).is_none(), "{key} disclosed: {body}");
+    }
+
+    // The oracle: the stored row still holds the secret, so the
+    // elision above is this route's work rather than the pipeline
+    // having dropped the text.
+    let tenant = copal_core::TenantId::parse("acme").unwrap();
+    let file = copal_core::FileId::parse(&id).unwrap();
+    let row = text_repo::get_text(&store, &tenant, &file)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(row.body.contains("zanzibar"), "the oracle lost its secret");
+
+    // An unmarked document reads exactly as before, with a zero count.
+    let plain = "a plain document with nothing withheld anywhere. ".repeat(4);
+    let open_id = upload_marked(&router, &engine, "docs/text-open.txt", &plain, None).await;
+    let get = req("GET", &format!("/v1/files/{open_id}/text"), Body::empty());
+    let body = json_body(router.clone().oneshot(get).await.unwrap()).await;
+    assert_eq!(body["withheld"], json!(0));
+    assert_eq!(body["text"].as_str().unwrap(), plain.trim());
+}
+
+/// The fail direction on the second door: an unresolvable declaration
+/// elides EVERYTHING - the served text is empty and says one region
+/// went, rather than serving a document whose protection could not be
+/// located.
+#[tokio::test]
+async fn an_unresolvable_marker_elides_the_whole_text() {
+    let (router, engine, _store, _dir) = stack().await;
+    let markers = json!([{ "access": "grant", "from": "PHRASE NOBODY WROTE" }]);
+    let id = upload_marked(
+        &router,
+        &engine,
+        "docs/text-unresolved.txt",
+        &marked_document(),
+        Some(&markers),
+    )
+    .await;
+    let get = req("GET", &format!("/v1/files/{id}/text"), Body::empty());
+    let body = json_body(router.clone().oneshot(get).await.unwrap()).await;
+    assert_eq!(body["text"], json!(""), "{body}");
+    assert_eq!(body["withheld"], json!(1), "{body}");
+    assert_eq!(body["chars"], json!(0), "{body}");
+}
+
+/// Leak surface five, the semantic leg: the same conjunct rides the
+/// KNN query, so a withheld passage is never a neighbor. The fake
+/// embedder leans vectors toward keyword axes, making nearness
+/// deterministic; the oracle proves the withheld passage IS the
+/// nearest neighbor without the filter.
+#[tokio::test]
+async fn the_semantic_leg_withholds_the_same_passages() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    let app = axum::Router::new().route(
+        "/v1/embeddings",
+        axum::routing::post(|body: axum::Json<Value>| async move {
+            let input = body.0["input"].as_str().unwrap_or_default().to_lowercase();
+            let finance = f64::from(input.contains("acquisition") || input.contains("price"));
+            let logistics = f64::from(input.contains("logistics") || input.contains("harbor"));
+            axum::Json(json!({ "data": [ { "embedding": [finance, logistics, 0.01] } ] }))
+        }),
+    );
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+
+    let store = Store::connect(StoreConfig::memory()).await.unwrap();
+    store.ensure_vector_index(3).await.unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let blobs = ObjectStore::open(dir.path().to_str().unwrap()).unwrap();
+    let embedding = Some((addr, "test-model".to_owned()));
+    let registry = standard_registry(
+        store.clone(),
+        Residencies::local_only(blobs.clone()),
+        ExtensionPolicy::standard(),
+        false,
+        None,
+        None,
+        embedding.clone(),
+        std::collections::HashMap::new(),
+        FetchPolicy::default(),
+    );
+    let state = AppState::new(store.clone(), blobs)
+        .with_flow(registry)
+        .with_embedding(embedding);
+    let engine = state.flow.clone();
+    let router = build_router(state);
+
+    // The marked document's secret is the only finance-flavored text;
+    // an open logistics document keeps the corpus from being empty.
+    upload_marked(
+        &router,
+        &engine,
+        "docs/sem-marked.txt",
+        &marked_document(),
+        Some(&marker_json()),
+    )
+    .await;
+    let logistics = "open harbor logistics notes with no numbers in them at all. ".repeat(3);
+    upload_marked(&router, &engine, "docs/sem-open.txt", &logistics, None).await;
+
+    // Asking for the secret by meaning answers nothing: the withheld
+    // passage is not a neighbor, and the logistics document is not
+    // near a finance query.
+    let get = req(
+        "GET",
+        "/v1/search?q=acquisition%20price&mode=semantic",
+        Body::empty(),
+    );
+    let body = json_body(router.clone().oneshot(get).await.unwrap()).await;
+    assert_eq!(body["mode"], json!("semantic"));
+    assert_eq!(body["items"], json!([]), "{body}");
+
+    // The oracle, with the query's own vector: the withheld passage
+    // is the nearest neighbor the filter removed.
+    let tenant = copal_core::TenantId::parse("acme").unwrap();
+    let raw = text_repo::semantic_search_ignoring_chunk_levels(
+        &store,
+        &tenant,
+        &[1.0, 0.0, 0.01],
+        10,
+        0.5,
+        &Default::default(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(raw.len(), 1, "{raw:?}");
+    assert!(raw[0].body.contains("acquisition price"), "{raw:?}");
+}

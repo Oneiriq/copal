@@ -952,8 +952,23 @@ async fn search_text<B: BlobStore>(
     Ok(Json(answer))
 }
 
-/// One file's extracted text.
 /// One file's extracted text, shared by both faces.
+///
+/// The stored body contains the marked spans, so this read is the
+/// second door beside search and must close with it. The response
+/// elides the withheld spans and carries `withheld`, a count of
+/// elided regions, so a caller knows the text is partial; refusing
+/// the whole document instead would recreate exactly the
+/// all-or-nothing behavior per-chunk authorization exists to remove.
+/// Span positions are never disclosed: the length of a secret is
+/// part of the secret, so `chars` counts the SERVED text and the
+/// count says how many gaps there are, not where or how wide.
+///
+/// The spans persist all four access levels; only `grant` is
+/// operative here, because this read is tenant-authenticated and
+/// read-scoped, so the other three levels admit every caller who can
+/// reach it today. When principals split the read path, the filter
+/// below is where `private` and `tenant` spans start to bite.
 pub(crate) async fn file_text_core(
     store: &copal_store::Store,
     tenant: &TenantId,
@@ -962,12 +977,20 @@ pub(crate) async fn file_text_core(
     let row = copal_store::repo::text::get_text(store, tenant, id)
         .await?
         .ok_or_else(|| CopalError::not_found(format!("no extracted text for file {id}")))?;
+    let operative: Vec<(usize, usize)> = row
+        .withheld
+        .iter()
+        .filter(|span| span.access == copal_core::AccessLevel::Grant.as_str())
+        .map(|span| (span.start, span.end))
+        .collect();
+    let (text, withheld) = copal_core::marker::elide(&row.body, &operative);
     Ok(json!({
         "file": id.as_str(),
         "digest": row.digest,
-        "chars": row.chars,
+        "chars": text.chars().count(),
+        "withheld": withheld,
         "extractor": row.extractor,
-        "text": row.body,
+        "text": text,
         "updated_at": row.updated_at,
     }))
 }

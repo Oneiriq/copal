@@ -24,58 +24,29 @@ pub struct EngineAccess {
     pub database: String,
 }
 
-/// Engine clauses for named contract guards.
-///
-/// A guard the contract declares without an entry here refuses the
-/// boot: shipping it would silently drop the engine layer for that
-/// column while the application layer kept enforcing, and the two
-/// layers exist to agree.
-fn guard_clause(guard: &str) -> Option<&'static str> {
-    match guard {
-        "admin_only" => Some("$token.adm = true"),
-        // Ownership at the engine: the author's principal handle
-        // rides the token as `pr`, so the second layer can say what
-        // the application guard says. Tokens without the claim (keys
-        // under no principal) fail the comparison, which is the
-        // unknown-authorship rule again.
-        "owner_or_admin" => Some("$token.adm = true OR created_by = $token.pr"),
-        _ => None,
-    }
-}
-
 /// Derive the engine policy from the contract, so both enforcement
-/// layers read one declaration set. Field guards become engine
-/// column redactions; a resource's read scopes become a conjunct on
-/// its table's select clause, sub-resources included, mirroring how
-/// the dispatcher enforces reads.
+/// layers read one declaration set.
+///
+/// The derivation itself lives in janus beside the seven faces it
+/// agrees with, and the default [`janus::ClaimVocabulary`] IS this
+/// deployment's caller-token conventions - scopes ride as `sc`, the
+/// admin claim as `adm`, the principal handle as `pr` - proven
+/// byte-identical to the hand derivation this call replaced in
+/// janus's own tests. A guard the contract names without an engine
+/// clause still refuses the boot: shipping it would silently drop
+/// the engine layer for that column while the application layer kept
+/// enforcing, and the two layers exist to agree.
 pub fn engine_policy() -> copal_core::Result<copal_store::schema::EnginePolicy> {
-    let contract = crate::contract::contract();
-    let mut policy = copal_store::schema::EnginePolicy::default();
-    let mut add_guards =
-        |table: &str, fields: &[janus::ir::FieldExposure]| -> copal_core::Result<()> {
-            for field in fields {
-                if let Some(guard) = &field.guard {
-                    let clause = guard_clause(guard).ok_or_else(|| {
-                        copal_core::CopalError::Store(format!(
-                            "contract guard {guard:?} has no engine clause; add one before \
-                         shipping the guard",
-                        ))
-                    })?;
-                    policy.field_guards.push((
-                        table.to_owned(),
-                        field.column.clone(),
-                        clause.to_owned(),
-                    ));
-                }
-            }
-            Ok(())
-        };
-    for resource in &contract.resources {
-        add_guards(&resource.table, &resource.fields)?;
-        for sub in &resource.sub_resources {
-            add_guards(&sub.table, &sub.fields)?;
-        }
-    }
+    let derived = janus::derive_policy(
+        &crate::contract::contract(),
+        &janus::ClaimVocabulary::default(),
+    )
+    .map_err(|e| copal_core::CopalError::Store(e.to_string()))?;
+    let mut policy = copal_store::schema::EnginePolicy {
+        field_guards: derived.field_guards,
+        select_conjuncts: derived.select_conjuncts,
+        delete_conjuncts: Vec::new(),
+    };
     // Retention is enforceable policy the contract cannot declare
     // yet, so it is stated here explicitly rather than derived: a
     // caller session may delete a version row only when nothing
@@ -86,25 +57,6 @@ pub fn engine_policy() -> copal_core::Result<copal_store::schema::EnginePolicy> 
         "file_version".to_owned(),
         "legal_hold != true AND (retain_until IS NONE OR retain_until < time::now())".to_owned(),
     ));
-    for resource in &contract.resources {
-        if resource.reads_require.is_empty() {
-            continue;
-        }
-        let conjunct = resource
-            .reads_require
-            .iter()
-            .map(|scope| format!("$token.sc CONTAINS '{scope}'"))
-            .collect::<Vec<_>>()
-            .join(" AND ");
-        policy
-            .select_conjuncts
-            .push((resource.table.clone(), conjunct.clone()));
-        for sub in &resource.sub_resources {
-            policy
-                .select_conjuncts
-                .push((sub.table.clone(), conjunct.clone()));
-        }
-    }
     Ok(policy)
 }
 

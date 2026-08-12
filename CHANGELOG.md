@@ -9,6 +9,24 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ## [Unreleased]
 
+### Governance
+
+- **The engine policy derives in janus now.** The server rendered its
+  SurrealDB `PERMISSIONS` clauses from the contract by hand - a guard
+  map, the read-scope conjuncts, the sub-resource walk - one function
+  away from the contract layer that classifies every other face's
+  inputs. Janus grew `derive_policy` beside those faces, its default
+  claim vocabulary IS this deployment's caller-token conventions
+  (`sc`, `adm`, `pr`), and janus's own tests hold the derived strings
+  byte-identical to what the hand derivation produced, so the switch
+  reviews as deletion: `engine_policy` now calls the library and
+  keeps only what janus deliberately does not model - the retention
+  delete conjunct, stated explicitly because the contract cannot
+  declare it yet, and the mechanical tenancy floor, which stays in
+  the store because a floor derived from the contract would be
+  dodgeable by omission. A guard without an engine clause still
+  refuses the boot with the same message.
+
 ### Changed
 
 - **The vector index stores half-precision embeddings.** F16 halves

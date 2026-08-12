@@ -71,6 +71,15 @@ opentelemetry = "0.32"
 
 [dev-dependencies]
 base64 = "0.22"
+# The planner gate (`tests/planner.rs`) rides janus's `verify`
+# feature: the one part of janus that needs a database client, which
+# janus deliberately does not carry by default. Declared here so the
+# feature reaches test builds only and the shipped binary gains
+# nothing; the client it pulls unifies with the workspace surql's
+# client-rustls.
+oneiriq-janus = { git = "ssh://git@github.com/Oneiriq/janus.git", branch = "main", features = [
+    "verify",
+] }
 tempfile = { workspace = true }
 ulid = { workspace = true }
 tower = { version = "0.5", features = ["util"] }

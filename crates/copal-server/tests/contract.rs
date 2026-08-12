@@ -9,9 +9,9 @@
 //!    declaring a filter/sort no index can serve, fails validation with
 //!    the offending name.
 //! 2. Artifact drift: every generated artifact (`docs/openapi.json`,
-//!    `docs/schema.graphql`, and the four clients under `clients/`)
-//!    must match its checked-in copy byte for byte (`COPAL_BLESS=1`
-//!    re-blesses as an explicit step).
+//!    `docs/schema.graphql`, `docs/policy.json`, and the four clients
+//!    under `clients/`) must match its checked-in copy byte for byte
+//!    (`COPAL_BLESS=1` re-blesses as an explicit step).
 //! 3. Index regressions: dropping `idx_file_listing` (or demoting its
 //!    prefix) breaks the `created_at` sort claim and fails here.
 
@@ -28,14 +28,26 @@ fn contract_validates_against_the_real_schema() {
 #[test]
 fn generated_artifacts_match_the_checked_in_documents() {
     let schema = copal_store::schema::tables();
-    let artifacts =
-        generate_all(&contract(), &schema, janus::generate::TARGETS).expect("contract generates");
+    // `engine-policy` is opt-in upstream because its clauses render
+    // through a token-claim vocabulary the deployment owns, and the
+    // default vocabulary IS this deployment's. So the artifact is
+    // asked for by name here, and engine row security becomes
+    // review-visible the same way the other faces are: a scope
+    // tightened in the contract shows up as a changed clause in
+    // `docs/policy.json` in the same commit.
+    let targets: Vec<&str> = janus::generate::TARGETS
+        .iter()
+        .copied()
+        .chain(std::iter::once("engine-policy"))
+        .collect();
+    let artifacts = generate_all(&contract(), &schema, &targets).expect("contract generates");
     let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
     for (filename, content) in &artifacts {
         let checked_in_path = match filename.as_str() {
             "openapi.json" => format!("{root}/docs/openapi.json"),
             "schema.graphql" => format!("{root}/docs/schema.graphql"),
             "mcp-tools.json" => format!("{root}/docs/mcp-tools.json"),
+            "policy.json" => format!("{root}/docs/policy.json"),
             other => format!("{root}/clients/{other}"),
         };
         if std::env::var("COPAL_BLESS").is_ok() {

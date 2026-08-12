@@ -17,6 +17,7 @@ clients, and the breaking-change gate.
 | [roadmap.md](roadmap.md) | What is left, ordered by what it blocks. Shipped work lives in the changelog. |
 | [openapi.json](openapi.json) | Generated OpenAPI 3.1 document. Drift-gated by test. |
 | [schema.graphql](schema.graphql) | Generated SDL, byte-identical to the served schema. Drift-gated by test. |
+| [policy.json](policy.json) | Generated engine row-security clauses: read-scope conjuncts and field redactions the deployment folds into `PERMISSIONS`. Drift-gated by test. |
 
 Generated client SDKs live in [`clients/`](../clients/): Rust, TypeScript,
 Python, Go. Each is one self-contained file regenerated from the contract.

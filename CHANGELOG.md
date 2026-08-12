@@ -9,6 +9,52 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ## [Unreleased]
 
+### Governance
+
+- **The engine policy derives in janus now.** The server rendered its
+  SurrealDB `PERMISSIONS` clauses from the contract by hand - a guard
+  map, the read-scope conjuncts, the sub-resource walk - one function
+  away from the contract layer that classifies every other face's
+  inputs. Janus grew `derive_policy` beside those faces, its default
+  claim vocabulary IS this deployment's caller-token conventions
+  (`sc`, `adm`, `pr`), and janus's own tests hold the derived strings
+  byte-identical to what the hand derivation produced, so the switch
+  reviews as deletion: `engine_policy` now calls the library and
+  keeps only what janus deliberately does not model - the retention
+  delete conjunct, stated explicitly because the contract cannot
+  declare it yet, and the mechanical tenancy floor, which stays in
+  the store because a floor derived from the contract would be
+  dodgeable by omission. A guard without an engine clause still
+  refuses the boot with the same message.
+
+- **Engine row security is review-visible now.** The drift gate
+  generates `docs/policy.json` beside the OpenAPI document, the SDL,
+  and the clients: the derived select conjuncts and field redactions,
+  rendered through the default vocabulary and held byte-identical to
+  the checked-in copy. The target is opt-in upstream - a deployment
+  whose tokens spell claims differently would fail a default run over
+  a face it never asked for - and this deployment asks for it by
+  name, because its vocabulary IS the default. The point is the
+  review surface: tightening a read scope or guarding a field now
+  changes a checked-in artifact in the same commit, where before the
+  engine clauses changed nowhere a reviewer looked.
+
+- **The planner answers for the contract now.** The static gate
+  proves an index exists for every filter and sort claim; it cannot
+  prove the planner uses one, and the failure that slips through that
+  crack is a listing that answers correctly and walks the table to do
+  it. A new test stands up the real schema on the embedded engine and
+  runs janus's `EXPLAIN` verification over the whole contract - one
+  probe per filter claim, per sort claim, and per search backing,
+  convicting on a table walk and on a backing that does not reach its
+  named index. Because it rides the ordinary test suite it runs on
+  every pull request AND on the scheduled main run, which is the
+  channel built for drift that arrives without a commit: an engine
+  upgrade that re-costs plans fails there by claim name instead of
+  surfacing as a slow endpoint six weeks later. The verify feature
+  and its database client ride dev-dependencies only, so the shipped
+  binary gains nothing.
+
 ### Changed
 
 - **The vector index stores half-precision embeddings.** F16 halves
@@ -23,6 +69,15 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
   where that decision lands is `vector_index`, named. Roadmap item
   six retires with the upstream blockage that defined it; item ten,
   the batched surql-rs release, retired with 0.32.
+
+- **Introspection stopped indexing into the response.** surql 0.32
+  taught `parse_db_info` to unwrap the client's statement-result
+  wrapper itself, and 0.33 extended the same tolerance to the table
+  and edge parsers. The `[0]` the store still applied before
+  `parse_table_full` - and the comments explaining which parser
+  tolerated what - dated from the half-covered interval, so the
+  indexing is gone and the responses pass through as the client
+  returned them.
 
 
 ### Storage and tenancy

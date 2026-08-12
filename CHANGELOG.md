@@ -57,6 +57,14 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ### Changed
 
+- **The scale envelope is measured.** `bench/scale.sh` and its ignored
+  release-mode tests time the large-object path at 512 MiB, 1 GiB, and
+  2 GiB, the F16 index rebuild over 100k passages, and the
+  embedded-versus-remote repository round trip; the tables landed in
+  operations.md, and the roadmap item asking for evidence above
+  256 MiB retired with no wall found and the scan pass's three-times
+  memory multiple named.
+
 - **The vector index stores half-precision embeddings.** F16 halves
   the index memory F32 spent on digits that never mattered:
   similarity compares direction, and direction survives half

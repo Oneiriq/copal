@@ -18,18 +18,49 @@ pub const CHUNK_OVERLAP: usize = 150;
 /// dominate an index or a batch of embedding calls.
 pub const MAX_CHUNKS: usize = 500;
 
+/// One passage and where it sits in the text it was split from, as
+/// half-open character offsets. The span is what lets a marker
+/// resolved over the document say which passages it touches: without
+/// it, a chunk is a string with no address, and confidentiality
+/// cannot be mapped onto it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Passage {
+    pub body: String,
+    pub start: usize,
+    pub end: usize,
+}
+
 /// Split text into overlapping passages.
 ///
 /// Returns whole text as a single passage when it fits, so short
 /// documents cost one row and one embedding.
 pub fn split(text: &str) -> Vec<String> {
+    split_spans(text)
+        .into_iter()
+        .map(|passage| passage.body)
+        .collect()
+}
+
+/// Split text into overlapping passages, each carrying its span in
+/// the input's character coordinates. Bodies are identical to what
+/// [`split`] returns; the spans account for the whole-text trim and
+/// each passage's own trim, so `text[start..end]` (by characters) IS
+/// the passage body.
+pub fn split_spans(text: &str) -> Vec<Passage> {
     let trimmed = text.trim();
     if trimmed.is_empty() {
         return Vec::new();
     }
+    // Offset of the trimmed region within the input, in characters,
+    // so spans stay meaningful against the text the caller holds.
+    let lead = text.chars().count() - text.trim_start().chars().count();
     let chars: Vec<char> = trimmed.chars().collect();
     if chars.len() <= CHUNK_CHARS {
-        return vec![trimmed.to_owned()];
+        return vec![Passage {
+            body: trimmed.to_owned(),
+            start: lead,
+            end: lead + chars.len(),
+        }];
     }
 
     let mut chunks = Vec::new();
@@ -41,9 +72,7 @@ pub fn split(text: &str) -> Vec<String> {
         } else {
             boundary_before(&chars, start, hard_end)
         };
-        let passage: String = chars[start..end].iter().collect();
-        let passage = passage.trim().to_owned();
-        if !passage.is_empty() {
+        if let Some(passage) = trimmed_passage(&chars, start, end, lead) {
             chunks.push(passage);
         }
         if end >= chars.len() {
@@ -54,6 +83,27 @@ pub fn split(text: &str) -> Vec<String> {
         start = end.saturating_sub(CHUNK_OVERLAP).max(start + 1);
     }
     chunks
+}
+
+/// Trim one sliced window and keep its span honest: the whitespace a
+/// passage sheds at its edges moves the offsets inward with it.
+fn trimmed_passage(chars: &[char], start: usize, end: usize, lead: usize) -> Option<Passage> {
+    let mut from = start;
+    let mut to = end;
+    while from < to && chars[from].is_whitespace() {
+        from += 1;
+    }
+    while to > from && chars[to - 1].is_whitespace() {
+        to -= 1;
+    }
+    if from == to {
+        return None;
+    }
+    Some(Passage {
+        body: chars[from..to].iter().collect(),
+        start: lead + from,
+        end: lead + to,
+    })
 }
 
 /// The most reader-recognisable break in `[start, hard_end)`, or the
@@ -154,5 +204,44 @@ mod tests {
     fn passage_count_is_bounded() {
         let document = "word ".repeat(CHUNK_CHARS * MAX_CHUNKS);
         assert_eq!(split(&document).len(), MAX_CHUNKS);
+    }
+
+    #[test]
+    fn spans_address_their_own_bodies_exactly() {
+        // Leading whitespace on the document and boundaries inside
+        // it: every span, read back out of the input by characters,
+        // must be its passage verbatim, or a marker resolved over
+        // the document would land on the wrong passages.
+        let sentence = "the quick brown fox jumps over the lazy dog. ";
+        let document = format!("   \n{}", sentence.repeat(120));
+        let chars: Vec<char> = document.chars().collect();
+        let passages = split_spans(&document);
+        assert!(passages.len() > 1);
+        for passage in &passages {
+            let slice: String = chars[passage.start..passage.end].iter().collect();
+            assert_eq!(slice, passage.body, "span drifted from its body");
+        }
+        // The two forms agree on bodies, so nothing downstream can
+        // see different text depending on which it called.
+        assert_eq!(
+            split(&document),
+            passages.iter().map(|p| p.body.clone()).collect::<Vec<_>>(),
+        );
+    }
+
+    #[test]
+    fn consecutive_spans_overlap_in_coordinates() {
+        let sentence = "the quick brown fox jumps over the lazy dog. ";
+        let document = sentence.repeat(120);
+        let passages = split_spans(&document);
+        for pair in passages.windows(2) {
+            assert!(
+                pair[1].start < pair[0].end,
+                "the overlap window is what makes marker inheritance coarse: \
+                 {} !< {}",
+                pair[1].start,
+                pair[0].end,
+            );
+        }
     }
 }

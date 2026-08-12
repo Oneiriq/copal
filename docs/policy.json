@@ -1,0 +1,35 @@
+{
+  "field_guards": [
+    [
+      "file_version",
+      "created_by",
+      "$token.adm = true OR created_by = $token.pr"
+    ]
+  ],
+  "select_conjuncts": [
+    [
+      "file",
+      "$token.sc CONTAINS 'read'"
+    ],
+    [
+      "file_version",
+      "$token.sc CONTAINS 'read'"
+    ],
+    [
+      "webhook_endpoint",
+      "$token.sc CONTAINS 'read'"
+    ],
+    [
+      "webhook_delivery",
+      "$token.sc CONTAINS 'read'"
+    ],
+    [
+      "file_event",
+      "$token.sc CONTAINS 'read'"
+    ],
+    [
+      "workflow_run",
+      "$token.sc CONTAINS 'read'"
+    ]
+  ]
+}

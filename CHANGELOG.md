@@ -27,6 +27,18 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
   dodgeable by omission. A guard without an engine clause still
   refuses the boot with the same message.
 
+- **Engine row security is review-visible now.** The drift gate
+  generates `docs/policy.json` beside the OpenAPI document, the SDL,
+  and the clients: the derived select conjuncts and field redactions,
+  rendered through the default vocabulary and held byte-identical to
+  the checked-in copy. The target is opt-in upstream - a deployment
+  whose tokens spell claims differently would fail a default run over
+  a face it never asked for - and this deployment asks for it by
+  name, because its vocabulary IS the default. The point is the
+  review surface: tightening a read scope or guarding a field now
+  changes a checked-in artifact in the same commit, where before the
+  engine clauses changed nowhere a reviewer looked.
+
 ### Changed
 
 - **The vector index stores half-precision embeddings.** F16 halves

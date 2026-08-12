@@ -111,13 +111,21 @@ pub fn vector_index(dimension: u32) -> IndexDefinition {
         // Cosine is the metric the common embedding models are
         // trained for; their vectors are direction, not magnitude.
         HnswDistanceType::Cosine,
-        // F32: embedding models emit single precision at best, so F64
-        // doubles index memory for digits that never existed. F16 and
-        // DiskANN would halve it again and lift the in-memory bound;
-        // both were probed against surrealdb 3.2.3 (the newest
-        // published crate) and neither parses yet, so they wait
-        // upstream.
-        MTreeVectorType::F32,
+        // F16: embedding models emit single precision at best, and
+        // similarity survives half precision because the vectors are
+        // compared by direction, so F32 spent double the index memory
+        // on digits that never mattered. The engine accepts F16 as of
+        // surrealdb 3.2.4 (surql 0.33); a deployment upgrading in
+        // place rebuilds this index once, in the background, through
+        // the same CONCURRENTLY path every non-unique index takes.
+        //
+        // DISKANN parses now too, and stays deliberately unadopted:
+        // it trades the in-memory bound for disk-resident search, a
+        // different recall and latency profile that a deployment
+        // should choose knowingly rather than inherit from a default.
+        // The seam is this function; the day a deployment needs the
+        // bound lifted, the decision lands here, named.
+        MTreeVectorType::F16,
         None,
         None,
     )
@@ -139,6 +147,10 @@ mod tests {
         let vector = vector_index(768).to_surql("text_chunk");
         assert!(vector.contains("HNSW DIMENSION 768"), "{vector}");
         assert!(vector.contains("DIST COSINE"), "{vector}");
+        assert!(
+            vector.contains("TYPE F16"),
+            "half precision carries direction whole: {vector}",
+        );
 
         // The document row keeps the text for reading back, not for
         // searching: two lexical indexes over the same words would

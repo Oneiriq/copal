@@ -9,6 +9,22 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ## [Unreleased]
 
+### Changed
+
+- **The vector index stores half-precision embeddings.** F16 halves
+  the index memory F32 spent on digits that never mattered:
+  similarity compares direction, and direction survives half
+  precision. The engine accepts the type as of surrealdb 3.2.4
+  (surql 0.33); a deployment upgrading in place rebuilds the index
+  once, in the background, through the same CONCURRENTLY path every
+  non-unique index takes. DISKANN parses now too and stays
+  deliberately unadopted: disk-resident search is a recall and
+  latency profile a deployment should choose knowingly, and the seam
+  where that decision lands is `vector_index`, named. Roadmap item
+  six retires with the upstream blockage that defined it; item ten,
+  the batched surql-rs release, retired with 0.32.
+
+
 ### Storage and tenancy
 
 - **The engine keeps the blob reference count now.** The GC recount

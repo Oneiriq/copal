@@ -25,11 +25,10 @@ copal-blob = { path = "crates/copal-blob" }
 copal-sign = { path = "crates/copal-sign" }
 copal-flow = { path = "crates/copal-flow" }
 
-# Schema, query building, and the SurrealDB client all come from surql-rs.
-# Pinned to the rolling feature branch that accumulates every capability
-# Copal needs; the batch release replaces this with a plain version once
-# the pair stabilizes.
-oneiriq-surql = { version = "0.31", default-features = false, features = ["client-rustls"] }
+# Schema, query building, and the SurrealDB client all come from
+# surql-rs, taken from the registry. 0.32 is the batched release the
+# adoption work was written against.
+oneiriq-surql = { version = "0.32", default-features = false, features = ["client-rustls"] }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -46,7 +45,6 @@ tempfile = "3"
 futures = "0.3"
 bytes = "1"
 rand = "0.9"
-
 
 # Full debug info costs more than it returns here. The workspace links
 # surrealdb into every one of its test binaries, and on Windows each

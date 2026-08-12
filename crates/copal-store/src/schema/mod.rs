@@ -6,10 +6,17 @@
 //! `namespace` fails a unit test here instead of parsing strangely in
 //! production.
 //!
-//! The definitions in this module are the single migration source of
-//! truth. `ensure_schema` renders and applies them idempotently for
-//! development and tests; versioned migration files are generated from
-//! the same definitions via the surql toolchain.
+//! The definitions in this module are the only description of the
+//! schema there is. There are no migration files: [`crate::Store`]
+//! introspects the live database on connect, diffs it against the
+//! snapshot these definitions render, and applies the difference as
+//! `OVERWRITE` forms. Development, tests and deployment all take that
+//! one path, so a database created by an older release picks up every
+//! later definition on its first boot under newer code, and a database
+//! that already matches runs no DDL at all. Nothing is versioned and
+//! nothing rolls back: definitions the database holds that the code no
+//! longer declares are logged and left standing, because removing them
+//! is an operator's decision and not a deploy's.
 
 pub mod auth;
 pub mod core;
@@ -161,10 +168,62 @@ pub fn code_snapshot(
     }
     surql::migration::diff::SchemaSnapshot {
         tables,
-        edges: Vec::new(),
-        buckets: Vec::new(),
         analyzers: text::analyzers(),
+        ..Default::default()
     }
+}
+
+/// The one-time migration that registers pre-existing blob links with
+/// the engine's reference tracking.
+///
+/// Probed on mem://: references do NOT backfill. A row written before
+/// its field carried `REFERENCE` stays invisible to `<~` forever, and
+/// a self-assignment (`SET blob = blob`) does not register it either -
+/// only an actual value change does. Left alone, a deployment
+/// upgrading in place would recount to zero and the GC would erase
+/// live content. So each row's link is written to NONE and back
+/// inside one transaction per table (the transaction is what keeps a
+/// crash from stranding a severed link), which registers it.
+///
+/// `file_version`'s freeze event THROWs on any blob change of an
+/// armed row, so it is removed for the duration and restored from the
+/// code definition afterward. Every step tolerates a crash: the
+/// caller only runs this while the blob table's computed inbound
+/// fields are still missing and defines them after it succeeds, so an
+/// interrupted run is simply run again (re-registering is a no-op,
+/// probed), and a missing freeze event is re-added by the next boot's
+/// ordinary diff.
+///
+/// The rewrite recomputes `file.updated_at` (a VALUE column recomputes
+/// on every update); a one-time timestamp bump is the price of
+/// registration.
+pub fn reference_backfill_script() -> String {
+    let freeze = core::tables()
+        .into_iter()
+        .find(|table| table.name == "file_version")
+        .and_then(|table| {
+            table
+                .events
+                .into_iter()
+                .find(|event| event.name == "file_version_frozen")
+        })
+        .expect("the file_version freeze event is part of the static schema");
+    // `?? []`: an empty selection evaluates to NONE, which FOR refuses
+    // to iterate (probed), and a fresh database's tables are empty.
+    let dance = |table: &str| {
+        format!(
+            "BEGIN; FOR $rid IN ((SELECT VALUE id FROM {table} WHERE blob IS NOT NONE) ?? []) \
+             {{ LET $b = $rid.blob; UPDATE $rid SET blob = NONE; UPDATE $rid SET blob = $b; }}; \
+             COMMIT;"
+        )
+    };
+    [
+        "REMOVE EVENT IF EXISTS file_version_frozen ON TABLE file_version;".to_owned(),
+        dance("file"),
+        dance("file_version"),
+        freeze.to_surql_overwrite("file_version"),
+    ]
+    .join("\n")
 }
 
 /// The caller access method's `OVERWRITE` form. Applied whenever the

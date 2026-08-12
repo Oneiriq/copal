@@ -22,7 +22,7 @@ use crate::store::Store;
 
 const TABLE: &str = "file";
 
-fn rid(id: &FileId) -> copal_core::Result<RecordID<()>> {
+pub(crate) fn rid(id: &FileId) -> copal_core::Result<RecordID<()>> {
     RecordID::new(TABLE, id.as_str()).map_err(|e| map_store_err("record id", e))
 }
 
@@ -610,115 +610,6 @@ pub async fn reap_stale_scans(store: &Store, older_than_secs: u32) -> copal_core
     Ok(rows.len() as u64)
 }
 
-/// Finish an upload: one CAS moves `uploading -> ready`, writes the
-/// payload columns, links the blob, and atomically increments
-/// `version_count`, whose returned value IS the new version number.
-/// The frozen version row is then recorded and linked as
-/// `current_version`.
-///
-/// A crash after the CAS leaves the file correct and servable with a
-/// version-history hole that self-identifies (`version_count` exceeds
-/// the version rows); a reconciliation sweep is the queued hardening.
-#[allow(clippy::too_many_arguments)]
-pub async fn complete_upload(
-    store: &Store,
-    tenant: &TenantId,
-    id: &FileId,
-    residency: &str,
-    digest: &ContentDigest,
-    size_bytes: u64,
-    created_by: &str,
-    final_state: FileState,
-) -> copal_core::Result<FileRecord> {
-    // Completion lands in ready (no pipeline) or scanning (a pipeline
-    // will finalize); anything else is a caller bug.
-    if !matches!(final_state, FileState::Ready | FileState::Scanning) {
-        return Err(CopalError::validation(
-            "completion must land in ready or scanning",
-        ));
-    }
-    let blob_rid = RecordID::<()>::new("blob", super::blob::blob_row_id(residency, digest))
-        .map_err(|e| map_store_err("complete", e))?;
-    let row = transition_with(
-        store,
-        tenant,
-        id,
-        FileState::Uploading,
-        final_state,
-        |query| {
-            query
-                .set("digest", Value::from(digest.as_str()))
-                .map_err(|e| map_store_err("complete", e))?
-                .set("size_bytes", Value::from(size_bytes))
-                .map_err(|e| map_store_err("complete", e))?
-                .set_expr("blob", raw(blob_rid.to_string()))
-                .map_err(|e| map_store_err("complete", e))?
-                .set_expr("version_count", raw("version_count + 1"))
-                .map_err(|e| map_store_err("complete", e))
-        },
-    )
-    .await?;
-
-    let snapshot = super::version::VersionSnapshot {
-        number: row.version_count,
-        content_type: row.content_type.clone(),
-        size_bytes,
-        residency: residency.to_owned(),
-        digest: digest.clone(),
-        metadata_snapshot: row.metadata.clone(),
-        created_by: Some(created_by.to_owned()),
-        prior_version_id: row.current_version.clone(),
-    };
-    let version_id = super::version::record_version(store, tenant, id, &snapshot).await?;
-    // Tenant policy stamps the fresh version and prunes erasable
-    // history, both here so every face inherits them: the value is
-    // computed from the policy at this moment and never recomputed,
-    // because a policy change must not shorten what already exists.
-    if let Some(policy) = super::tenant::get_retention_policy(store, tenant).await? {
-        if let Some(seconds) = policy.seconds {
-            let mode = policy.mode.as_deref().unwrap_or("governance");
-            super::version::set_retention(store, tenant, id, row.version_count, seconds, mode)
-                .await?;
-        }
-        if let Some(keep) = policy.keep_last {
-            let pruned =
-                super::version::prune_erasable(store, tenant, id, keep, row.version_count).await?;
-            if pruned > 0 {
-                super::eventing::emit_event(
-                    store,
-                    tenant,
-                    Some(id.as_str()),
-                    "version.pruned",
-                    serde_json::json!({
-                        "removed": pruned,
-                        "kept": keep,
-                        "newest": row.version_count,
-                    }),
-                )
-                .await?;
-            }
-        }
-    }
-
-    let link = Query::new()
-        .update_set(rid(id)?.to_string())
-        .map_err(|e| map_store_err("link_version", e))?
-        .set_expr("current_version", raw(version_id))
-        .map_err(|e| map_store_err("link_version", e))?
-        .where_(eq("tenant_id", tenant.as_str()))
-        .where_(eq("state", final_state.as_str()))
-        .return_after();
-    let rows: Vec<FileRow> = query_records(store.client(), &link)
-        .await
-        .map_err(|e| map_store_err("link_version", e))?;
-    match rows.into_iter().next() {
-        Some(row) => row.into_domain(),
-        // The file moved (deleted mid-completion): the version row
-        // exists and is armed; report the current truth.
-        None => row.into_domain(),
-    }
-}
-
 /// Guarded state transition: compare-and-swap on `(tenant, id, from)`.
 ///
 /// The transition is validated in the domain first (fast, exhaustive),
@@ -768,8 +659,7 @@ pub async fn transition(
 
 /// Shared CAS core: `extra` customizes the UPDATE (payload columns or a
 /// fresh lease) before the guards land. Returns the raw row so
-/// orchestration (completion) can read link ids the domain type does
-/// not carry.
+/// orchestration can read link ids the domain type does not carry.
 async fn transition_with<F>(
     store: &Store,
     tenant: &TenantId,
@@ -778,6 +668,36 @@ async fn transition_with<F>(
     to: FileState,
     extra: F,
 ) -> copal_core::Result<FileRow>
+where
+    F: FnOnce(Query) -> copal_core::Result<Query>,
+{
+    let query = transition_query(tenant, id, from, to, extra)?.return_after();
+    let rows: Vec<FileRow> = query_records(store.client(), &query)
+        .await
+        .map_err(|e| map_store_err("transition", e))?;
+    let Some(row) = rows.into_iter().next() else {
+        return Err(lost_the_race(tenant, id, from));
+    };
+    Ok(row)
+}
+
+/// Render the CAS without running it, RETURN clause left open.
+///
+/// Pulled out of [`transition_with`] because completion needs the same
+/// guard rendered into a buffered transaction rather than issued as its
+/// own statement: two writers of the same guard would eventually be two
+/// different guards, and the guard is the only thing standing between a
+/// concurrent mover and a double-applied transition. The caller picks
+/// the RETURN clause because completion wants the row as it stood
+/// BEFORE the increment (that is where the prior version link and the
+/// old count live) while every other caller wants it after.
+pub(crate) fn transition_query<F>(
+    tenant: &TenantId,
+    id: &FileId,
+    from: FileState,
+    to: FileState,
+    extra: F,
+) -> copal_core::Result<Query>
 where
     F: FnOnce(Query) -> copal_core::Result<Query>,
 {
@@ -797,19 +717,17 @@ where
             .set_expr("upload_lease_expires_at", raw("NONE"))
             .map_err(|e| map_store_err("transition", e))?;
     }
-    let query = extra(query)?
+    Ok(extra(query)?
         .where_(eq("tenant_id", tenant.as_str()))
-        .where_(eq("state", from.as_str()))
-        .return_after();
+        .where_(eq("state", from.as_str())))
+}
 
-    let rows: Vec<FileRow> = query_records(store.client(), &query)
-        .await
-        .map_err(|e| map_store_err("transition", e))?;
-    let Some(row) = rows.into_iter().next() else {
-        return Err(CopalError::conflict(format!(
-            "file {id} is not in state {} for tenant {tenant}",
-            from.as_str(),
-        )));
-    };
-    Ok(row)
+/// What an empty CAS result means, in one place: the row was not in
+/// `from` for this tenant when the guard ran. Tenancy failures are
+/// deliberately indistinguishable from lost races.
+pub(crate) fn lost_the_race(tenant: &TenantId, id: &FileId, from: FileState) -> CopalError {
+    CopalError::conflict(format!(
+        "file {id} is not in state {} for tenant {tenant}",
+        from.as_str(),
+    ))
 }

@@ -1,16 +1,19 @@
 //! Version repository: frozen snapshots of completed uploads.
 //!
-//! A version row is created with its scalars (READONLY at the engine)
-//! and then ARMED: one UPDATE setting the record links plus
-//! `armed = true`. The freeze event admits exactly that UPDATE and
-//! THROWs on everything after, so history is immutable at the engine,
-//! not by convention.
+//! Nothing here writes a version row. They are born fully armed inside
+//! the completion transaction ([`crate::repo::completion`]), which is
+//! also the only place that can know a version's number, because the
+//! number IS the increment the completion CAS performs. What lives here
+//! is reading history and moving the one part of a version that is not
+//! frozen: its retention clock and its legal hold. The freeze event
+//! THROWs on any UPDATE that touches the links or the armed flag of an
+//! armed row, so immutability is the engine's rule rather than a
+//! convention this module could forget.
 
 use serde::Deserialize;
-use serde_json::json;
 
 use surql::query::builder::Query;
-use surql::query::crud::{create_record, query_records};
+use surql::query::crud::query_records;
 use surql::query::expressions::raw;
 use surql::types::operators::eq;
 use surql::types::RecordID;
@@ -20,23 +23,7 @@ use copal_core::{ContentDigest, CopalError, FileId, FileVersion, TenantId};
 use crate::dto::map_store_err;
 use crate::store::Store;
 
-const TABLE: &str = "file_version";
-
-/// Inputs for one version snapshot.
-#[derive(Debug, Clone)]
-pub struct VersionSnapshot {
-    pub number: u64,
-    pub content_type: String,
-    pub size_bytes: u64,
-    /// Residency the content landed in; the blob link renders from it.
-    pub residency: String,
-    pub digest: ContentDigest,
-    pub metadata_snapshot: serde_json::Value,
-    pub created_by: Option<String>,
-    /// The previous current version's raw record id, if any: the
-    /// `prior` link that forms the chain.
-    pub prior_version_id: Option<String>,
-}
+pub(crate) const TABLE: &str = "file_version";
 
 #[derive(Debug, Deserialize)]
 struct VersionRow {
@@ -69,67 +56,6 @@ impl VersionRow {
             created_at: self.created_at,
         })
     }
-}
-
-/// Create and arm a version row, returning its raw record id (the
-/// caller links it as the file's `current_version`).
-pub async fn record_version(
-    store: &Store,
-    tenant: &TenantId,
-    file: &FileId,
-    snapshot: &VersionSnapshot,
-) -> copal_core::Result<String> {
-    let version_id = ulid::Ulid::new().to_string().to_ascii_lowercase();
-    let rid = RecordID::<()>::new(TABLE, version_id.as_str())
-        .map_err(|e| map_store_err("version id", e))?;
-
-    let payload = json!({
-        "tenant_id": tenant.as_str(),
-        "number": snapshot.number,
-        "content_type": snapshot.content_type,
-        "size_bytes": snapshot.size_bytes,
-        "digest": snapshot.digest.as_str(),
-        "metadata_snapshot": snapshot.metadata_snapshot,
-        "created_by": snapshot.created_by,
-    });
-    create_record(store.client(), &rid.to_string(), payload)
-        .await
-        .map_err(|e| map_store_err("record_version", e))?;
-
-    let file_rid =
-        RecordID::<()>::new("file", file.as_str()).map_err(|e| map_store_err("version", e))?;
-    let blob_rid = RecordID::<()>::new(
-        "blob",
-        super::blob::blob_row_id(&snapshot.residency, &snapshot.digest),
-    )
-    .map_err(|e| map_store_err("version", e))?;
-    let mut arm = Query::new()
-        .update_set(rid.to_string())
-        .map_err(|e| map_store_err("arm_version", e))?
-        .set_expr("file", raw(file_rid.to_string()))
-        .map_err(|e| map_store_err("arm_version", e))?
-        .set_expr("blob", raw(blob_rid.to_string()))
-        .map_err(|e| map_store_err("arm_version", e))?;
-    if let Some(prior) = &snapshot.prior_version_id {
-        let prior_rid = RecordID::<()>::new(TABLE, trim_table(prior))
-            .map_err(|e| map_store_err("arm_version", e))?;
-        arm = arm
-            .set_expr("prior", raw(prior_rid.to_string()))
-            .map_err(|e| map_store_err("arm_version", e))?;
-    }
-    let arm = arm
-        .set("armed", serde_json::Value::from(true))
-        .map_err(|e| map_store_err("arm_version", e))?
-        .return_after();
-    let rows: Vec<serde_json::Value> = query_records(store.client(), &arm)
-        .await
-        .map_err(|e| map_store_err("arm_version", e))?;
-    if rows.is_empty() {
-        return Err(CopalError::Store(
-            "version row vanished between create and arm".into(),
-        ));
-    }
-    Ok(format!("{TABLE}:{version_id}"))
 }
 
 /// Strip a leading `file_version:` and any brackets from a raw id.
@@ -250,6 +176,27 @@ pub async fn set_retention(
     mode: &str,
 ) -> copal_core::Result<bool> {
     let rid = version_rid(store, tenant, file, number).await?;
+    let update = retention_update(&rid, retain_secs, mode)?.return_after();
+    let rows: Vec<serde_json::Value> = query_records(store.client(), &update)
+        .await
+        .map_err(|e| map_store_err("set_retention", e))?;
+    Ok(!rows.is_empty())
+}
+
+/// Render the retention stamp for one already-known version row,
+/// RETURN clause left open.
+///
+/// Shared with the completion transaction, which stamps the version it
+/// just created and therefore already holds its record id. The WORM
+/// rule must have exactly one statement of itself: a second rendering
+/// that drifted would be a compliance clock an admin could shorten
+/// through the completion path, which is the failure this whole guard
+/// exists to prevent.
+pub(crate) fn retention_update(
+    rid: &str,
+    retain_secs: u64,
+    mode: &str,
+) -> copal_core::Result<Query> {
     let allowed = if mode == "compliance" {
         // Tightening: any row may enter compliance, and a compliance
         // row may extend. `<=` because re-asserting the same clock is
@@ -263,19 +210,14 @@ pub async fn set_retention(
         // clock, or a row that was never compliance.
         COMPLIANCE_ALLOWS.to_owned()
     };
-    let update = Query::new()
+    Ok(Query::new()
         .update_set(rid)
         .map_err(|e| map_store_err("set_retention", e))?
         .set_expr("retain_until", raw(format!("time::now() + {retain_secs}s")))
         .map_err(|e| map_store_err("set_retention", e))?
         .set("retention_mode", serde_json::Value::from(mode))
         .map_err(|e| map_store_err("set_retention", e))?
-        .where_str(allowed)
-        .return_after();
-    let rows: Vec<serde_json::Value> = query_records(store.client(), &update)
-        .await
-        .map_err(|e| map_store_err("set_retention", e))?;
-    Ok(!rows.is_empty())
+        .where_str(allowed))
 }
 
 /// Clear a version's retention. Refuses on an unexpired compliance
@@ -347,33 +289,35 @@ async fn version_rid(
     Ok(rid.to_string())
 }
 
-/// Remove erasable history beyond the newest `keep` versions of one
-/// file. Holds and unexpired clocks survive any setting, and the
-/// current version always survives because `keep >= 1`. Returns how
-/// many rows went; their bytes follow through the ordinary GC.
-pub async fn prune_erasable(
-    store: &Store,
+/// What history a `keep_last` policy is allowed to remove: never a
+/// held row, never one whose clock is still running. Beside the
+/// retention rules on purpose, because it is the same rule read from
+/// the other side, and the completion transaction that renders the
+/// pruning DELETE must not restate it.
+pub(crate) const ERASABLE: &str =
+    "legal_hold != true AND (retain_until IS NONE OR retain_until < time::now())";
+
+/// Render the pruning DELETE for one file's erasable history, RETURN
+/// clause left open.
+///
+/// `cutoff` is a SurrealQL expression rather than a number because the
+/// completion transaction does not know the newest version number
+/// client-side: it is whatever the CAS in the same transaction just
+/// incremented `version_count` to, so the cutoff is arithmetic the
+/// engine does. The current version always survives, because the
+/// caller's expression subtracts a `keep` of at least one.
+pub(crate) fn prune_query(
     tenant: &TenantId,
     file: &FileId,
-    keep: u32,
-    newest_number: u64,
-) -> copal_core::Result<u64> {
+    cutoff: &str,
+) -> copal_core::Result<Query> {
     let file_rid =
         RecordID::<()>::new("file", file.as_str()).map_err(|e| map_store_err("prune", e))?;
-    let cutoff = newest_number.saturating_sub(u64::from(keep.max(1)));
-    if cutoff == 0 {
-        return Ok(0);
-    }
-    let query = Query::new()
+    Ok(Query::new()
         .delete(TABLE)
         .map_err(|e| map_store_err("prune", e))?
         .where_(eq("tenant_id", tenant.as_str()))
         .where_str(format!("file = {file_rid}"))
         .where_str(format!("number <= {cutoff}"))
-        .where_str("legal_hold != true AND (retain_until IS NONE OR retain_until < time::now())")
-        .return_format(surql::query::helpers::ReturnFormat::Before);
-    let rows: Vec<serde_json::Value> = query_records(store.client(), &query)
-        .await
-        .map_err(|e| map_store_err("prune", e))?;
-    Ok(rows.len() as u64)
+        .where_str(ERASABLE))
 }

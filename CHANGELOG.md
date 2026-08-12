@@ -9,6 +9,74 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ## [Unreleased]
 
+### Storage and tenancy
+
+- **The engine keeps the blob reference count now.** The GC recount
+  ran two aggregates per candidate: a count over `file` and a count
+  over `file_version`, each scanning for rows whose `blob` column
+  matched. Correct, and paid for by walking both tables for every
+  blob on every sweep. The `blob` links on both tables now carry
+  `REFERENCE` (with `ON DELETE IGNORE` spelled out: blob collection
+  stays copal's job - mark, grace, erase - and engine-side cascade
+  would be new behavior, not adoption), so every link registers
+  itself on the blob row as it is written, and the blob table reads
+  the inbound sets back through computed `<~file` and
+  `<~file_version` fields. The recount became one round trip that
+  filters those sets by the same retention predicate as before,
+  single-sourced so the old and new readings cannot drift: engine
+  work per candidate fell from O(file rows + version rows) to
+  O(inbound links). The two `blob`-column indexes existed only for
+  those aggregates and are gone; the aggregate itself stays in the
+  tree as a test oracle, asserted equal to the engine's answer across
+  the whole retention matrix, because an undercount here erases live
+  content.
+
+  References do not backfill - probed, and the probe is why this
+  entry is longer than the diff. A row written before its field
+  carried `REFERENCE` stays invisible to `<~` forever, and a
+  self-assignment does not register it; only an actual value change
+  does. So the first boot over an existing database rewrites every
+  blob link to NONE and back inside one transaction per table, with
+  the `file_version` freeze event lifted for the duration and
+  restored after. The computed fields are defined only once that
+  completes: their absence is the durable sign the backfill still
+  owes, so a crash at any point makes the next boot repeat the
+  idempotent dance rather than quietly undercount. The one visible
+  scar is `updated_at` on file rows, recomputed by the rewrite. Blob
+  point reads project explicit columns now, so serving a download
+  never resolves an inbound set.
+
+### Fixed
+
+- **Finishing an upload is one transaction.** Completion was a
+  sequence of guarded statements, each atomic alone and none atomic
+  together. The compare-and-swap moved the file out of `uploading` and
+  incremented `version_count`, and only several round trips later did
+  an update point `current_version` at the version that increment had
+  named. In between, every face could read a file counted to version N
+  while still serving N-1, and a crash in the window left it that way
+  for good. The old code knew: it reported "the current truth" when it
+  found the file had moved underneath it.
+
+  The whole write is now one `BEGIN … COMMIT`: the state change, the
+  payload columns, the blob link, the version row, the retention stamp
+  the tenant's policy calls for, the pruning of erasable history, and
+  the event announcing it. A reader sees the file before all of that
+  or after all of it. The compare-and-swap is unchanged and still
+  decides who wins, so two writers racing the same claim still resolve
+  at the engine and the loser still gets a conflict, but the loser now
+  writes nothing at all rather than losing partway through. Version
+  rows are created already armed, in one statement rather than two,
+  which leaves no moment when history exists unfrozen.
+
+  The tenant's retention policy is read before the transaction opens,
+  and it is the only step left outside. It stays a snapshot: what a
+  version is stamped with is the policy as it stood at that
+  completion, never recomputed, because a policy change must not
+  shorten what already exists.
+
+  Completion went from five to ten round trips to two.
+
 ### Operator console
 
 - **The console reads like somewhere to work.** Navigation moved into
@@ -103,6 +171,21 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
   had been applied to deletion and never to access.
 
 ### Deployment
+
+- **Index builds no longer block boot.** A changed or new index
+  applied at startup rebuilt synchronously, so a big table held the
+  whole boot for the duration - and the HNSW vector index, applied at
+  startup whenever embeddings are configured, is exactly the index
+  that gets big. Non-unique index definitions now carry
+  `CONCURRENTLY`: the statement returns at once, the engine populates
+  the index behind it, and the log names `INFO FOR INDEX` for
+  watching the build (probed: `OVERWRITE` composes with the
+  directive, and the build directive is excluded from diffs upstream,
+  so a backgrounded index does not re-apply every boot). Unique
+  indexes stay synchronous on purpose: they are constraints, not
+  accelerators, and a backgrounded constraint is silently unenforced
+  for the width of its build - `uniq_file_live_path` is what the
+  completion CAS leans on, so that window must not exist.
 
 - **Debug builds carry line tables instead of full symbols.** The
   workspace links surrealdb into every test binary, and on Windows

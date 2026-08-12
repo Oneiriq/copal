@@ -1012,7 +1012,7 @@ dependencies = [
  "sha2 0.10.9",
  "tempfile",
  "tokio",
- "ulid",
+ "ulid 1.2.1",
 ]
 
 [[package]]
@@ -1043,7 +1043,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "thiserror",
- "ulid",
+ "ulid 1.2.1",
 ]
 
 [[package]]
@@ -1057,7 +1057,7 @@ dependencies = [
  "surrealdb",
  "tokio",
  "tracing",
- "ulid",
+ "ulid 1.2.1",
 ]
 
 [[package]]
@@ -1098,7 +1098,7 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
- "ulid",
+ "ulid 1.2.1",
 ]
 
 [[package]]
@@ -1113,7 +1113,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
- "ulid",
+ "ulid 1.2.1",
 ]
 
 [[package]]
@@ -1133,7 +1133,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
- "ulid",
+ "ulid 1.2.1",
 ]
 
 [[package]]
@@ -3555,7 +3555,7 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 [[package]]
 name = "oneiriq-janus"
 version = "0.1.0"
-source = "git+ssh://git@github.com/Oneiriq/janus.git?branch=main#248302b1fddb3fb1a3cabb9f2f40da3fdc03cc7d"
+source = "git+ssh://git@github.com/Oneiriq/janus.git?branch=main#6d6d905d0d62fc7660635d4f60b27aeece019f44"
 dependencies = [
  "async-graphql",
  "futures-core",
@@ -3568,9 +3568,9 @@ dependencies = [
 
 [[package]]
 name = "oneiriq-surql"
-version = "0.31.0"
+version = "0.32.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a0280dfa681310cb85c7121c3b97bb12a0f4cab07d308d26c970ea3a682516d2"
+checksum = "d7851af9777b523ecf4c252ac0817fc69aba9819770f3ff51e42e38db166f8d4"
 dependencies = [
  "chrono",
  "futures",
@@ -3583,7 +3583,7 @@ dependencies = [
  "surrealdb",
  "tokio",
  "tracing",
- "ulid",
+ "ulid 3.0.0",
 ]
 
 [[package]]
@@ -5791,7 +5791,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
- "ulid",
+ "ulid 1.2.1",
  "unicase",
  "url",
  "uuid",
@@ -5861,7 +5861,7 @@ dependencies = [
  "surrealdb-protocol",
  "surrealdb-types-derive",
  "tracing",
- "ulid",
+ "ulid 1.2.1",
  "url",
  "uuid",
 ]
@@ -6497,6 +6497,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "470dbf6591da1b39d43c14523b2b469c86879a53e8b758c8e090a470fe7b1fbe"
 dependencies = [
  "rand 0.9.5",
+ "serde",
+ "web-time",
+]
+
+[[package]]
+name = "ulid"
+version = "3.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "947dde63b6d514cc5e044edad4e0ca7261afd1099d16c83d942cb2b2f348689c"
+dependencies = [
+ "rand 0.10.2",
  "serde",
  "web-time",
 ]

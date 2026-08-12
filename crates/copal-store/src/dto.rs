@@ -30,10 +30,11 @@ pub(crate) struct FileRow {
     pub updated_at: String,
     #[serde(default)]
     pub version_count: u64,
-    /// Raw record id of the current version link; consumed by the
-    /// completion flow as the next version's `prior`.
-    #[serde(default)]
-    pub current_version: Option<String>,
+    // `current_version` is deliberately absent. It used to be carried
+    // up so completion could pass it back down as the next version's
+    // `prior`; the completion transaction reads it inside the engine
+    // now, from the same statement that overwrites it, which is the
+    // only place the two can be read and written without a gap.
     #[serde(default)]
     pub upload_lease_owner: Option<String>,
     #[serde(default)]

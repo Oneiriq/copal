@@ -650,7 +650,15 @@
         "requiredScopes": [
           "read"
         ],
-        "rateClass": "reads"
+        "rateClass": "reads",
+        "backing": [
+          {
+            "table": "text_chunk",
+            "column": "body",
+            "index": "idx_chunk_body",
+            "kind": "lexical"
+          }
+        ]
       }
     },
     {

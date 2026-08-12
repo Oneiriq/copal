@@ -7,15 +7,17 @@
 //! Reference counting is DERIVED, not incremented. An increment written
 //! before the file link commits drifts upward on a crash-and-retry; an
 //! undercount would let garbage collection delete live data. So the
-//! authoritative count is the number of inbound `file.blob` links
-//! (served by `idx_file_blob`), computed at sweep time; the stored
-//! `refcount` column is an advisory cache the sweep refreshes.
+//! authoritative count comes from the ENGINE's reference tracking:
+//! every `file.blob` / `file_version.blob` write registers itself on
+//! the blob row (the `REFERENCE` clause), and the recount filters
+//! those inbound sets by the retention predicate at sweep time. The
+//! stored `refcount` column is an advisory cache the sweep refreshes.
 
 use serde::Deserialize;
 use serde_json::json;
 
 use surql::query::builder::Query;
-use surql::query::crud::{create_record, get_record, query_records};
+use surql::query::crud::{create_record, query_records};
 use surql::query::expressions::raw;
 use surql::types::operators::{is_none, is_not_none};
 use surql::types::RecordID;
@@ -81,6 +83,23 @@ pub async fn record_sighting(
     }
 }
 
+/// A current link holds a blob alive while its file is undeleted.
+/// One rendering, shared by the recount's inbound-set filter and the
+/// aggregate oracle below, so the two can never drift apart.
+const LIVE_FILE_PREDICATE: &str = "deleted_at IS NONE";
+
+/// A history link holds a blob alive while its version is armed AND
+/// either the owning file is live or the version itself is
+/// non-erasable. A hold or an unexpired retention clock holds content
+/// alive through its file's tombstone, which is the whole of
+/// retention's enforcement: the GC is the only thing that erases, and
+/// a retained version never lets its blob reach the mark step. The
+/// `file.deleted_at` hop traverses the version's record link, which
+/// the engine evaluates identically in a table WHERE and in an
+/// inbound-set filter (probed on mem://).
+const RETAINED_VERSION_PREDICATE: &str = "armed = true AND (file.deleted_at IS NONE \
+     OR legal_hold = true OR (retain_until IS NOT NONE AND retain_until > time::now()))";
+
 /// Count everything live that references `digest`: the authoritative
 /// reference count.
 ///
@@ -90,7 +109,51 @@ pub async fn record_sighting(
 /// its file dies. Version rows of deleted files traverse to a
 /// tombstoned file and drop out, so deleting a file releases its whole
 /// history in one recount.
+///
+/// One round trip over the blob row's engine-maintained inbound sets,
+/// filtered in place: O(inbound links) per candidate where the old
+/// aggregates scanned both tables. A blob row that no longer exists
+/// answers with no rows, which reads as zero - the same thing its
+/// absence means to the GC.
 pub async fn recount_inbound_links(
+    store: &Store,
+    residency: &str,
+    digest: &ContentDigest,
+) -> copal_core::Result<i64> {
+    let blob_target = rid(residency, digest)?.to_string();
+    // Raw statement: FROM targets a record id, which the query builder
+    // cannot express (same reason the fragments below embed record
+    // literals).
+    let sql = format!(
+        "SELECT count(inbound_files[WHERE {LIVE_FILE_PREDICATE}]) AS current_links, \
+         count(inbound_versions[WHERE {RETAINED_VERSION_PREDICATE}]) AS history_links \
+         FROM {blob_target};"
+    );
+    let answer = store
+        .client()
+        .query(&sql)
+        .await
+        .map_err(|e| map_store_err("recount", e))?;
+    let row = answer.pointer("/0/0");
+    let count = |key: &str| {
+        row.and_then(|r| r.get(key))
+            .and_then(serde_json::Value::as_i64)
+            .unwrap_or(0)
+    };
+    Ok(count("current_links") + count("history_links"))
+}
+
+/// The pre-reference-tracking recount: the same two counts as
+/// [`recount_inbound_links`], derived by aggregating over `file` and
+/// `file_version` instead of reading the blob row's inbound sets.
+///
+/// Kept solely as the TEST ORACLE: the integration suite asserts the
+/// two computations agree across the whole retention scenario matrix,
+/// because a recount that undercounts erases live content. Hidden
+/// rather than `cfg(test)` so integration tests can reach it; nothing
+/// in the serving path calls it.
+#[doc(hidden)]
+pub async fn recount_inbound_links_by_aggregate(
     store: &Store,
     residency: &str,
     digest: &ContentDigest,
@@ -105,7 +168,7 @@ pub async fn recount_inbound_links(
         // express a record right-hand side, hence the fragments here
         // and below.
         .where_str(format!("blob = {blob_target}"))
-        .where_(is_none("deleted_at"))
+        .where_str(LIVE_FILE_PREDICATE)
         .group_all();
 
     let history = Query::new()
@@ -113,16 +176,7 @@ pub async fn recount_inbound_links(
         .from_table("file_version")
         .map_err(|e| map_store_err("recount", e))?
         .where_str(format!("blob = {blob_target}"))
-        // Record-link traversal: the version's file must be live, OR
-        // the version itself must be non-erasable. A hold or an
-        // unexpired retention clock holds content alive through its
-        // file's tombstone, which is the whole of retention's
-        // enforcement: the GC is the only thing that erases, and a
-        // retained version never lets its blob reach the mark step.
-        .where_str(
-            "armed = true AND (file.deleted_at IS NONE OR legal_hold = true \
-             OR (retain_until IS NOT NONE AND retain_until > time::now()))",
-        )
+        .where_str(RETAINED_VERSION_PREDICATE)
         .group_all();
 
     let mut total = 0i64;
@@ -140,15 +194,23 @@ pub async fn recount_inbound_links(
 }
 
 /// Fetch a blob row's storage location, if the content is known.
+///
+/// Projects the two columns it needs rather than `SELECT *`: the blob
+/// row now carries COMPUTED inbound sets, and a whole-row read of a
+/// well-shared blob would resolve every inbound link just to learn a
+/// path. This runs on the serving path, so it must not.
 pub async fn get_location(
     store: &Store,
     residency: &str,
     digest: &ContentDigest,
 ) -> copal_core::Result<Option<(String, String)>> {
-    let Some(row) = get_record(store.client(), &rid(residency, digest)?)
+    let target = rid(residency, digest)?.to_string();
+    let answer = store
+        .client()
+        .query(&format!("SELECT store_key, storage_path FROM {target};"))
         .await
-        .map_err(|e| map_store_err("get_location", e))?
-    else {
+        .map_err(|e| map_store_err("get_location", e))?;
+    let Some(row) = answer.pointer("/0/0") else {
         return Ok(None);
     };
     let store_key = row
@@ -277,10 +339,14 @@ pub async fn row_exists(
     residency: &str,
     digest: &ContentDigest,
 ) -> copal_core::Result<bool> {
-    let row = surql::query::crud::get_record(store.client(), &rid(residency, digest)?)
+    // `id` alone: existence must not resolve the computed inbound sets.
+    let target = rid(residency, digest)?.to_string();
+    let answer = store
+        .client()
+        .query(&format!("SELECT id FROM {target};"))
         .await
         .map_err(|e| map_store_err("row_exists", e))?;
-    Ok(row.is_some())
+    Ok(answer.pointer("/0/0").is_some())
 }
 
 /// Collect a blob row whose mark has aged past the grace period.

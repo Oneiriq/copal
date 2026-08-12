@@ -16,8 +16,8 @@ use copal_core::{CopalError, FileId, FileSpec, FileState, TenantId};
 use copal_flow::{FlowEngine, FlowRegistry, RunSpec};
 use copal_sign::GrantToken;
 use copal_store::repo::{
-    blob as blob_repo, file as file_repo, flow as flow_repo, grant as grant_repo,
-    version as version_repo,
+    blob as blob_repo, completion as completion_repo, file as file_repo, flow as flow_repo,
+    grant as grant_repo, version as version_repo,
 };
 use copal_store::Store;
 use serde::Deserialize;
@@ -2313,7 +2313,7 @@ async fn get_rendition<B: BlobStore>(
     )
     .await?;
     file_repo::claim_upload(&state.store, &tenant, &derived.id, "derive-inline", 900).await?;
-    let finished = file_repo::complete_upload(
+    let finished = completion_repo::complete_upload(
         &state.store,
         &tenant,
         &derived.id,
@@ -2950,7 +2950,7 @@ pub(crate) async fn finalize_new_content<B: BlobStore>(
     } else {
         FileState::Ready
     };
-    let record = file_repo::complete_upload(
+    let record = completion_repo::complete_upload(
         &state.store,
         tenant,
         id,

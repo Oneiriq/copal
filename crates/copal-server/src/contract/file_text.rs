@@ -10,6 +10,8 @@ pub fn query() -> Query {
     Query {
         name: "file_text".into(),
         path: "/v1/files/{id}/text".into(),
+        // No backing: this is a keyed read, not a search.
+        backing: vec![],
         input: vec![ActionField {
             name: "id".into(),
             kind: TypeRef::String,

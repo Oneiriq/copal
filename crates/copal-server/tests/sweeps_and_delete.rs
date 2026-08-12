@@ -329,7 +329,7 @@ async fn stale_scanning_files_fail_after_the_age_ceiling() {
     copal_store::repo::blob::record_sighting(&store, &digest, 5, "local", "objects/x")
         .await
         .unwrap();
-    file_repo::complete_upload(
+    copal_store::repo::completion::complete_upload(
         &store,
         &tenant,
         &id,

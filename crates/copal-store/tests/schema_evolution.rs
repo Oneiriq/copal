@@ -30,7 +30,9 @@ async fn raw_client(namespace: &str) -> DatabaseClient {
 
 async fn db_snapshot(client: &DatabaseClient) -> SchemaSnapshot {
     let info = client.query("INFO FOR DB;").await.unwrap();
-    let parsed = parse_db_info(&info[0]).expect("info parses");
+    // parse_db_info tolerates the client's statement-result wrapper;
+    // parse_table_full below does not, so that call still indexes in.
+    let parsed = parse_db_info(&info).expect("info parses");
     let mut tables = Vec::new();
     for (name, shallow) in &parsed.tables {
         let table_info = client
@@ -41,9 +43,8 @@ async fn db_snapshot(client: &DatabaseClient) -> SchemaSnapshot {
     }
     SchemaSnapshot {
         tables,
-        edges: Vec::new(),
-        buckets: Vec::new(),
         analyzers: parsed.analyzers.into_values().collect(),
+        ..Default::default()
     }
 }
 

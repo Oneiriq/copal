@@ -64,27 +64,15 @@ came out of reading the service against what the market offers.
    exist. Parked until someone measures the round-trip cost and
    cares.
 
-6. **F16 vectors and DiskANN, blocked upstream.** The server's 3.1
-   release added both; the newest published `surrealdb` crate parses
-   neither. Probed directly, every form refuses. The available half
-   shipped (F32 HNSW). Revisit when the crate catches up.
-
 ## Deferred, with reasons
 
-7. **OTel spans.** OTLP export means new dependencies and a cargo
+6. **OTel spans.** OTLP export means new dependencies and a cargo
    feature CI would not compile, which is untested code by
    construction. The `/metrics` endpoint set a dependency-free
    observability precedent this would break.
-8. **SDK publishing pipelines** for the four generated clients.
+7. **SDK publishing pipelines** for the four generated clients.
    Generated and drift-gated already; publishing is packaging work
    that wants a release cadence to hang from.
-9. **Janus REST runtime router.** Copal's REST handlers carry real
+8. **Janus REST runtime router.** Copal's REST handlers carry real
    behavior (streaming, ranges, conditionals) that a generic router
    has to earn the right to replace.
-10. **The batched `surql-rs` release.** Shon cuts it. The branch
-    carries the live-query `WHERE` clause, the session-scoped live
-    query fix, index-backed KNN, the scan-order correction, caller
-    sessions with the record-identity guard, the shared-session
-    client model, `OVERWRITE` rendering, and the live-database
-    reconciliation layer (analyzer parsing, echo-shape fixes, and
-    apply-safe diffs) that schema evolution stands on.

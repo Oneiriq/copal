@@ -85,6 +85,24 @@ point `COPAL_DB_URL` at it, start two instances. Back up the embedded
 tier by including the surrealkv directory in the same snapshot as the
 blob root; the backup doc's ordering rule applies unchanged.
 
+What the wire itself costs, measured by `bench/scale.sh` with the
+same engine version on both sides (in-process mem:// against a
+same-host `ws://` server, both in-memory, so the wire is the only
+variable; p50 with p95 beside it, release build):
+
+| repository call | embedded | ws:// same host | the wire's share |
+| --- | --- | --- | --- |
+| `get_file` point read | 109 us (183) | 606 us (844) | ~0.5 ms |
+| 100-row listing | 1.11 ms (1.44) | 2.68 ms (4.10) | ~1.6 ms |
+| claim CAS (up to two attempts) | 356 us (508) | 1.23 ms (1.63) | ~0.9 ms |
+| transition CAS | 380 us (481) | 737 us (1.02 ms) | ~0.4 ms |
+
+Half a millisecond to a millisecond and a half per repository call
+on the SAME host, before any real network distance is added. That is
+the number the roadmap's embedded-tier item is parked on: what
+removing the wire buys per call, multiplied by however many calls a
+request makes.
+
 ## Upgrades and the schema
 
 Boot reconciles the database against the code. The store introspects
@@ -237,9 +255,11 @@ resumable upload at `/v1/tus` and multipart on the S3 gateway.
 Ranged reads work on sealed objects without decrypting the whole
 file, because encryption frames at 64 KiB and a range touches only the
 frames covering it. That is what makes a video player scrubbing a
-large encrypted file behave: a read from deep inside a 256 MiB object
-answers in tens of milliseconds. Sealing costs a 20-byte header plus
-16 bytes per frame, which is 0.024% on a 256 MiB file.
+large encrypted file behave: a 1 MiB read from the far end of a
+2 GiB sealed object costs the same two milliseconds as one at its
+front (measured; see the scale envelope below). Sealing costs a
+20-byte header plus 16 bytes per frame, which is 0.024% on a 256 MiB
+file.
 
 Type-specific behavior lives only in the layers above the bytes:
 
@@ -255,6 +275,76 @@ own ceiling. clamd's `StreamMaxLength` defaults to 25 MB, so large
 files fail the scan step until that is raised to match
 `COPAL_MAX_UPLOAD_BYTES`, and it now applies to derived content too,
 since that walks the pipeline as well.
+
+## The scale envelope
+
+Where the large-file claims come from. Everything below was measured
+by `bench/scale.sh` (ignored release-mode tests, one scenario per
+process, requests driven straight into the router) on a 24-core
+i9-12900KS with 64 GiB and NVMe under Windows 11: mem:// metadata, a
+filesystem blob root, encryption at rest ON, since that is the
+shipping configuration. No network sits in the frame on purpose;
+these figures isolate what Copal itself costs per byte, and the
+container bench in `bench/` watches the same paths from outside with
+stock clients.
+
+| measurement | 512 MiB | 1 GiB | 2 GiB |
+| --- | --- | --- | --- |
+| Streamed single PUT (REST face) | 1.6 s, 313 MiB/s | 3.4 s, 300 MiB/s | 6.4 s, 317 MiB/s |
+| Multipart parts up (S3 face, 8 MiB parts) | 2.5 s, 205 MiB/s | 4.9 s, 207 MiB/s | 9.9 s, 207 MiB/s |
+| Multipart completion (assemble, seal, hash) | 1.8 s, 291 MiB/s | 3.8 s, 267 MiB/s | 7.2 s, 286 MiB/s |
+| Ranged 1 MiB read at start / middle / end | 2 / 2 / 1 ms | 2 / 3 / 2 ms | 2 / 2 / 2 ms |
+| Full sequential read | 0.9 s, 585 MiB/s | 1.8 s, 565 MiB/s | 3.7 s, 549 MiB/s |
+| Peak process memory, PUT and every read | 49 MiB | 49 MiB | 50 MiB |
+| Peak process memory, whole multipart cycle | 64 MiB | 65 MiB | 65 MiB |
+
+The reading: no wall up to 2 GiB. Time scales linearly with size,
+throughput holds flat, and process memory does not move with the
+object at all, because the streaming paths hold chunks and frames,
+never objects. Sealing prices the byte paths: the same 1 GiB PUT
+lands at 515 MiB/s plaintext against 300 MiB/s sealed, and a
+plaintext sequential read runs at several GiB/s where decryption
+holds sealed reads to the mid five-hundreds. Both sealed figures
+still saturate a 2 Gb network link, which is what the trade buys.
+
+The one memory that grows with the object is the scan pass. The
+malware activity buffers the whole object before speaking INSTREAM
+to clamd, and on a sealed object that buffered read holds ciphertext
+and plaintext at once:
+
+| object | peak process memory during the scan pass | buffered read | INSTREAM hand-off |
+| --- | --- | --- | --- |
+| 512 MiB | 1551 MiB | 0.7 s | 0.2 s |
+| 1 GiB | 3088 MiB | 1.4 s | 0.4 s |
+| 2 GiB | 6163 MiB | 2.9 s | 0.9 s |
+
+The peak is three times the object, almost exactly, plus a few MiB
+of process. A deployment that raises clamd's `StreamMaxLength` to
+scan large media must size the host for that multiple of its largest
+object; without a scanner configured the pass never runs and nothing
+in the upload or serving path buffers an object anywhere.
+
+The F16 vector index rebuild is the one a deployment performs
+upgrading past the half-precision change, and it is background work,
+not a boot cost: `DEFINE INDEX ... CONCURRENTLY` returns at once and
+the timing below is DEFINE to `INFO FOR INDEX` reporting
+`status: ready`, on the embedded engine over a corpus of 100,000
+passages at 768 dimensions.
+
+| rebuild | time to ready |
+| --- | --- |
+| HNSW TYPE F16 (the shipping type) | 6.9 s |
+| HNSW TYPE F32 (what the index was before) | 6.7 s |
+
+Seconds over a six-figure corpus, and the same seconds either way:
+the type change is not a reason to fear the upgrade. The memory
+claim behind F16 is arithmetic (raw vectors at this corpus are
+147 MiB half precision against 293 single), and the measured working
+set moved the way the arithmetic says: the process sat 355 MiB lower
+after the F16 build than after the F32 rebuild of the same corpus.
+Working-set deltas on a process that does not return freed pages are
+a proxy, so the arithmetic is the claim and the measurement is its
+corroboration.
 
 ## Malware scanning
 
@@ -285,6 +375,13 @@ activity fails, the run retries, and the file never reaches `ready`.
 Without `COPAL_CLAMAV_ADDR` nothing changes, and records say
 `metadata.processing.scanned: false` rather than implying a clean
 verdict nobody rendered.
+
+The scan is also the one pass that buffers the whole object: the
+activity reads the content into memory before speaking INSTREAM, and
+on a sealed object that read transiently holds about three times the
+object's size (measured in the scale envelope above). Deployments
+that raise clamd's ceiling to scan large files size the host for
+that multiple of the largest object they accept.
 
 ## Text extraction and search
 

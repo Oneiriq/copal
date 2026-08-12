@@ -39,6 +39,22 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
   changes a checked-in artifact in the same commit, where before the
   engine clauses changed nowhere a reviewer looked.
 
+- **The planner answers for the contract now.** The static gate
+  proves an index exists for every filter and sort claim; it cannot
+  prove the planner uses one, and the failure that slips through that
+  crack is a listing that answers correctly and walks the table to do
+  it. A new test stands up the real schema on the embedded engine and
+  runs janus's `EXPLAIN` verification over the whole contract - one
+  probe per filter claim, per sort claim, and per search backing,
+  convicting on a table walk and on a backing that does not reach its
+  named index. Because it rides the ordinary test suite it runs on
+  every pull request AND on the scheduled main run, which is the
+  channel built for drift that arrives without a commit: an engine
+  upgrade that re-costs plans fails there by claim name instead of
+  surfacing as a slow endpoint six weeks later. The verify feature
+  and its database client ride dev-dependencies only, so the shipped
+  binary gains nothing.
+
 ### Changed
 
 - **The vector index stores half-precision embeddings.** F16 halves

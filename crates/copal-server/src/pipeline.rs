@@ -514,6 +514,7 @@ async fn fetch_source<B: BlobStore>(
         stored.size_bytes,
         "fetch",
         FileState::Scanning,
+        None,
     )
     .await?;
     let post_input = json!({
@@ -684,6 +685,7 @@ async fn transform_external<B: BlobStore>(
         stored.size_bytes,
         "transform",
         FileState::Scanning,
+        None,
     )
     .await?;
     let post_input = json!({
@@ -781,6 +783,7 @@ async fn render_rendition<B: BlobStore>(
         stored.size_bytes,
         "derive",
         FileState::Ready,
+        None,
     )
     .await?;
     Ok(json!({
@@ -907,12 +910,16 @@ async fn extract_text<B: BlobStore>(
         digest.as_str(),
         &stored,
         &extractor_name,
+        &[],
     )
     .await?;
     // Passages are the retrieval unit, so they are written with the
     // text rather than lazily: a document that extracted but never
     // chunked would be readable and unfindable.
-    let passages = copal_core::split_passages(&stored);
+    let passages: Vec<copal_store::repo::text::ChunkInput> = copal_core::split_passages(&stored)
+        .into_iter()
+        .map(copal_store::repo::text::ChunkInput::plain)
+        .collect();
     copal_store::repo::text::put_chunks(store, &tenant, &file, digest.as_str(), &passages).await?;
 
     out["extracted"] = json!(true);

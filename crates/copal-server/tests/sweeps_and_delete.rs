@@ -338,6 +338,7 @@ async fn stale_scanning_files_fail_after_the_age_ceiling() {
         5,
         "test",
         FileState::Scanning,
+        None,
     )
     .await
     .unwrap();

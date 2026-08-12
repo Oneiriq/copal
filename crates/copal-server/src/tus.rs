@@ -171,9 +171,15 @@ async fn create_session<B: BlobStore>(
     .await?;
 
     let staging_key = format!("tus/{}", ulid::Ulid::new().to_string().to_ascii_lowercase());
-    let session_id =
-        tus_repo::create_session(&auth.store, tenant, &file_id, upload_length, &staging_key)
-            .await?;
+    let session_id = tus_repo::create_session(
+        &auth.store,
+        tenant,
+        &file_id,
+        upload_length,
+        &staging_key,
+        None,
+    )
+    .await?;
 
     let mut response = StatusCode::CREATED.into_response();
     tus_headers(&mut response);

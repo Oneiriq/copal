@@ -398,10 +398,13 @@ async fn index_text(
     extractor: &str,
 ) {
     use copal_store::repo::text;
-    text::put_text(store, tenant, file, digest, body, extractor)
+    text::put_text(store, tenant, file, digest, body, extractor, &[])
         .await
         .unwrap();
-    let passages = copal_core::split_passages(body);
+    let passages: Vec<text::ChunkInput> = copal_core::split_passages(body)
+        .into_iter()
+        .map(text::ChunkInput::plain)
+        .collect();
     text::put_chunks(store, tenant, file, digest, &passages)
         .await
         .unwrap();

@@ -12,9 +12,10 @@
 //! definition rather than a search cluster.
 
 use surql::schema::{
-    bm25_index, datetime_field, hnsw_index, index, int_field, record_field, standard_analyzer,
-    string_field, table_schema, unique_index, AnalyzerDefinition, FieldDefinition,
-    HnswDistanceType, IndexDefinition, MTreeVectorType, TableDefinition, TableMode, TokenFilter,
+    bm25_index, datetime_field, field, hnsw_index, index, int_field, record_field,
+    standard_analyzer, string_field, table_schema, unique_index, AnalyzerDefinition,
+    FieldDefinition, FieldType, HnswDistanceType, IndexDefinition, MTreeVectorType,
+    TableDefinition, TableMode, TokenFilter,
 };
 
 /// The analyzer the text index uses: class tokenizer, lowercased and
@@ -46,6 +47,20 @@ fn file_text_table() -> TableDefinition {
             built(string_field("digest").assertion("$value != ''")),
             built(string_field("body")),
             built(int_field("chars").default("0")),
+            // The resolved marker spans over the stored body, as
+            // `{start, end, access}` character offsets, written in
+            // the same statement as the body: the full-text read
+            // path enforces from these without re-resolving anchors,
+            // and no crash between two writes can leave a marked
+            // body readable with its spans missing. `any` rather
+            // than `array`, deliberately: a schemafull `array` field
+            // refuses object items outright, `FLEXIBLE` attaches
+            // only to object-bearing types the builder cannot spell,
+            // and `any` carries the array of objects verbatim (all
+            // three probed on mem:// and pinned in
+            // `tests/engine_assumptions.rs`). Absent means no spans,
+            // which is every row written before markers existed.
+            built(field("withheld", FieldType::Any)),
             // What produced it: `native` for text Copal decoded
             // itself, or the extractor's name.
             built(string_field("extractor").default("'native'")),
@@ -81,6 +96,20 @@ fn text_chunk_table() -> TableDefinition {
             built(string_field("digest").assertion("$value != ''")),
             // Position in the document, so a hit can be located.
             built(int_field("ordinal").assertion("$value >= 0")),
+            // The passage's own access level, when an upload marker
+            // touched it; NONE means the file's level, which is
+            // today's behavior. The NONE IS the migration: the boot
+            // reconciler adds the column, every existing row reads
+            // NONE, and NONE defers to the file, so a deployment
+            // upgrades into exactly the behavior it had - no
+            // backfill, nothing recomputed, the same additive shape
+            // principals used for `principal_id` on `api_key`. The
+            // vocabulary is the file vocabulary so the read-path
+            // divergence principals are building toward reaches
+            // chunks with no schema change.
+            built(string_field("access").nullable(true).assertion(
+                "$value == NONE OR $value INSIDE ['public', 'private', 'tenant', 'grant']",
+            )),
             built(string_field("body")),
             built(surql::schema::array_field("embedding").nullable(true)),
             built(string_field("embedding_model").nullable(true)),
@@ -164,5 +193,32 @@ mod tests {
         let sql = analyzers()[0].to_surql();
         assert!(sql.contains("snowball(english)"), "{sql}");
         assert!(sql.contains("lowercase"), "{sql}");
+    }
+
+    #[test]
+    fn chunk_levels_are_nullable_and_speak_the_file_vocabulary() {
+        // NONE means the file's level; the assertion admits exactly
+        // the four words the file row admits, so a chunk can never
+        // hold a level no enforcement clause understands.
+        let ddl = surql::schema::generate_table_sql(&text_chunk_table(), false).join("\n");
+        assert!(
+            ddl.contains("DEFINE FIELD access ON TABLE text_chunk TYPE option<string>"),
+            "{ddl}",
+        );
+        assert!(
+            ddl.contains("'public', 'private', 'tenant', 'grant'"),
+            "{ddl}",
+        );
+    }
+
+    #[test]
+    fn withheld_spans_ride_the_document_row_as_any() {
+        // `any` is what carries an array of span objects through a
+        // schemafull table (probed; pinned in engine_assumptions.rs).
+        let ddl = surql::schema::generate_table_sql(&file_text_table(), false).join("\n");
+        assert!(
+            ddl.contains("DEFINE FIELD withheld ON TABLE file_text TYPE any"),
+            "{ddl}",
+        );
     }
 }

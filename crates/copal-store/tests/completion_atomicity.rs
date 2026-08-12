@@ -62,6 +62,7 @@ async fn upload(store: &Store, id: &FileId, seed: u8) -> copal_core::Result<()> 
         4,
         "tester",
         FileState::Ready,
+        None,
     )
     .await?;
     Ok(())
@@ -301,6 +302,7 @@ async fn racing_completions_have_one_winner_and_leave_no_debris() {
                 4,
                 "tester",
                 FileState::Ready,
+                None,
             )
             .await
         })
@@ -355,6 +357,7 @@ async fn completing_an_unclaimed_file_conflicts_and_writes_nothing() {
         4,
         "tester",
         FileState::Ready,
+        None,
     )
     .await;
     assert!(
@@ -398,6 +401,7 @@ async fn a_foreign_tenant_cannot_complete() {
         4,
         "tester",
         FileState::Ready,
+        None,
     )
     .await;
     assert!(
@@ -554,6 +558,7 @@ async fn completion_only_lands_in_ready_or_scanning() {
         4,
         "tester",
         FileState::Quarantined,
+        None,
     )
     .await;
     assert!(

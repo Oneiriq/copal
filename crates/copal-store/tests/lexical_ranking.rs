@@ -48,7 +48,7 @@ async fn ranked_paths(first: &str, second: &str) -> Vec<String> {
             &acme,
             &created.record.id,
             "digest",
-            &[body.to_owned()],
+            &[text::ChunkInput::plain(body.to_owned())],
         )
         .await
         .unwrap();
@@ -100,7 +100,7 @@ async fn a_bounded_search_keeps_the_best_match() {
             &acme,
             &created.record.id,
             "digest",
-            &[body.to_owned()],
+            &[text::ChunkInput::plain(body.to_owned())],
         )
         .await
         .unwrap();
@@ -140,7 +140,7 @@ async fn stemmed_matches_are_scored_the_way_the_index_matched_them() {
             &acme,
             &created.record.id,
             "digest",
-            &[body.to_owned()],
+            &[text::ChunkInput::plain(body.to_owned())],
         )
         .await
         .unwrap();

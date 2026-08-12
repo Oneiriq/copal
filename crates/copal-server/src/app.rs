@@ -2322,6 +2322,7 @@ async fn get_rendition<B: BlobStore>(
         stored.size_bytes,
         "derive",
         copal_core::FileState::Ready,
+        None,
     )
     .await?;
     crate::metrics::incr("copal_renditions_inline_total");
@@ -2959,6 +2960,7 @@ pub(crate) async fn finalize_new_content<B: BlobStore>(
         size_bytes,
         actor,
         final_state,
+        None,
     )
     .await?;
 

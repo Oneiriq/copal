@@ -6,8 +6,8 @@
 //! expired sessions are swept with their staging bytes.
 
 use surql::schema::{
-    datetime_field, int_field, record_field, string_field, table_schema, FieldDefinition,
-    TableDefinition, TableMode,
+    datetime_field, field, int_field, record_field, string_field, table_schema, FieldDefinition,
+    FieldType, TableDefinition, TableMode,
 };
 
 /// All tables in this cluster.
@@ -30,6 +30,14 @@ fn tus_upload_table() -> TableDefinition {
             built(int_field("upload_length").assertion("$value >= 0")),
             built(int_field("offset").assertion("$value >= 0").default("0")),
             built(string_field("staging_key").assertion("$value != ''")),
+            // The session's declared markers, validated at creation
+            // and held until the final PATCH: tus carries the
+            // declaration in `Upload-Metadata` when the session is
+            // born, but the version row it must land on is only born
+            // at completion, so the session row is the bridge
+            // between those two moments. `any` for the same reason
+            // `file_version.markers` is; absent means none declared.
+            built(field("markers", FieldType::Any)),
             // Single-writer exclusion for PATCH bodies.
             built(string_field("patch_owner").nullable(true)),
             built(datetime_field("patch_expires_at").nullable(true)),

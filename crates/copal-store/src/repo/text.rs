@@ -32,8 +32,23 @@ pub struct TextRow {
     pub digest: String,
     pub body: String,
     pub chars: i64,
+    /// The resolved marker spans over `body`, empty on rows written
+    /// before markers existed or on uploads that declared none.
+    #[serde(default)]
+    pub withheld: Vec<WithheldSpan>,
     pub extractor: String,
     pub updated_at: String,
+}
+
+/// One resolved span over the stored body, in character offsets. The
+/// full-text read path elides from these rather than re-resolving
+/// anchors, so what it withholds is exactly what extraction resolved
+/// against this digest's text.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, Deserialize)]
+pub struct WithheldSpan {
+    pub start: usize,
+    pub end: usize,
+    pub access: String,
 }
 
 impl TextRow {
@@ -47,6 +62,11 @@ impl TextRow {
 
 /// Store or replace a file's extracted text. One row per file, so a
 /// re-extraction overwrites rather than accumulating.
+///
+/// `withheld` is the resolved marker spans over `body`, written in
+/// the SAME statement as the body on both paths below: a body that
+/// exists without its spans would be a marked document serving whole
+/// through the full-text read, so the two land or fail together.
 pub async fn put_text(
     store: &Store,
     tenant: &TenantId,
@@ -54,10 +74,13 @@ pub async fn put_text(
     digest: &str,
     body: &str,
     extractor: &str,
+    withheld: &[WithheldSpan],
 ) -> copal_core::Result<()> {
     let file_rid =
         RecordID::<()>::new("file", file.as_str()).map_err(|e| map_store_err("put_text", e))?;
     let chars = body.chars().count() as i64;
+    let spans = serde_json::to_value(withheld)
+        .map_err(|e| CopalError::Store(format!("withheld spans encode: {e}")))?;
 
     let update = Query::new()
         .update_set(TABLE)
@@ -69,6 +92,8 @@ pub async fn put_text(
         .set("chars", Value::from(chars))
         .map_err(|e| map_store_err("put_text", e))?
         .set("extractor", Value::from(extractor))
+        .map_err(|e| map_store_err("put_text", e))?
+        .set("withheld", spans.clone())
         .map_err(|e| map_store_err("put_text", e))?
         .where_str(format!("file = {file_rid}"))
         .return_after();
@@ -87,6 +112,7 @@ pub async fn put_text(
         "body": body,
         "chars": chars,
         "extractor": extractor,
+        "withheld": spans,
     });
     create_record(store.client(), &rid.to_string(), payload)
         .await
@@ -110,7 +136,10 @@ pub async fn put_text(
                 .await
                 .map_err(|e| map_store_err("put_text", e))?;
             if matches!(mapped, CopalError::Conflict(_)) {
-                Box::pin(put_text(store, tenant, file, digest, body, extractor)).await
+                Box::pin(put_text(
+                    store, tenant, file, digest, body, extractor, withheld,
+                ))
+                .await
             } else {
                 Err(mapped)
             }
@@ -156,31 +185,54 @@ pub async fn delete_text(store: &Store, file: &FileId) -> copal_core::Result<()>
 
 const CHUNK_TABLE: &str = "text_chunk";
 
+/// One passage to store: its text and, when a marker touched it, its
+/// own access level. `None` means the file's level, which is today's
+/// behavior and the fail-safe for every unmarked upload.
+#[derive(Debug, Clone)]
+pub struct ChunkInput {
+    pub body: String,
+    pub access: Option<copal_core::AccessLevel>,
+}
+
+impl ChunkInput {
+    /// An unmarked passage, for callers with no markers in hand.
+    pub fn plain(body: String) -> Self {
+        Self { body, access: None }
+    }
+}
+
 /// Replace a file's passages.
 ///
 /// Every chunk of the file goes before the new ones land, so a
 /// re-extraction cannot leave passages of superseded content behind
-/// to answer queries.
+/// to answer queries. A chunk's level lands in the same CREATE
+/// payload as its body, so no crash between two writes can leave a
+/// restricted passage readable: there is no unmarked window, and the
+/// delete-first ordering above keeps serving that property across
+/// re-uploads whose markers changed.
 pub async fn put_chunks(
     store: &Store,
     tenant: &TenantId,
     file: &FileId,
     digest: &str,
-    passages: &[String],
+    passages: &[ChunkInput],
 ) -> copal_core::Result<()> {
     let file_rid =
         RecordID::<()>::new("file", file.as_str()).map_err(|e| map_store_err("put_chunks", e))?;
     delete_chunks(store, file).await?;
-    for (ordinal, body) in passages.iter().enumerate() {
+    for (ordinal, chunk) in passages.iter().enumerate() {
         let id = ulid::Ulid::new().to_string().to_ascii_lowercase();
         let rid = RecordID::<()>::new(CHUNK_TABLE, id.as_str())
             .map_err(|e| map_store_err("put_chunks", e))?;
-        let payload = json!({
+        let mut payload = json!({
             "tenant_id": tenant.as_str(),
             "digest": digest,
             "ordinal": ordinal,
-            "body": body,
+            "body": chunk.body,
         });
+        if let Some(access) = chunk.access {
+            payload["access"] = json!(access.as_str());
+        }
         create_record(store.client(), &rid.to_string(), payload)
             .await
             .map_err(|e| map_store_err("put_chunks", e))?;
@@ -221,6 +273,10 @@ pub struct ChunkRow {
     pub digest: String,
     pub ordinal: i64,
     pub body: String,
+    /// The passage's own level when a marker touched it; absent
+    /// means the file's level.
+    #[serde(default)]
+    pub access: Option<String>,
 }
 
 impl ChunkRow {

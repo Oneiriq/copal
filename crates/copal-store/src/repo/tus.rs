@@ -37,6 +37,10 @@ pub struct TusRow {
     pub upload_length: u64,
     pub offset: u64,
     pub staging_key: String,
+    /// The declared markers, validated at creation, carried to the
+    /// completing PATCH so they can land on the version row.
+    #[serde(default)]
+    pub markers: Option<Value>,
     pub created_at: String,
 }
 
@@ -57,19 +61,27 @@ impl TusRow {
 }
 
 /// Create a session bound to a claimed file and a staging key.
+///
+/// `markers` is the declaration `Upload-Metadata` carried, already
+/// validated; the session row holds it until the final PATCH,
+/// because the version row it belongs on is only born at completion.
 pub async fn create_session(
     store: &Store,
     tenant: &TenantId,
     file: &FileId,
     upload_length: u64,
     staging_key: &str,
+    markers: Option<&Value>,
 ) -> copal_core::Result<String> {
     let session_id = ulid::Ulid::new().to_string().to_ascii_lowercase();
-    let payload = json!({
+    let mut payload = json!({
         "tenant_id": tenant.as_str(),
         "upload_length": upload_length,
         "staging_key": staging_key,
     });
+    if let Some(declaration) = markers {
+        payload["markers"] = declaration.clone();
+    }
     create_record(store.client(), &rid(&session_id)?.to_string(), payload)
         .await
         .map_err(|e| map_store_err("tus create", e))?;

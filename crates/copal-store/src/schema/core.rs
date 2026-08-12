@@ -22,8 +22,8 @@
 //!   is why [`crate::schema::reference_backfill_script`] exists.
 
 use surql::schema::{
-    bool_field, datetime_field, event, index, int_field, object_field, record_field,
-    reverse_reference_field, string_field, table_schema, unique_index, FieldDefinition,
+    bool_field, datetime_field, event, field, index, int_field, object_field, record_field,
+    reverse_reference_field, string_field, table_schema, unique_index, FieldDefinition, FieldType,
     ReferenceAction, TableDefinition, TableMode,
 };
 
@@ -308,6 +308,21 @@ fn file_version_table() -> TableDefinition {
             built(int_field("size_bytes").readonly(true)),
             built(string_field("digest").readonly(true)),
             built(object_field("metadata_snapshot").readonly(true)),
+            // The uploader's marker declaration, as data, beside the
+            // digest it describes. Persisting it here is what lets a
+            // re-extraction (an extractor upgrade, a pipeline retry)
+            // re-resolve the same declaration against the same
+            // content instead of losing it, the way `put_embedding`
+            // guards on digest so stale vectors cannot attach to new
+            // text. READONLY like every other version scalar, landed
+            // in the same CREATE that arms the row, so the freeze
+            // event needs no new clause: there is no legal update
+            // left that could touch it. `any` because a schemafull
+            // `array` refuses object items (probed; pinned in
+            // `tests/engine_assumptions.rs`); absent means the
+            // upload declared none, which is every version written
+            // before markers existed.
+            built(field("markers", FieldType::Any).readonly(true)),
             built(string_field("created_by").readonly(true)),
             built(record_field("file", Some("file")).nullable(true)),
             // REFERENCE for the same reason as `file.blob`: history is

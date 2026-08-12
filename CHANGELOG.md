@@ -70,6 +70,15 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
   six retires with the upstream blockage that defined it; item ten,
   the batched surql-rs release, retired with 0.32.
 
+- **Introspection stopped indexing into the response.** surql 0.32
+  taught `parse_db_info` to unwrap the client's statement-result
+  wrapper itself, and 0.33 extended the same tolerance to the table
+  and edge parsers. The `[0]` the store still applied before
+  `parse_table_full` - and the comments explaining which parser
+  tolerated what - dated from the half-covered interval, so the
+  indexing is gone and the responses pass through as the client
+  returned them.
+
 
 ### Storage and tenancy
 

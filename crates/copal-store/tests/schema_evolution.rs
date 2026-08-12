@@ -30,8 +30,8 @@ async fn raw_client(namespace: &str) -> DatabaseClient {
 
 async fn db_snapshot(client: &DatabaseClient) -> SchemaSnapshot {
     let info = client.query("INFO FOR DB;").await.unwrap();
-    // parse_db_info tolerates the client's statement-result wrapper;
-    // parse_table_full below does not, so that call still indexes in.
+    // Both INFO parsers tolerate the client's statement-result
+    // wrapper, so the responses pass through as returned.
     let parsed = parse_db_info(&info).expect("info parses");
     let mut tables = Vec::new();
     for (name, shallow) in &parsed.tables {
@@ -39,7 +39,7 @@ async fn db_snapshot(client: &DatabaseClient) -> SchemaSnapshot {
             .query(&format!("INFO FOR TABLE {name};"))
             .await
             .unwrap();
-        tables.push(parse_table_full(name, &shallow.to_surql(), &table_info[0]).unwrap());
+        tables.push(parse_table_full(name, &shallow.to_surql(), &table_info).unwrap());
     }
     SchemaSnapshot {
         tables,

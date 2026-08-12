@@ -407,6 +407,27 @@ pub fn resource() -> Resource {
                             "Replays return the original record instead of a duplicate.".into(),
                         ),
                     },
+                    // Optional, which is what keeps the addition
+                    // Compatible in the differ's vocabulary: a caller
+                    // that passes nothing behaves identically. The
+                    // content PUT's x-copal-markers header lives with
+                    // the byte routes, outside this object, like the
+                    // digest and conditional headers before it.
+                    ActionField {
+                        name: "markers".into(),
+                        kind: TypeRef::Json,
+                        required: false,
+                        multiple: false,
+                        options: Vec::new(),
+                        description: Some(
+                            "Confidentiality markers over the fetched content: spans \
+                             ({access, range: {start, end}} or {access, from, until}) \
+                             whose passages answer retrieval only at their own, \
+                             narrower level. An unlocatable span withholds the whole \
+                             document."
+                                .into(),
+                        ),
+                    },
                 ],
                 output: ActionOutput::Json,
                 description: Some(

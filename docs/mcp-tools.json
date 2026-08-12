@@ -289,6 +289,10 @@
           "idempotency_key": {
             "type": "string",
             "description": "Replays return the original record instead of a duplicate."
+          },
+          "markers": {
+            "type": "object",
+            "description": "Confidentiality markers over the fetched content: spans ({access, range: {start, end}} or {access, from, until}) whose passages answer retrieval only at their own, narrower level. An unlocatable span withholds the whole document."
           }
         },
         "required": [

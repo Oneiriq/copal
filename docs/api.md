@@ -99,6 +99,19 @@ digest accumulates, then finalizes with a rename. The size ceiling
 With a processing pipeline configured the record lands in `scanning` and a
 run is enqueued; without one it lands in `ready`.
 
+The PUT accepts an `x-copal-markers` header carrying confidentiality
+markers for exactly these bytes: a JSON array of spans, each an
+`access` level with a character `range` (`{"start", "end"}`, native
+text only) or a text anchor (`"from"`, optional `"until"`, quoting
+the document at itself). Marked passages answer retrieval only at
+their own level; see the search section below. Markers narrow, never
+widen - a marker looser than the file's level is a 400 before any
+byte moves - and they describe content, so they ride the content
+calls (this header, `file_fetch`'s `markers` field, tus
+`Upload-Metadata`) rather than `POST /v1/files`, and die with the
+version they described: a re-upload without markers is unmarked
+content.
+
 ### Listing and cursors
 
 List endpoints take `limit`, `cursor`, a filter, and `sort`. Filters and sorts
@@ -141,7 +154,9 @@ two contents.
 `/v1/tus` speaks the tus 1.0.0 core protocol with the creation and
 termination extensions, tenant-authenticated like every management
 route. `Upload-Metadata` must carry `path` (base64 per the spec);
-`content_type` and `access` are optional keys.
+`content_type`, `access`, and `markers` (the same JSON the content
+PUT's `x-copal-markers` header carries, validated at creation) are
+optional keys.
 
 ```
 OPTIONS /v1/tus          capabilities
@@ -300,9 +315,9 @@ the bytes to the grant URL.
 
 When the bytes live behind a URL, one call replaces all three:
 `POST /v1/files/fetch` (`file_fetch` on the other faces) takes `url`
-and `path` plus the usual `content_type`, `access`, `metadata`, and
-`idempotency_key`, creates the record, and the server pulls the
-bytes itself. Fetched content walks the standard pipeline (sniff,
+and `path` plus the usual `content_type`, `access`, `metadata`,
+`idempotency_key`, and optional `markers`, creates the record, and
+the server pulls the bytes itself. Fetched content walks the standard pipeline (sniff,
 policy, scan, extract, embed, finalize), so a fetched file is
 indistinguishable from an uploaded one by the time it serves. The
 URL is tenant-supplied, so the outbound policy applies (private
@@ -446,6 +461,24 @@ same reason `servable_content` refuses them, and deleted records have
 their text purged at deletion. The levels a read-scoped caller of the
 owning tenant can download, which is `public`, `private`, and
 `tenant`, are the levels that answer searches.
+
+The same rule holds per passage. An upload's markers give individual
+spans their own, narrower level; a chunk overlapping any marked span
+inherits it, and a `grant`-marked chunk is never a search candidate:
+no snippet, no rank, no facet contribution, no entry into the rerank
+window, on either retrieval leg. A file whose only matching passages
+are withheld does not surface at all, while its open passages keep
+answering their own questions. `GET /v1/files/{id}/text` elides the
+marked spans instead of refusing the document: the response's
+`withheld` counts the elided regions, `chars` counts the served
+text, and no positions are disclosed, because the length of a secret
+is part of the secret. A marker that cannot be located (a typo'd
+anchor, a range past the extraction ceiling or on extractor-produced
+text) restricts the whole file, with the reason under
+`metadata.processing`. All four levels are accepted on the wire;
+until principals split the read path, `grant` is the operative
+restriction, because the other three all admit the same
+tenant-scoped, read-scoped callers.
 
 Semantic retrieval applies a relevance floor, so a query about
 something nobody stored returns nothing rather than the least-distant

@@ -64,6 +64,38 @@ fn generated_artifacts_match_the_checked_in_documents() {
     }
 }
 
+/// The `markers` input on `file_fetch` is an OPTIONAL addition, and
+/// the differ must say so: diffing the contract without it against
+/// the contract with it yields Compatible changes only. Only a
+/// required input would be Breaking, and nothing here requires - the
+/// property that lets this ship without a major version.
+#[test]
+fn the_differ_calls_the_markers_input_compatible() {
+    let with_markers = contract();
+    let mut without = contract();
+    let fetch = without.resources[0]
+        .actions
+        .iter_mut()
+        .find(|action| action.name == "fetch")
+        .expect("the fetch action exists");
+    fetch.input.retain(|field| field.name != "markers");
+
+    let changes = janus::diff(&without, &with_markers);
+    let mentions_markers = changes.iter().any(|change| match change {
+        janus::Change::Breaking(text) | janus::Change::Compatible(text) => text.contains("markers"),
+    });
+    assert!(
+        mentions_markers,
+        "the differ must see the addition: {changes:?}",
+    );
+    for change in &changes {
+        assert!(
+            matches!(change, janus::Change::Compatible(_)),
+            "an optional input must not break the wire: {change:?}",
+        );
+    }
+}
+
 #[test]
 fn the_gate_actually_fires_on_an_unindexed_sort() {
     // Sanity that the gate is not vacuously green: an unindexable sort

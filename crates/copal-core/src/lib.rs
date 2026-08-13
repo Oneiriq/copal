@@ -13,10 +13,11 @@ pub mod excerpt;
 pub mod file;
 pub mod id;
 pub mod inspect;
+pub mod marker;
 pub mod state;
 
 pub use bm25::rank as rank_lexical;
-pub use chunk::split as split_passages;
+pub use chunk::{split as split_passages, split_spans, Passage};
 pub use digest::{ContentDigest, DigestBuilder};
 pub use error::CopalError;
 pub use excerpt::{excerpt, Excerpt};

@@ -11,6 +11,41 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ### Governance
 
+- **Confidentiality has passage granularity now.** A chunk was
+  withheld exactly when its file was; per-upload markers end that.
+  An upload may declare spans of its content - character ranges over
+  natively decoded text, or text anchors that quote the document at
+  itself - each carrying one of the four access levels, narrowing
+  only: a marker looser than the file is a 400 before any byte
+  moves. Markers ride exactly the calls that carry content (the
+  content PUT's `x-copal-markers` header, `file_fetch`'s optional
+  `markers` input, tus `Upload-Metadata`; never create, never the S3
+  face), persist on the version row beside the digest they describe,
+  and resolve at chunking time, where a passage overlapping ANY
+  marked span inherits the strictest touching level in the same
+  CREATE as its body - no unmarked window, and a declaration that
+  cannot be located restricts the whole file, with the verdict under
+  `metadata.processing`. Enforcement is the existing DISCLOSABLE
+  clause grown a chunk half, inside the query on both retrieval
+  legs, so a withheld passage is never a candidate: no snippet, no
+  rank, no facet contribution, nothing for the reranker to receive,
+  and a file whose only matching passages are withheld never
+  surfaces. The full-text read elides marked spans rather than
+  refusing the document, answering a `withheld` count and no
+  positions. The engine's second layer carries the same conjunct on
+  `text_chunk`, stated beside the retention clause, so a
+  caller-bound session meets the refusal even when a request-path
+  bug drops the application clause - proven by a test that runs a
+  clause-less production query through a caller session. The chunk
+  column's NULL is the whole migration: existing rows read NONE,
+  NONE means the file's level, and a deployment upgrades into
+  exactly the behavior it had. Every leak surface is sealed by an
+  adversarial test that first proves, through a conjunct-dropping
+  oracle, that the leak would have happened. Until principals split
+  the read path, `grant` is the operative restriction; the wire
+  accepts all four levels now so that divergence needs no wire
+  change later.
+
 - **The engine policy derives in janus now.** The server rendered its
   SurrealDB `PERMISSIONS` clauses from the contract by hand - a guard
   map, the read-scope conjuncts, the sub-resource walk - one function

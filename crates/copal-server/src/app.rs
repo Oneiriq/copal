@@ -952,8 +952,23 @@ async fn search_text<B: BlobStore>(
     Ok(Json(answer))
 }
 
-/// One file's extracted text.
 /// One file's extracted text, shared by both faces.
+///
+/// The stored body contains the marked spans, so this read is the
+/// second door beside search and must close with it. The response
+/// elides the withheld spans and carries `withheld`, a count of
+/// elided regions, so a caller knows the text is partial; refusing
+/// the whole document instead would recreate exactly the
+/// all-or-nothing behavior per-chunk authorization exists to remove.
+/// Span positions are never disclosed: the length of a secret is
+/// part of the secret, so `chars` counts the SERVED text and the
+/// count says how many gaps there are, not where or how wide.
+///
+/// The spans persist all four access levels; only `grant` is
+/// operative here, because this read is tenant-authenticated and
+/// read-scoped, so the other three levels admit every caller who can
+/// reach it today. When principals split the read path, the filter
+/// below is where `private` and `tenant` spans start to bite.
 pub(crate) async fn file_text_core(
     store: &copal_store::Store,
     tenant: &TenantId,
@@ -962,12 +977,20 @@ pub(crate) async fn file_text_core(
     let row = copal_store::repo::text::get_text(store, tenant, id)
         .await?
         .ok_or_else(|| CopalError::not_found(format!("no extracted text for file {id}")))?;
+    let operative: Vec<(usize, usize)> = row
+        .withheld
+        .iter()
+        .filter(|span| span.access == copal_core::AccessLevel::Grant.as_str())
+        .map(|span| (span.start, span.end))
+        .collect();
+    let (text, withheld) = copal_core::marker::elide(&row.body, &operative);
     Ok(json!({
         "file": id.as_str(),
         "digest": row.digest,
-        "chars": row.chars,
+        "chars": text.chars().count(),
+        "withheld": withheld,
         "extractor": row.extractor,
-        "text": row.body,
+        "text": text,
         "updated_at": row.updated_at,
     }))
 }
@@ -2322,6 +2345,7 @@ async fn get_rendition<B: BlobStore>(
         stored.size_bytes,
         "derive",
         copal_core::FileState::Ready,
+        None,
     )
     .await?;
     crate::metrics::incr("copal_renditions_inline_total");
@@ -2340,6 +2364,12 @@ struct FetchRequest {
     metadata: serde_json::Value,
     #[serde(default)]
     idempotency_key: Option<String>,
+    /// Confidentiality markers for the content the server will pull:
+    /// a fetch is an upload the server performs on the caller's
+    /// behalf, so it carries the declaration the way the content PUT
+    /// carries its header.
+    #[serde(default)]
+    markers: Option<serde_json::Value>,
 }
 
 async fn fetch_file<B: BlobStore>(
@@ -2356,6 +2386,7 @@ async fn fetch_file<B: BlobStore>(
         access: request.access,
         metadata: request.metadata,
         idempotency_key: request.idempotency_key,
+        markers: request.markers,
     };
     let (status, body) = fetch_core(&state, &tenant, &spec).await?;
     Ok((status, Json(body)))
@@ -2370,6 +2401,7 @@ pub(crate) struct FetchSpec {
     pub access: Option<copal_core::AccessLevel>,
     pub metadata: serde_json::Value,
     pub idempotency_key: Option<String>,
+    pub markers: Option<serde_json::Value>,
 }
 
 /// Create the record and enqueue the ingestion, the shared core
@@ -2401,6 +2433,14 @@ pub(crate) async fn fetch_core<B: BlobStore>(
             );
         }
     }
+    // Validated against the level this same request declares, before
+    // the record exists and long before any byte moves: a widening
+    // or malformed declaration costs nothing but this refusal.
+    let access = request.access.unwrap_or(copal_core::AccessLevel::Private);
+    let markers = match &request.markers {
+        None => None,
+        Some(raw) => Some(crate::markers::accept_declaration(raw, access)?),
+    };
 
     let file_spec = FileSpec {
         path: request.path.clone(),
@@ -2408,7 +2448,7 @@ pub(crate) async fn fetch_core<B: BlobStore>(
             .content_type
             .clone()
             .unwrap_or_else(|| "application/octet-stream".to_owned()),
-        access: request.access.unwrap_or(copal_core::AccessLevel::Private),
+        access,
         metadata: request.metadata.clone(),
         idempotency_key: request.idempotency_key.clone(),
     };
@@ -2422,12 +2462,18 @@ pub(crate) async fn fetch_core<B: BlobStore>(
         use sha2::Digest as _;
         hex::encode(sha2::Sha256::digest(request.url.as_bytes()))
     };
-    let input = json!({
+    let mut input = json!({
         "tenant": tenant.as_str(),
         "file": record.id.as_str(),
         "url": request.url,
         "declared": request.content_type.is_some(),
     });
+    // The canonical declaration rides the run input to the fetch
+    // worker, which persists it on the version row at completion the
+    // way the byte faces do.
+    if let Some(declaration) = &markers {
+        input["markers"] = declaration.clone();
+    }
     let (run_id, _) = state
         .flow
         .enqueue(
@@ -2777,6 +2823,22 @@ async fn upload_content<B: BlobStore>(
         })
         .transpose()?;
 
+    // Confidentiality markers ride the content call, in a header
+    // like the digest and the conditionals before them, because they
+    // describe the bytes this request carries and nothing else. A
+    // malformed or widening declaration refuses HERE, before any
+    // byte moves; the narrowing check reads the file's level, which
+    // costs one fetch only when markers are present.
+    let declared_markers = match crate::markers::from_header(request.headers())? {
+        None => None,
+        Some(raw) => {
+            let record = file_repo::get_file(&state.store, &tenant, &id)
+                .await?
+                .ok_or_else(|| CopalError::not_found(format!("file {id}")))?;
+            Some(crate::markers::accept_declaration(&raw, record.access)?)
+        }
+    };
+
     let declared_len = request
         .headers()
         .get(axum::http::header::CONTENT_LENGTH)
@@ -2916,6 +2978,7 @@ async fn upload_content<B: BlobStore>(
         size_bytes,
         &storage_path,
         &actor,
+        declared_markers.as_ref(),
     )
     .await?;
     Ok(Json(crate::wire::wire_file(&record)))
@@ -2925,6 +2988,12 @@ async fn upload_content<B: BlobStore>(
 /// enqueue the pipeline, and resolve dedupe hits. Shared by the single
 /// PUT path and resumable-session completion, so both finish
 /// identically.
+///
+/// `markers` is the validated declaration for these bytes, from
+/// whichever face carried it (the PUT header, or a tus session's
+/// creation metadata); faces that carry none - the S3 gateway,
+/// upload-grant redemption - pass `None`, and absence means the
+/// file's level, which is today's behavior.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn finalize_new_content<B: BlobStore>(
     state: &AppState<B>,
@@ -2935,6 +3004,7 @@ pub(crate) async fn finalize_new_content<B: BlobStore>(
     size_bytes: u64,
     storage_path: &str,
     actor: &str,
+    markers: Option<&serde_json::Value>,
 ) -> Result<copal_core::FileRecord, ApiError> {
     crate::metrics::incr("copal_uploads_completed_total");
     crate::metrics::add("copal_uploaded_bytes_total", size_bytes);
@@ -2959,6 +3029,7 @@ pub(crate) async fn finalize_new_content<B: BlobStore>(
         size_bytes,
         actor,
         final_state,
+        markers,
     )
     .await?;
 
@@ -3317,6 +3388,9 @@ async fn redeem_upload_grant<B: BlobStore>(
     state
         .settle_reservation(&tenant, declared_len, size_bytes)
         .await;
+    // Upload grants carry no markers: the grant names a record, not
+    // content semantics, and the doc of record lists exactly three
+    // marker-bearing calls. Absence means the file's level.
     let record = finalize_new_content(
         &state,
         &tenant,
@@ -3326,6 +3400,7 @@ async fn redeem_upload_grant<B: BlobStore>(
         size_bytes,
         &storage_path,
         &actor,
+        None,
     )
     .await?;
     Ok(Json(crate::wire::wire_file(&record)))

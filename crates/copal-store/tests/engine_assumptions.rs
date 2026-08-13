@@ -189,6 +189,52 @@ async fn distinct_files_per_group_need_array_group() {
     );
 }
 
+/// Why `file_version.markers` and `file_text.withheld` are `TYPE any`
+/// rather than `array`: a schemafull `array` field refuses object
+/// items outright ("no such field exists" for the item's keys), the
+/// `FLEXIBLE` escape attaches only to object-bearing types the schema
+/// builder cannot spell, and `any` carries the array of objects
+/// verbatim, absence included. If this pins differently after an
+/// engine upgrade, those columns can graduate to a real array type.
+#[tokio::test]
+async fn any_typed_fields_carry_object_arrays_and_plain_arrays_refuse_them() {
+    let client = seeded_client().await;
+    for statement in [
+        "DEFINE TABLE spans_probe SCHEMAFULL;",
+        "DEFINE FIELD strict ON TABLE spans_probe TYPE option<array>;",
+        "DEFINE FIELD loose ON TABLE spans_probe TYPE any;",
+    ] {
+        client.inner().query(statement).await.expect(statement);
+    }
+
+    // The strict column refuses the very shape markers need.
+    let mut response = client
+        .inner()
+        .query("CREATE spans_probe:strict CONTENT { strict: [{ start: 1, end: 5 }] };")
+        .await
+        .expect("statement runs");
+    assert!(
+        !response.take_errors().is_empty(),
+        "a schemafull array field accepted object items; `any` is no longer required",
+    );
+
+    // The any column carries it whole, and admits absence.
+    let rows: Vec<serde_json::Value> = query_records_raw(
+        &client,
+        "CREATE spans_probe:loose CONTENT \
+         { loose: [{ start: 1, end: 5, access: 'grant' }] } RETURN AFTER;",
+    )
+    .await;
+    assert_eq!(rows[0]["loose"][0]["start"], 1, "{rows:?}");
+    assert_eq!(rows[0]["loose"][0]["access"], "grant", "{rows:?}");
+    let rows: Vec<serde_json::Value> = query_records_raw(
+        &client,
+        "CREATE spans_probe:absent CONTENT {} RETURN AFTER;",
+    )
+    .await;
+    assert!(rows[0].get("loose").is_none(), "{rows:?}");
+}
+
 async fn query_records_raw(client: &DatabaseClient, sql: &str) -> Vec<serde_json::Value> {
     let mut response = client.inner().query(sql).await.expect(sql);
     response.take(0).expect(sql)

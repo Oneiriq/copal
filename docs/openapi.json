@@ -602,6 +602,9 @@
                   "idempotency_key": {
                     "type": "string"
                   },
+                  "markers": {
+                    "type": "object"
+                  },
                   "metadata": {
                     "type": "object"
                   },

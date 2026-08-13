@@ -111,6 +111,44 @@ impl AccessLevel {
             Self::Grant => "grant",
         }
     }
+
+    /// Parse a wire name; anything outside the four levels refuses.
+    pub fn parse(raw: &str) -> crate::Result<Self> {
+        match raw {
+            "public" => Ok(Self::Public),
+            "private" => Ok(Self::Private),
+            "tenant" => Ok(Self::Tenant),
+            "grant" => Ok(Self::Grant),
+            other => Err(CopalError::validation(format!(
+                "unknown access level {other:?}; levels are public, private, tenant, grant",
+            ))),
+        }
+    }
+
+    /// How narrow the reader set is, as a total order over the four
+    /// levels. The set shrinks at every step: public admits anyone
+    /// with the URL, tenant admits any authenticated principal of the
+    /// owning tenant, private admits only those principals holding
+    /// file scope, and grant admits nobody without an explicit signed
+    /// capability. Markers compare against this because narrowing is
+    /// their one legal direction: a marker may shrink a span's reader
+    /// set below its file's, never widen it, so "at least as
+    /// restrictive" has to be a question with one answer.
+    pub fn restrictiveness(self) -> u8 {
+        match self {
+            Self::Public => 0,
+            Self::Tenant => 1,
+            Self::Private => 2,
+            Self::Grant => 3,
+        }
+    }
+
+    /// Whether a span at `self` narrows (or matches) a file at
+    /// `file`. Equal levels pass: re-stating the file's own level
+    /// marks nothing looser.
+    pub fn narrows(self, file: AccessLevel) -> bool {
+        self.restrictiveness() >= file.restrictiveness()
+    }
 }
 
 #[cfg(test)]
@@ -181,5 +219,48 @@ mod tests {
             let back: FileState = serde_json::from_str(&json).unwrap();
             assert_eq!(back, s);
         }
+    }
+
+    const LEVELS: [AccessLevel; 4] = [
+        AccessLevel::Public,
+        AccessLevel::Tenant,
+        AccessLevel::Private,
+        AccessLevel::Grant,
+    ];
+
+    #[test]
+    fn access_levels_parse_their_own_wire_names_and_nothing_else() {
+        for level in LEVELS {
+            assert_eq!(AccessLevel::parse(level.as_str()).unwrap(), level);
+        }
+        assert!(AccessLevel::parse("secret").is_err());
+        assert!(AccessLevel::parse("").is_err());
+        // Case matters: the schema asserts the lowercase spellings.
+        assert!(AccessLevel::parse("Grant").is_err());
+    }
+
+    #[test]
+    fn restrictiveness_is_a_strict_total_order() {
+        // The reader set shrinks at every step, so every pair of
+        // distinct levels must compare unambiguously; a tie would
+        // make "narrows" answer yes in both directions.
+        for (i, a) in LEVELS.iter().enumerate() {
+            for (j, b) in LEVELS.iter().enumerate() {
+                assert_eq!(
+                    a.restrictiveness() < b.restrictiveness(),
+                    i < j,
+                    "{a:?} vs {b:?}",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn narrowing_admits_equal_and_tighter_levels_only() {
+        assert!(AccessLevel::Grant.narrows(AccessLevel::Private));
+        assert!(AccessLevel::Private.narrows(AccessLevel::Private));
+        assert!(AccessLevel::Grant.narrows(AccessLevel::Public));
+        assert!(!AccessLevel::Public.narrows(AccessLevel::Private));
+        assert!(!AccessLevel::Tenant.narrows(AccessLevel::Grant));
     }
 }

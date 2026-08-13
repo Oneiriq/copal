@@ -335,6 +335,9 @@ pub async fn complete_multipart<B: BlobStore>(
         size_bytes,
         &storage_path,
         principal.unwrap_or("s3"),
+        // No markers on the S3 face; parts are transport, and the
+        // face's vocabulary has no such concept.
+        None,
     )
     .await
     {

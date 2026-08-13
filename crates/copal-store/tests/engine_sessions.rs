@@ -276,3 +276,58 @@ async fn record_sessions_enforce_on_credential_less_engines() {
     assert_eq!(rows.len(), 1, "the record actor is constrained: {rows:?}");
     assert_eq!(rows[0]["tenant"], "acme");
 }
+
+/// The per-chunk conjunct stands on this: a `PERMISSIONS FOR select`
+/// clause may traverse a record link and read a column of the row it
+/// points at, evaluated per candidate row. That is what lets the
+/// engine's second layer state `(access IS NONE OR access != 'grant')
+/// AND file.access != 'grant'` on `text_chunk` and filter withheld
+/// passages even for a session whose query carries no WHERE at all.
+#[tokio::test]
+async fn select_permissions_traverse_record_links() {
+    let root = engine_with_credentials("link_perm").await;
+    run_all(
+        &root,
+        &[
+            "DEFINE ACCESS caller ON DATABASE TYPE RECORD \
+             WITH JWT ALGORITHM HS256 KEY 'probe-secret' DURATION FOR SESSION 1h;",
+            "DEFINE TABLE doc SCHEMALESS PERMISSIONS FOR select FULL \
+             FOR create, update, delete NONE;",
+            "DEFINE TABLE chunk SCHEMALESS PERMISSIONS FOR select \
+             WHERE (access IS NONE OR access != 'grant') AND file.access != 'grant' \
+             FOR create, update, delete NONE;",
+            "CREATE doc:open SET access = 'private';",
+            "CREATE doc:sealed SET access = 'grant';",
+            "CREATE chunk:plain SET file = doc:open, body = 'served';",
+            "CREATE chunk:marked SET file = doc:open, access = 'grant', body = 'withheld';",
+            "CREATE chunk:sealedfile SET file = doc:sealed, body = 'withheld too';",
+        ],
+    )
+    .await;
+
+    let caller = root.clone();
+    caller
+        .authenticate(jwt("probe-secret", caller_claims("link_perm")))
+        .await
+        .expect("record JWT authenticates");
+    let mut response = caller
+        .query("SELECT meta::id(id) AS id FROM chunk;")
+        .await
+        .unwrap();
+    let rows: Vec<serde_json::Value> = response.take(0).unwrap();
+    let ids: Vec<&str> = rows.iter().filter_map(|r| r["id"].as_str()).collect();
+    assert_eq!(
+        ids,
+        vec!["plain"],
+        "the marked chunk and the sealed file's chunk do not exist for the caller",
+    );
+
+    // The root session sees all three, so the filtering above was the
+    // permission clause doing work rather than the rows being absent.
+    let mut response = root
+        .query("SELECT meta::id(id) AS id FROM chunk;")
+        .await
+        .unwrap();
+    let rows: Vec<serde_json::Value> = response.take(0).unwrap();
+    assert_eq!(rows.len(), 3, "{rows:?}");
+}

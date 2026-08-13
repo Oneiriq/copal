@@ -69,6 +69,13 @@ use super::tenant::RetentionPolicy;
 ///
 /// Two round trips: the retention policy, then the transaction. It was
 /// five to ten.
+///
+/// `markers` is the uploader's confidentiality declaration for
+/// exactly these bytes, already validated at the API face; it lands
+/// on the version row in the same CREATE that arms it, because the
+/// version is the frozen artifact and markers are facts about
+/// exactly that content. `None` means none declared, which is
+/// file-level behavior: today's, exactly.
 #[allow(clippy::too_many_arguments)]
 pub async fn complete_upload(
     store: &Store,
@@ -79,6 +86,7 @@ pub async fn complete_upload(
     size_bytes: u64,
     created_by: &str,
     final_state: FileState,
+    markers: Option<&Value>,
 ) -> copal_core::Result<FileRecord> {
     // Completion lands in ready (no pipeline) or scanning (a pipeline
     // will finalize); anything else is a caller bug.
@@ -114,6 +122,7 @@ pub async fn complete_upload(
         created_by,
         final_state,
         policy.as_ref(),
+        markers,
     )?;
 
     let mut transaction = Transaction::begin(store.client())
@@ -190,6 +199,7 @@ fn completion_statements(
     created_by: &str,
     final_state: FileState,
     policy: Option<&RetentionPolicy>,
+    markers: Option<&Value>,
 ) -> copal_core::Result<Vec<String>> {
     let file_rid = super::file::rid(id)?;
     let blob_rid = RecordID::<()>::new("blob", super::blob::blob_row_id(residency, digest))
@@ -244,11 +254,21 @@ fn completion_statements(
     // escapes, and `created_by` is whatever the caller was
     // authenticated as, so the one that matches the language receiving
     // it is the one to use.
+    // Markers land inside the same CONTENT literal as everything
+    // else: the declaration is a fact about exactly these bytes, and
+    // a version row that existed without it would be a marked upload
+    // whose re-extraction resolves nothing. Absent means absent - no
+    // column written, so unmarked uploads render byte-identical
+    // statements to what they rendered before markers existed.
+    let markers_clause = match markers {
+        Some(declaration) => format!(", markers: {}", literal(declaration)),
+        None => String::new(),
+    };
     statements.push(guarded(format!(
         "CREATE {version_rid} CONTENT {{ tenant_id: {tenant_lit}, number: {number}, \
          content_type: $prior[0].content_type, size_bytes: {size_bytes}, digest: {digest_lit}, \
          metadata_snapshot: $prior[0].metadata, created_by: {created_by_lit}, file: {file_rid}, \
-         blob: {blob_rid}, prior: $prior[0].current_version, armed: true }}",
+         blob: {blob_rid}, prior: $prior[0].current_version, armed: true{markers_clause} }}",
         tenant_lit = literal(&Value::from(tenant.as_str())),
         digest_lit = literal(&Value::from(digest.as_str())),
         created_by_lit = literal(&Value::from(created_by)),
@@ -316,6 +336,13 @@ mod tests {
     use super::*;
 
     fn rendered(policy: Option<&RetentionPolicy>) -> Vec<String> {
+        rendered_with_markers(policy, None)
+    }
+
+    fn rendered_with_markers(
+        policy: Option<&RetentionPolicy>,
+        markers: Option<&Value>,
+    ) -> Vec<String> {
         completion_statements(
             &TenantId::parse("acme").unwrap(),
             &FileId::parse("01kzfrwnqy4kb5cz8rj5kax7yr").unwrap(),
@@ -325,6 +352,7 @@ mod tests {
             "tester",
             FileState::Ready,
             policy,
+            markers,
         )
         .expect("statements render")
     }
@@ -392,6 +420,35 @@ mod tests {
         assert_eq!(statements.len(), 3, "CAS, version row, verdict");
         assert!(!statements.iter().any(|s| s.contains("retain_until")));
         assert!(!statements.iter().any(|s| s.contains("DELETE")));
+    }
+
+    /// Markers ride the version CREATE itself, quoted through the
+    /// query family rather than JSON, and an unmarked completion
+    /// renders exactly what it rendered before markers existed - the
+    /// no-declaration path must stay byte-identical to today's.
+    #[test]
+    fn markers_land_inside_the_version_create_or_not_at_all() {
+        let declaration = serde_json::json!([
+            { "access": "grant", "from": "Pricing's Schedule" }
+        ]);
+        let statements = rendered_with_markers(None, Some(&declaration));
+        let create = statements
+            .iter()
+            .find(|s| s.contains("CREATE file_version:"))
+            .expect("a version CREATE");
+        assert!(
+            create.contains(
+                "armed: true, markers: [{ access: 'grant', from: 'Pricing\\'s Schedule' }]"
+            ),
+            "{create}",
+        );
+
+        let unmarked = rendered(None);
+        let create = unmarked
+            .iter()
+            .find(|s| s.contains("CREATE file_version:"))
+            .expect("a version CREATE");
+        assert!(!create.contains("markers"), "{create}");
     }
 
     /// A `keep_last` of zero would prune the version the same

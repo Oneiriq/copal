@@ -100,6 +100,38 @@ pub async fn get_version(
     rows.pop().map(VersionRow::into_domain).transpose()
 }
 
+/// The marker declaration for a file's content, read back by digest.
+///
+/// The pipeline resolves markers at extraction time from what the
+/// version row persisted rather than from its own run input, so a
+/// retry or a re-extraction under an upgraded extractor resolves the
+/// SAME declaration against the same content instead of whatever a
+/// stale enqueue carried. Newest version first: identical bytes
+/// re-uploaded with a different declaration mean the newest
+/// declaration is the one in force, because markers are per-version
+/// and a new version's markers replace the old ones with the text
+/// they describe.
+pub async fn markers_for(
+    store: &Store,
+    tenant: &TenantId,
+    file: &FileId,
+    digest: &str,
+) -> copal_core::Result<Option<serde_json::Value>> {
+    #[derive(Deserialize)]
+    struct MarkerRow {
+        #[serde(default)]
+        markers: Option<serde_json::Value>,
+    }
+    let query = versions_query(tenant, file)?
+        .where_(eq("digest", digest))
+        .limit(1)
+        .map_err(|e| map_store_err("markers_for", e))?;
+    let mut rows: Vec<MarkerRow> = query_records(store.client(), &query)
+        .await
+        .map_err(|e| map_store_err("markers_for", e))?;
+    Ok(rows.pop().and_then(|row| row.markers))
+}
+
 /// Test support: attempt to mutate an armed version row, so integration
 /// tests can prove the engine-level freeze rather than trusting the
 /// schema text. Never called by production code.

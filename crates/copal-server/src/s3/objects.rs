@@ -190,6 +190,8 @@ pub(crate) async fn copy_object<B: BlobStore>(
         size_bytes,
         &store_key,
         caller.principal.as_deref().unwrap_or("s3"),
+        // No markers on the S3 face.
+        None,
     )
     .await
     {

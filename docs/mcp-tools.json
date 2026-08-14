@@ -661,6 +661,13 @@
             "column": "body",
             "index": "idx_chunk_body",
             "kind": "lexical"
+          },
+          {
+            "table": "text_chunk",
+            "column": "embedding",
+            "index": "idx_chunk_embedding",
+            "kind": "vector",
+            "optional": true
           }
         ]
       }

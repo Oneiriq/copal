@@ -10,21 +10,46 @@ pub fn query() -> Query {
     Query {
         name: "search".into(),
         path: "/v1/search".into(),
-        // The lexical half of the fused search, declared: validation
-        // holds idx_chunk_body to being a FULLTEXT index over body,
-        // the differ calls dropping it breaking, and verify --db can
-        // ask the planner whether the index actually serves. The
-        // vector half stays undeclared because the contract is
-        // static and idx_chunk_embedding is not: it exists only in
-        // deployments that configure an embedding model, applied at
-        // startup beside the dimension. A claim that is true only
-        // sometimes is not a claim this contract makes.
-        backing: vec![SearchBacking {
-            table: "text_chunk".into(),
-            column: "body".into(),
-            index: "idx_chunk_body".into(),
-            kind: SearchKind::Lexical,
-        }],
+        // What this query does, said out loud. Both halves of the
+        // fused search are declared, and janus refuses to generate if
+        // either names no index behind it.
+        //
+        // The vector half used to stay undeclared, on the reasoning
+        // that the contract is static and idx_chunk_embedding is not:
+        // it exists only in deployments that configure an embedding
+        // model, applied at startup beside the dimension, and a claim
+        // true only sometimes is not a claim to make. That reasoning
+        // was right and its conclusion was wrong -- declaring nothing
+        // left the more expensive half of the search invisible to
+        // validation, to the differ, and to verify --db, which is the
+        // silence the backing rules exist to end. `optional` is the
+        // third answer: the index MAY BE ABSENT, and where it is
+        // present it answers for its column, its kind and its width
+        // like any other.
+        searches: vec![SearchKind::Lexical, SearchKind::Vector],
+        backing: vec![
+            SearchBacking {
+                table: "text_chunk".into(),
+                column: "body".into(),
+                index: "idx_chunk_body".into(),
+                kind: SearchKind::Lexical,
+                dimension: None,
+                optional: false,
+            },
+            SearchBacking {
+                table: "text_chunk".into(),
+                column: "embedding".into(),
+                index: "idx_chunk_embedding".into(),
+                kind: SearchKind::Vector,
+                // Unpinned on purpose: the width is whatever the
+                // configured embedding model emits
+                // (COPAL_EMBEDDING_DIMENSION), so the contract has no
+                // number to hold the schema to. Pin it the day the
+                // dimension stops being deployment configuration.
+                dimension: None,
+                optional: true,
+            },
+        ],
         input: vec![
             ActionField {
                 name: "q".into(),

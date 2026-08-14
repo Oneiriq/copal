@@ -25,22 +25,21 @@ only party who knows, and every fail direction lands on withholding
 or on yesterday's behavior. The classifier seam this file warned
 against stayed rejected; the CHANGELOG carries the details.
 
-1. **Lifecycle and tiering: the mover, then recall.** The design
+1. **Lifecycle and tiering: recall.** The design
    ([design/lifecycle-tiering.md](design/lifecycle-tiering.md))
-   ships in three stages and the first is done: tiers configure and
-   validate inside their residency, the per-tenant policy row landed
-   beside retention and storage, byte reads record day-coarse
-   recency on the blob row, and the observe-only classifier reports
-   candidates, bytes, and the measured would-be recall rate each
-   sweep pass while touching nothing. What remains is stage two --
-   the mover for online classes (copy, verify, flip, grace-erase,
-   with the symmetric promote, the GC/backup/reseal legs, and the
-   restore drill's per-tier check) -- and stage three, recall, which
-   unlocks archive classes with the 202-and-run answer on REST and
-   `InvalidObjectState` plus `RestoreObject` on the S3 face. The
-   observe stage should run against real traffic long enough to
-   check the cost model's recall assumption before stage two moves
-   a byte.
+   ships in three stages and two are done: the vocabulary, policy
+   surface, recency signal, and observe-only classifier landed
+   first, and the mover followed -- demote and the symmetric
+   promote as copy, verify, flip, grace-delayed erase, with reads
+   resolving residency-then-tier from the flip on, the GC erasing
+   every tier, and the reseal sweep walking tier backends. What
+   remains is recall, which unlocks archive classes: the
+   flow-run restore, the 202-and-run answer on REST,
+   `InvalidObjectState` plus `RestoreObject` on the S3 face, and
+   the staleness-of-availability contract in operator and tenant
+   documentation verbatim. Until it lands, `class: "archive"`
+   refuses at configuration, so no deployment can strand bytes
+   behind a GET nothing answers.
 
 2. **Multi-region replication.** Residencies place bytes; nothing
    copies them. A second region is currently a second deployment.

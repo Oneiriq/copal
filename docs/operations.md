@@ -60,6 +60,8 @@ Every value comes from the environment. Defaults target local development.
 | `COPAL_WEBHOOK_ALLOW_PRIVATE_TARGETS` | `false` | Permit webhook endpoints resolving to private, loopback, or link-local addresses. Off by default: tenant-supplied URLs pointing inside the deployment are server-side request forgery. Turn on only when receivers are genuinely internal and tenants are trusted. |
 | `COPAL_RESIDENCIES` | unset | JSON map of named storage residencies beyond `local`, e.g. `{"eu": {"scheme": "s3", "bucket": "...", "endpoint": "...", "region": "...", "access_key_id": "...", "secret_access_key": "...", "encryption_key": "<64 hex>"}}`. Filesystem residencies use `{"scheme": "fs", "root": "...", "encryption_key": "<64 hex>"}`; Google Cloud Storage uses `{"scheme": "gcs", "bucket": "...", "credential": "<base64 service-account JSON>"}` (unset credential falls back to the ambient chain, so workload identity needs nothing in the config); Azure Blob Storage uses `{"scheme": "azblob", "container": "...", "endpoint": "https://{account}.blob.core.windows.net", "account_name": "...", "account_key": "..."}`. `encryption_key` is optional and seals that residency's objects under its own key instead of the master; `previous_encryption_key` carries that residency's retiring key during a rotation. Names are lowercase alphanumeric. A residency may nest a `tiers` block naming its cheaper backends: `{"eu": {..., "tiers": {"cold": {"scheme": "s3", "bucket": "...-cold", "...": "...", "class": "online"}}}}`. A tier never carries its own encryption key (it seals under the residency's), and `class` is `online` only until the recall stage ships -- `archive` refuses at boot. |
 | `COPAL_LOCAL_TIERS` | unset | Tiers of the `local` residency, the sibling knob to the `tiers` block named residencies nest: a JSON map of tier name to backend config with `class`, e.g. `{"cold": {"scheme": "fs", "root": "/data/cold", "class": "online"}}`. Same rules as residency tiers. |
+| `COPAL_TIER_MOVE_BATCH` | `100` | Tier moves initiated per mover pass. Each is a full read-write-read of the object, so this bounds a pass's IO; deferred moves resume next pass. |
+| `COPAL_TIER_ERASE_GRACE_SECS` | `86400` | How long a displaced copy survives its placement flip before the mover erases it. Set to at least your backup cadence, for the same reason the GC grace covers restores. |
 
 
 ## The embedded tier
@@ -574,17 +576,19 @@ Every instance that runs sweeps must configure the residencies whose
 rows it may collect; a row whose residency is unknown to the instance
 is collected in the database and its bytes logged as unreachable.
 
-## Storage tiers, observe-only
+## Storage tiers
 
 A tier is a second named backend inside a residency, plus the rule
 for when bytes belong there; the design lives in
-[design/lifecycle-tiering.md](design/lifecycle-tiering.md). What
-ships today is the first stage: tiers configure and validate, the
-policy surface lands, byte reads record day-coarse access recency on
-the blob row, and a classifier walks the corpus each sweep pass and
-REPORTS what would move -- while touching nothing. The stage exists
-to measure the cost model's recall-rate assumption against real
-traffic before a byte moves.
+[design/lifecycle-tiering.md](design/lifecycle-tiering.md). Tiers
+configure and validate, the policy surface lands, byte reads record
+day-coarse access recency on the blob row, a classifier walks the
+corpus each sweep pass and reports what would move, and the MOVER
+acts on what the classifier says -- online classes only, until
+recall ships. Watch the report before setting an aggressive policy:
+the measured would-be recall rate is the figure the cost model
+assumes, and the observe figures exist so it is checked against
+real traffic, not guessed.
 
 ```
 PUT    /v1/admin/tenants/{tenant}/tiering
@@ -614,11 +618,39 @@ The report lists candidates per tenant (a shared blob credits every
 referent; the totals count each blob once), the bytes involved, the
 measured would-be recall count (blobs old enough to move whose
 recent reads hold them -- the empirical stand-in for the recall-rate
-assumption), and how many blobs each rule held back. A blob moves --
-in the stage that ships next, and only then -- when every
-referencing tenant's policy marks it cold, nothing pins it, all
-policies agree on the target tier, and the blob's own residency
-configures that tier. The most demanding reference always wins.
+assumption), and how many blobs each rule held back. A blob moves
+when every referencing tenant's policy marks it cold, nothing pins
+it, all policies agree on the target tier, and the blob's own
+residency configures that tier. The most demanding reference always
+wins.
+
+The mover rides the sweep leader lease and runs four motions per
+blob: copy the raw object (envelope and all, opaque -- the cold
+backend needs no key material), verify by reading the copy back
+through the ordinary open path and comparing the digest to the row
+id, flip the row in one guarded UPDATE, and erase the displaced
+copy after `COPAL_TIER_ERASE_GRACE_SECS` (default one day). **Set
+the erase grace to at least your backup cadence**: a flip landing
+between a backend's backup and the metadata export must leave the
+bytes findable in that backup. At no instant does the row name a
+placement whose object is absent; every crash window converges by
+re-copy and re-verify, and a copy that fails verification is
+deleted and retried rather than trusted. From the flip on, every
+read serves from the new placement -- resolution is
+residency-then-tier, one projected point read on the byte path,
+skipped entirely for residencies without tiers.
+
+Promotion is the same four motions in reverse, when eligibility
+lapses: a pin lands, a policy tightens or leaves, or reads make the
+blob ineligible. Reads never promote directly -- one monthly audit
+read must not yank a corpus hot; the pin is the deliberate
+override. `COPAL_TIER_MOVE_BATCH` (default 100) bounds moves
+initiated per pass, since each is a full read-write-read of the
+object; what one pass defers, the next resumes. Garbage collection
+erases from every tier the residency configures, and a master key
+rotation's reseal sweep walks tier backends beside their
+residencies. The restore drill grows one leg: download and
+digest-check one object per tier per residency.
 
 The audit trail records `tenant.tiering_policy_set`,
 `tenant.tiering_policy_cleared`, `file.tier_pinned`, and
@@ -918,6 +950,9 @@ tenant-facing network along with key custody.
 | `copal_renditions_inline_total` | Renditions derived inline by the on-the-fly URL face. |
 | `copal_tiering_candidate_blobs`, `copal_tiering_candidate_bytes` | Gauges: what the observe-only tiering classifier would move, distinct blobs and their bytes, refreshed each sweep pass. `copal_tiering_candidate_bytes{tenant}` carries the per-tenant view. |
 | `copal_tiering_would_recall_blobs` | Gauge: blobs old enough to move whose recent reads hold them, the measured stand-in for the recall-rate assumption in the tiering cost model. |
+| `copal_tiering_demoted_total`, `copal_tiering_promoted_total` | Mover flips that landed, each after a digest-verified copy. |
+| `copal_tiering_erased_total{copy}` | Displaced copies erased after the grace: `hot` after a demotion settles, `cold` after a promotion settles. |
+| `copal_tiering_verify_failures_total` | Copies whose read-back digest disagreed with the row id. The bad copy is deleted and the move retries next pass; a non-zero rate here is a storage problem worth investigating. |
 
 Counters are process-local and reset on restart, which is what
 Prometheus expects; the database holds the durable truth for

@@ -190,6 +190,97 @@ pub async fn last_read(
         .map(str::to_owned))
 }
 
+/// The mover's commitments, each a guarded single-statement CAS so a
+/// rival mover matches nothing. The flip happens only after verified
+/// bytes exist at the destination -- the caller's discipline, stated
+/// here because these statements are what make it atomic.
+///
+/// `demoted_at` is the placement flip marker: set by either flip,
+/// cleared by [`settle_erase`] once the DISPLACED copy is erased. So
+/// `tier` + marker reads as "cold, hot copy pending erase"; `tier`
+/// alone as "settled cold"; marker alone as "hot again, cold copy
+/// pending erase"; neither as plain hot.
+///
+/// Flip a verified-cold row's placement to `tier`. Matches only a
+/// currently-hot row.
+pub async fn demote_flip(
+    store: &Store,
+    residency: &str,
+    digest: &ContentDigest,
+    tier: &str,
+) -> copal_core::Result<bool> {
+    let target = RecordID::<()>::new("blob", super::blob::blob_row_id(residency, digest))
+        .map_err(|e| map_store_err("demote_flip", e))?;
+    let query = Query::new()
+        .update_set(target.to_string())
+        .map_err(|e| map_store_err("demote_flip", e))?
+        .set("tier", Value::from(tier))
+        .map_err(|e| map_store_err("demote_flip", e))?
+        .set_expr("demoted_at", raw("time::now()"))
+        .map_err(|e| map_store_err("demote_flip", e))?
+        .where_str("tier IS NONE")
+        .return_after();
+    let rows: Vec<Value> = query_records(store.client(), &query)
+        .await
+        .map_err(|e| map_store_err("demote_flip", e))?;
+    Ok(!rows.is_empty())
+}
+
+/// Flip a verified-hot row's placement back to the primary backend.
+/// Matches only a row currently on `tier`.
+pub async fn promote_flip(
+    store: &Store,
+    residency: &str,
+    digest: &ContentDigest,
+    tier: &str,
+) -> copal_core::Result<bool> {
+    let target = RecordID::<()>::new("blob", super::blob::blob_row_id(residency, digest))
+        .map_err(|e| map_store_err("promote_flip", e))?;
+    let query = Query::new()
+        .update_set(target.to_string())
+        .map_err(|e| map_store_err("promote_flip", e))?
+        .set_expr("tier", raw("NONE"))
+        .map_err(|e| map_store_err("promote_flip", e))?
+        .set_expr("demoted_at", raw("time::now()"))
+        .map_err(|e| map_store_err("promote_flip", e))?
+        .where_str(format!("tier = '{tier}'"))
+        .return_after();
+    let rows: Vec<Value> = query_records(store.client(), &query)
+        .await
+        .map_err(|e| map_store_err("promote_flip", e))?;
+    Ok(!rows.is_empty())
+}
+
+/// Clear the flip marker after the displaced copy is erased.
+/// `settled_tier` states which placement the erase settled: `Some`
+/// after a demote's hot erase, `None` after a promote's cold erase.
+/// The guard means a flip that raced in between keeps its marker.
+pub async fn settle_erase(
+    store: &Store,
+    residency: &str,
+    digest: &ContentDigest,
+    settled_tier: Option<&str>,
+) -> copal_core::Result<()> {
+    let target = RecordID::<()>::new("blob", super::blob::blob_row_id(residency, digest))
+        .map_err(|e| map_store_err("settle_erase", e))?;
+    let guard = match settled_tier {
+        Some(tier) => format!("tier = '{tier}'"),
+        None => "tier IS NONE".to_owned(),
+    };
+    let query = Query::new()
+        .update_set(target.to_string())
+        .map_err(|e| map_store_err("settle_erase", e))?
+        .set_expr("demoted_at", raw("NONE"))
+        .map_err(|e| map_store_err("settle_erase", e))?
+        .where_str(guard)
+        .where_str("demoted_at IS NOT NONE")
+        .return_after();
+    query_records::<Value>(store.client(), &query)
+        .await
+        .map_err(|e| map_store_err("settle_erase", e))?;
+    Ok(())
+}
+
 /// A blob row as the classifier sees it: placement, size, both age
 /// bases (computed at the engine so no datetime parsing happens
 /// here), and the referencing tenants with any pins -- the inbound
@@ -202,6 +293,8 @@ pub struct BlobClassifyRow {
     pub size_bytes: i64,
     #[serde(default)]
     pub tier: Option<String>,
+    #[serde(default)]
+    pub demoted_age_secs: Option<i64>,
     #[serde(default)]
     pub created_age_secs: Option<i64>,
     #[serde(default)]
@@ -229,6 +322,16 @@ impl BlobClassifyRow {
         }
     }
 
+    /// The residency and digest, recovered from the record id -- the
+    /// same parse [`super::blob::BlobGcRow::location`] performs.
+    pub fn location(&self) -> copal_core::Result<(String, ContentDigest)> {
+        let bare = crate::dto::strip_record_prefix(&self.id, "blob");
+        match bare.rsplit_once('-') {
+            Some((residency, digest)) => Ok((residency.to_owned(), ContentDigest::parse(digest)?)),
+            None => Ok(("local".to_owned(), ContentDigest::parse(bare)?)),
+        }
+    }
+
     /// Every tenant holding this blob alive, files and history both.
     pub fn referencing_tenants(&self) -> impl Iterator<Item = &str> {
         self.file_tenants
@@ -252,6 +355,9 @@ pub async fn list_for_classify(
             "id".to_owned(),
             "size_bytes".to_owned(),
             "tier".to_owned(),
+            "IF demoted_at IS NONE THEN NONE ELSE duration::secs(time::now() - demoted_at) END \
+             AS demoted_age_secs"
+                .to_owned(),
             "duration::secs(time::now() - created_at) AS created_age_secs".to_owned(),
             "IF last_read IS NONE THEN NONE ELSE duration::secs(time::now() - last_read) END \
              AS read_age_secs"

@@ -989,7 +989,7 @@ async fn get_object<B: BlobStore>(
         Err(response) => return response,
     };
     let digest = record.digest.as_ref().expect("servable implies digest");
-    let backend = match gateway.app.backend_for_record(&record) {
+    let backend = match gateway.app.backend_for_record(&record).await {
         Ok(backend) => backend,
         Err(err) => return copal_to_s3(err.0),
     };

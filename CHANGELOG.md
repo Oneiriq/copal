@@ -11,6 +11,41 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ### Lifecycle and tiering
 
+- **The mover ships: cold bytes move, verified, and reads follow.**
+  Four motions per blob, each window analyzed: copy the raw object
+  to the destination's staging and land it at the same content
+  address (the envelope moves opaque, so a sealed object ships as
+  ciphertext and the cold backend holds no key material -- tier
+  backends open under their residency's cipher, which is also what
+  lets the reseal sweep walk them during a rotation); verify by
+  reading the copy back through the ordinary open path and
+  comparing the digest to the row id, because the digest is the
+  name and nothing weaker is verification -- a mismatched copy is
+  deleted, counted on `copal_tiering_verify_failures_total`, and
+  retried, never flipped; flip the row in one guarded UPDATE, the
+  only commitment, CAS-safe against a rival mover; and erase the
+  displaced copy after `COPAL_TIER_ERASE_GRACE_SECS`, which the
+  operator docs bind to the backup cadence for the same reason the
+  GC grace covers restores. `demoted_at` became the placement flip
+  marker, set by either flip and cleared once the displaced copy is
+  erased, so two columns carry the whole state machine. From the
+  flip on, every byte face resolves residency-then-tier through one
+  shared `Residencies::for_content` -- REST content and version
+  reads, grants, edge redemptions, the S3 face, renditions, and
+  every pipeline source read -- at the cost of one projected point
+  read, skipped entirely for residencies without tiers. Promotion
+  is the same motions in reverse when eligibility lapses (a pin, a
+  changed policy, fresh reads); reads never promote directly. The
+  GC now erases from every tier the residency configures, replay-
+  safe on absent paths. `COPAL_TIER_MOVE_BATCH` bounds moves per
+  pass; a blob judged cold for a different tier comes home first
+  and re-demotes, never hopping cold-to-cold unverified. Proven at
+  the disk: demotion with reads following through the hot copy's
+  erase, promotion on pin with the cold copy's erase, a corrupt
+  source never flipping the row, a half-done move converging by
+  replay, and collection sweeping both backends. Archive classes
+  still refuse at configuration until recall ships.
+
 - **The tiering vocabulary exists, and the classifier watches before
   anything moves.** A tier is a second named backend inside a
   residency plus the rule for when bytes belong there: residencies

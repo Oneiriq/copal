@@ -62,9 +62,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let blobs = open_blobs()?;
     // Named residencies open beside local; the master key, when set,
     // seals content in every one of them.
+    // A tier backend opens under its RESIDENCY's cipher: the
+    // residency's own key when it carries one, the deployment master
+    // otherwise. Hot and cold copies of one digest are the same
+    // sealed object, so the tier must open exactly what the primary
+    // wrote.
+    let open_tiers = |tiers: &std::collections::HashMap<String, copal_blob::tier::TierConfig>,
+                      residency_key: Option<&str>,
+                      residency_previous: Option<&str>|
+     -> Result<
+        std::collections::HashMap<String, ObjectStore>,
+        Box<dyn std::error::Error>,
+    > {
+        let mut opened = std::collections::HashMap::new();
+        for (name, tier) in tiers {
+            let mut backend = ObjectStore::open_backend(&tier.backend)?;
+            if let Some(key) = residency_key.or(config.blob_encryption_key.as_deref()) {
+                backend = backend.with_cipher(key)?;
+            }
+            if let Some(previous) =
+                residency_previous.or(config.blob_encryption_key_previous.as_deref())
+            {
+                backend = backend.with_previous_cipher(previous)?;
+            }
+            opened.insert(name.clone(), backend);
+        }
+        Ok(opened)
+    };
     let build_residencies =
         || -> Result<copal_server::app::Residencies<ObjectStore>, Box<dyn std::error::Error>> {
             let mut named = std::collections::HashMap::new();
+            let mut tiers = std::collections::HashMap::new();
             for (name, residency_config) in &config.residencies {
                 if !copal_store::repo::tenant::valid_residency_name(name) {
                     return Err(format!(
@@ -80,17 +108,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     backend = backend.with_previous_cipher(previous)?;
                 }
                 named.insert(name.clone(), backend);
+                if !residency_config.tiers.is_empty() {
+                    tiers.insert(
+                        name.clone(),
+                        open_tiers(
+                            &residency_config.tiers,
+                            residency_config.backend.encryption_key(),
+                            residency_config.backend.previous_encryption_key(),
+                        )?,
+                    );
+                }
+            }
+            if !config.local_tiers.is_empty() {
+                tiers.insert(
+                    "local".to_owned(),
+                    open_tiers(&config.local_tiers, None, None)?,
+                );
             }
             Ok(copal_server::app::Residencies {
                 local: open_blobs()?,
                 named,
+                tiers,
             })
         };
-    let residencies = build_residencies()?;
-    // Tiers validate at boot, whole-deployment: names hold the
-    // residency alphabet, archive classes refuse until recall ships,
-    // no tier carries its own key, and every tier backend must open.
-    // A deployment cannot come up with a tier its policies could
+    // Tiers validate at boot, whole-deployment, BEFORE any backend
+    // opens: names hold the residency alphabet, archive classes
+    // refuse until recall ships, and no tier carries its own key. A
+    // deployment cannot come up with a tier its policies could
     // strand bytes behind.
     let tiering = {
         let mut topology = copal_server::tiering::Topology::default();
@@ -99,11 +143,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
              tiers: &std::collections::HashMap<String, copal_blob::tier::TierConfig>|
              -> Result<(), Box<dyn std::error::Error>> {
                 copal_blob::tier::validate_tiers(residency, tiers)?;
-                let mut classes = std::collections::HashMap::new();
-                for (name, tier) in tiers {
-                    ObjectStore::open_backend(&tier.backend)?;
-                    classes.insert(name.clone(), tier.class);
-                }
+                let classes = tiers
+                    .iter()
+                    .map(|(name, tier)| (name.clone(), tier.class))
+                    .collect();
                 topology.insert(residency, classes);
                 Ok(())
             };
@@ -113,6 +156,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         topology
     };
+    let residencies = build_residencies()?;
     if !tiering.is_empty() {
         tracing::info!("storage tiers configured; observe-only classifier active");
     }
@@ -324,6 +368,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     for (name, store) in &residencies.named {
         if store.is_rotating() {
             rotating.push((name.clone(), store.clone()));
+        }
+    }
+    // A rotation covers hot and cold copies alike: the reseal sweep
+    // walks every tier backend beside its residency.
+    for (residency, tiers) in &residencies.tiers {
+        for (tier, store) in tiers {
+            if store.is_rotating() {
+                rotating.push((format!("{residency}/{tier}"), store.clone()));
+            }
         }
     }
     if !rotating.is_empty() {

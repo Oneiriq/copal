@@ -250,6 +250,8 @@ impl Config {
                 gc_batch: env_parse("COPAL_GC_BATCH", 1_000),
                 scan_stale_secs: env_parse("COPAL_SCAN_STALE_SECS", 3_600),
                 tus_session_ttl_secs: env_parse("COPAL_TUS_SESSION_TTL_SECS", 86_400),
+                tier_move_batch: env_parse("COPAL_TIER_MOVE_BATCH", 100),
+                tier_erase_grace_secs: env_parse("COPAL_TIER_ERASE_GRACE_SECS", 86_400),
             },
         }
     }

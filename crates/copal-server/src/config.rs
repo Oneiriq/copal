@@ -64,8 +64,13 @@ pub struct Config {
     /// CORS allowlist origins; unset means no CORS layer at all.
     pub cors_origins: Option<Vec<String>>,
     /// Named storage residencies beyond `local`: a JSON map of name to
-    /// backend config. Tenants pin to one via the admin surface.
-    pub residencies: std::collections::HashMap<String, copal_blob::BackendConfig>,
+    /// backend config, each optionally carrying a `tiers` block.
+    /// Tenants pin to one via the admin surface.
+    pub residencies: std::collections::HashMap<String, copal_blob::tier::ResidencyConfig>,
+    /// Tiers of the `local` residency, the sibling knob to the
+    /// `tiers` block named residencies nest. Parsed from
+    /// `COPAL_LOCAL_TIERS` JSON.
+    pub local_tiers: std::collections::HashMap<String, copal_blob::tier::TierConfig>,
     /// Permit webhook endpoints on private addresses.
     pub allow_private_webhook_targets: bool,
     /// Whether URL ingestion may pull from private address space.
@@ -224,6 +229,16 @@ impl Config {
                     Ok(parsed) => Some(parsed),
                     Err(err) => {
                         tracing::error!(error = %err, "COPAL_RESIDENCIES does not parse; ignoring");
+                        None
+                    }
+                })
+                .unwrap_or_default(),
+            local_tiers: std::env::var("COPAL_LOCAL_TIERS")
+                .ok()
+                .and_then(|raw| match serde_json::from_str(&raw) {
+                    Ok(parsed) => Some(parsed),
+                    Err(err) => {
+                        tracing::error!(error = %err, "COPAL_LOCAL_TIERS does not parse; ignoring");
                         None
                     }
                 })

@@ -86,7 +86,7 @@ pub async fn record_sighting(
 /// A current link holds a blob alive while its file is undeleted.
 /// One rendering, shared by the recount's inbound-set filter and the
 /// aggregate oracle below, so the two can never drift apart.
-const LIVE_FILE_PREDICATE: &str = "deleted_at IS NONE";
+pub(crate) const LIVE_FILE_PREDICATE: &str = "deleted_at IS NONE";
 
 /// A history link holds a blob alive while its version is armed AND
 /// either the owning file is live or the version itself is
@@ -97,7 +97,7 @@ const LIVE_FILE_PREDICATE: &str = "deleted_at IS NONE";
 /// `file.deleted_at` hop traverses the version's record link, which
 /// the engine evaluates identically in a table WHERE and in an
 /// inbound-set filter (probed on mem://).
-const RETAINED_VERSION_PREDICATE: &str = "armed = true AND (file.deleted_at IS NONE \
+pub(crate) const RETAINED_VERSION_PREDICATE: &str = "armed = true AND (file.deleted_at IS NONE \
      OR legal_hold = true OR (retain_until IS NOT NONE AND retain_until > time::now()))";
 
 /// Count everything live that references `digest`: the authoritative
@@ -193,37 +193,49 @@ pub async fn recount_inbound_links_by_aggregate(
     Ok(total)
 }
 
+/// Where a blob's bytes live: the residency's backend, the object
+/// key, and which of the residency's tiers currently holds it
+/// (`None` means the primary backend).
+#[derive(Debug, Clone)]
+pub struct BlobLocation {
+    pub store_key: String,
+    pub storage_path: String,
+    pub tier: Option<String>,
+}
+
 /// Fetch a blob row's storage location, if the content is known.
 ///
-/// Projects the two columns it needs rather than `SELECT *`: the blob
-/// row now carries COMPUTED inbound sets, and a whole-row read of a
-/// well-shared blob would resolve every inbound link just to learn a
+/// Projects the three columns it needs rather than `SELECT *`: the
+/// blob row now carries COMPUTED inbound sets, and a whole-row read of
+/// a well-shared blob would resolve every inbound link just to learn a
 /// path. This runs on the serving path, so it must not.
 pub async fn get_location(
     store: &Store,
     residency: &str,
     digest: &ContentDigest,
-) -> copal_core::Result<Option<(String, String)>> {
+) -> copal_core::Result<Option<BlobLocation>> {
     let target = rid(residency, digest)?.to_string();
     let answer = store
         .client()
-        .query(&format!("SELECT store_key, storage_path FROM {target};"))
+        .query(&format!(
+            "SELECT store_key, storage_path, tier FROM {target};"
+        ))
         .await
         .map_err(|e| map_store_err("get_location", e))?;
     let Some(row) = answer.pointer("/0/0") else {
         return Ok(None);
     };
-    let store_key = row
-        .get("store_key")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default()
-        .to_owned();
-    let storage_path = row
-        .get("storage_path")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default()
-        .to_owned();
-    Ok(Some((store_key, storage_path)))
+    let text = |key: &str| {
+        row.get(key)
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_owned()
+    };
+    Ok(Some(BlobLocation {
+        store_key: text("store_key"),
+        storage_path: text("storage_path"),
+        tier: row.get("tier").and_then(|v| v.as_str()).map(str::to_owned),
+    }))
 }
 
 /// A blob row as garbage collection sees it.

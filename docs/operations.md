@@ -58,7 +58,8 @@ Every value comes from the environment. Defaults target local development.
 | `COPAL_PERSISTED_OPERATIONS` | unset | JSON file of sha256 to document; set, GraphQL runs listed operations only. |
 | `COPAL_MAX_SEMANTIC_DISTANCE` | `0.65` | Cosine distance beyond which a passage is not a semantic match (0 identical, 1 unrelated). Without a floor, nearest-neighbor search answers every query with its nearest results however far away they are. |
 | `COPAL_WEBHOOK_ALLOW_PRIVATE_TARGETS` | `false` | Permit webhook endpoints resolving to private, loopback, or link-local addresses. Off by default: tenant-supplied URLs pointing inside the deployment are server-side request forgery. Turn on only when receivers are genuinely internal and tenants are trusted. |
-| `COPAL_RESIDENCIES` | unset | JSON map of named storage residencies beyond `local`, e.g. `{"eu": {"scheme": "s3", "bucket": "...", "endpoint": "...", "region": "...", "access_key_id": "...", "secret_access_key": "...", "encryption_key": "<64 hex>"}}`. Filesystem residencies use `{"scheme": "fs", "root": "...", "encryption_key": "<64 hex>"}`; Google Cloud Storage uses `{"scheme": "gcs", "bucket": "...", "credential": "<base64 service-account JSON>"}` (unset credential falls back to the ambient chain, so workload identity needs nothing in the config); Azure Blob Storage uses `{"scheme": "azblob", "container": "...", "endpoint": "https://{account}.blob.core.windows.net", "account_name": "...", "account_key": "..."}`. `encryption_key` is optional and seals that residency's objects under its own key instead of the master; `previous_encryption_key` carries that residency's retiring key during a rotation. Names are lowercase alphanumeric. |
+| `COPAL_RESIDENCIES` | unset | JSON map of named storage residencies beyond `local`, e.g. `{"eu": {"scheme": "s3", "bucket": "...", "endpoint": "...", "region": "...", "access_key_id": "...", "secret_access_key": "...", "encryption_key": "<64 hex>"}}`. Filesystem residencies use `{"scheme": "fs", "root": "...", "encryption_key": "<64 hex>"}`; Google Cloud Storage uses `{"scheme": "gcs", "bucket": "...", "credential": "<base64 service-account JSON>"}` (unset credential falls back to the ambient chain, so workload identity needs nothing in the config); Azure Blob Storage uses `{"scheme": "azblob", "container": "...", "endpoint": "https://{account}.blob.core.windows.net", "account_name": "...", "account_key": "..."}`. `encryption_key` is optional and seals that residency's objects under its own key instead of the master; `previous_encryption_key` carries that residency's retiring key during a rotation. Names are lowercase alphanumeric. A residency may nest a `tiers` block naming its cheaper backends: `{"eu": {..., "tiers": {"cold": {"scheme": "s3", "bucket": "...-cold", "...": "...", "class": "online"}}}}`. A tier never carries its own encryption key (it seals under the residency's), and `class` is `online` only until the recall stage ships -- `archive` refuses at boot. |
+| `COPAL_LOCAL_TIERS` | unset | Tiers of the `local` residency, the sibling knob to the `tiers` block named residencies nest: a JSON map of tier name to backend config with `class`, e.g. `{"cold": {"scheme": "fs", "root": "/data/cold", "class": "online"}}`. Same rules as residency tiers. |
 
 
 ## The embedded tier
@@ -573,6 +574,56 @@ Every instance that runs sweeps must configure the residencies whose
 rows it may collect; a row whose residency is unknown to the instance
 is collected in the database and its bytes logged as unreachable.
 
+## Storage tiers, observe-only
+
+A tier is a second named backend inside a residency, plus the rule
+for when bytes belong there; the design lives in
+[design/lifecycle-tiering.md](design/lifecycle-tiering.md). What
+ships today is the first stage: tiers configure and validate, the
+policy surface lands, byte reads record day-coarse access recency on
+the blob row, and a classifier walks the corpus each sweep pass and
+REPORTS what would move -- while touching nothing. The stage exists
+to measure the cost model's recall-rate assumption against real
+traffic before a byte moves.
+
+```
+PUT    /v1/admin/tenants/{tenant}/tiering
+       body: { "tier": "cold", "after_seconds": 7776000,
+               "basis": "accessed", "min_bytes": 131072 }
+GET    /v1/admin/tenants/{tenant}/tiering
+DELETE /v1/admin/tenants/{tenant}/tiering
+PUT    /v1/admin/tenants/{tenant}/files/{id}/tier   body: { "pin": "hot" }
+DELETE /v1/admin/tenants/{tenant}/files/{id}/tier
+GET    /v1/admin/tiering/report
+```
+
+- `tier` must name a configured tier; anything else refuses at
+  validation, so a policy can never point bytes at a backend that
+  does not exist.
+- `basis` is `accessed` (default; ages from the last byte read,
+  falling back to creation age when no read was ever recorded) or
+  `created` (no read tracking consulted at all).
+- `min_bytes` floors the object size: S3 Standard-IA bills 128 KiB
+  per object minimum, and small objects can cost more cold than hot.
+- The pin is the escape hatch for the file that is old, cold by
+  every measure, and needed in milliseconds anyway. Pins reach
+  shared blobs: one tenant's pin holds every referent's copy hot,
+  and the report says so rather than hiding it.
+
+The report lists candidates per tenant (a shared blob credits every
+referent; the totals count each blob once), the bytes involved, the
+measured would-be recall count (blobs old enough to move whose
+recent reads hold them -- the empirical stand-in for the recall-rate
+assumption), and how many blobs each rule held back. A blob moves --
+in the stage that ships next, and only then -- when every
+referencing tenant's policy marks it cold, nothing pins it, all
+policies agree on the target tier, and the blob's own residency
+configures that tier. The most demanding reference always wins.
+
+The audit trail records `tenant.tiering_policy_set`,
+`tenant.tiering_policy_cleared`, `file.tier_pinned`, and
+`file.tier_pin_released`.
+
 ## Quotas
 
 ```
@@ -865,6 +916,8 @@ tenant-facing network along with key custody.
 | `copal_transforms_total`, `copal_transform_refusals_total` | External transform outcomes: derivations that landed, inputs the service refused. |
 | `copal_fetches_total` | URL ingestions that landed content. |
 | `copal_renditions_inline_total` | Renditions derived inline by the on-the-fly URL face. |
+| `copal_tiering_candidate_blobs`, `copal_tiering_candidate_bytes` | Gauges: what the observe-only tiering classifier would move, distinct blobs and their bytes, refreshed each sweep pass. `copal_tiering_candidate_bytes{tenant}` carries the per-tenant view. |
+| `copal_tiering_would_recall_blobs` | Gauge: blobs old enough to move whose recent reads hold them, the measured stand-in for the recall-rate assumption in the tiering cost model. |
 
 Counters are process-local and reset on restart, which is what
 Prometheus expects; the database holds the durable truth for

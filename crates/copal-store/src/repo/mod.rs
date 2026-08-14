@@ -19,5 +19,6 @@ pub mod rotate;
 pub mod s3;
 pub mod tenant;
 pub mod text;
+pub mod tier;
 pub mod tus;
 pub mod version;

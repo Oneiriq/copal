@@ -246,6 +246,7 @@ pub async fn run_forever<B: BlobStore>(
     residencies: crate::app::Residencies<B>,
     config: SweepConfig,
     holder: String,
+    tiering: crate::tiering::Topology,
 ) {
     let mut ticker = tokio::time::interval(Duration::from_secs(config.interval_secs.max(1)));
     let lease_ttl = u32::try_from((config.interval_secs * 3).clamp(90, 3600)).unwrap_or(3600);
@@ -260,6 +261,11 @@ pub async fn run_forever<B: BlobStore>(
             }
         }
         let report = run_pass(&store, &residencies, &config).await;
+        // The tiering classifier rides the same leader election: it
+        // walks the whole blob population, so a fleet must not
+        // multiply it. Observe-only -- it counts and reports, and
+        // with no policy set it returns before the walk.
+        crate::tiering::observe_pass(&store, &tiering).await;
         if report != SweepReport::default() {
             tracing::info!(
                 reaped = report.reaped_uploads,

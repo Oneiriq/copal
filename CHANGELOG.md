@@ -9,6 +9,46 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ## [Unreleased]
 
+### Lifecycle and tiering
+
+- **The tiering vocabulary exists, and the classifier watches before
+  anything moves.** A tier is a second named backend inside a
+  residency plus the rule for when bytes belong there: residencies
+  nest a `tiers` block (the local root through `COPAL_LOCAL_TIERS`),
+  each tier declaring `class: "online"` -- `archive` refuses at boot
+  until the recall stage ships, so no deployment can strand bytes
+  behind a GET nothing answers -- and no tier may carry its own
+  encryption key, because hot and cold copies of one digest are the
+  same object and seal under the residency's key. Three nullable
+  columns joined the blob row (`tier`, `demoted_at`, `last_read`)
+  where NONE is the migration: every existing row reads the primary
+  backend, nothing backfills. The per-tenant policy row landed
+  beside retention and storage (`PUT /v1/admin/tenants/{t}/tiering`:
+  a configured tier name or a 400, `after_seconds`, `basis`
+  created|accessed, `min_bytes` for the 128 KiB billing floor), with
+  the per-file hot pin as the audited escape hatch. Byte reads --
+  content and version GETs, ranges, S3 GETs, grant and edge
+  redemptions, a derive reading its source; never listings or
+  metadata -- record `last_read` day-coarse, fire-and-forget after
+  the response, so the first read of a day costs one background
+  write and later reads cost nothing; a lost write fails toward
+  moving content earlier, latency never loss. The classifier rides
+  the sweep's leader lease, walks blob rows in the GC's keyset
+  batches, filters inbound references through the recount's own
+  liveness predicates, and derives eligibility the way the refcount
+  is derived: every referencing tenant's policy must mark the blob
+  cold, on the most demanding threshold, agreeing on the target
+  tier, above the largest `min_bytes`, unpinned, in a residency that
+  configures the tier. And then it moves nothing: `/metrics` gauges
+  and `GET /v1/admin/tiering/report` state candidates per tenant
+  (shared blobs credit every referent; totals count each blob once),
+  the held-back counts by reason, and the measured would-be recall
+  rate -- blobs old enough to move whose recent reads hold them --
+  which is the figure the design's cost model assumes and this stage
+  exists to check against real traffic before a byte moves. With no
+  policy set, nothing classifies and the byte path costs what it
+  cost yesterday.
+
 ### Governance
 
 - **Confidentiality has passage granularity now.** A chunk was

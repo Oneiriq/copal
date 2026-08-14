@@ -114,28 +114,36 @@ pub fn standard_registry<B: BlobStore>(
     embedding: Option<(String, String)>,
     transformers: std::collections::HashMap<String, crate::config::TransformerConfig>,
     fetch: FetchPolicy,
+    tiering: crate::tiering::Topology,
+    restores: crate::recall::RestoreDrivers,
 ) -> FlowRegistry {
     let embed_store = store.clone();
     let embed_config = embedding;
     let extract_store = store.clone();
     let extract_residencies = residencies.clone();
+    let extract_topology = tiering.clone();
     let extract_addr = extractor_addr;
     let scan_store = store.clone();
     let scan_residencies = residencies.clone();
+    let scan_topology = tiering.clone();
     let scan_addr = clamav_addr.clone();
     let sniff_store = store.clone();
     let sniff_residencies = residencies.clone();
+    let sniff_topology = tiering.clone();
     let derive_store = store.clone();
     let derive_residencies = residencies.clone();
+    let derive_topology = tiering.clone();
     let transform_store = store.clone();
     let transform_residencies = residencies.clone();
+    let transform_topology = tiering.clone();
     let transform_map = transformers;
     let fetch_store = store.clone();
-    let fetch_residencies = residencies;
+    let fetch_residencies = residencies.clone();
     let fetch_policy = fetch;
-    let finalize_store = store;
+    let finalize_store = store.clone();
 
-    FlowRegistry::new()
+    let registry = crate::recall::register(FlowRegistry::new(), store, residencies, restores);
+    registry
         .activity("embed_text", move |input: Value| {
             let store = embed_store.clone();
             let config = embed_config.clone();
@@ -184,12 +192,14 @@ pub fn standard_registry<B: BlobStore>(
         .activity("extract_text", move |input: Value| {
             let store = extract_store.clone();
             let residencies = extract_residencies.clone();
+            let topology = extract_topology.clone();
             let addr = extract_addr.clone();
-            async move { extract_text(&store, &residencies, addr.as_deref(), input).await }
+            async move { extract_text(&store, &residencies, &topology, addr.as_deref(), input).await }
         })
         .activity("scan_malware", move |input: Value| {
             let store = scan_store.clone();
             let residencies = scan_residencies.clone();
+            let topology = scan_topology.clone();
             let addr = scan_addr.clone();
             async move {
                 // Configured or not, the step is registered; without an
@@ -206,9 +216,13 @@ pub fn standard_registry<B: BlobStore>(
                     out["scanned"] = json!(false);
                     return Ok(out);
                 }
+                let tenant = TenantId::parse(input["tenant"].as_str().unwrap_or_default())?;
                 let digest = ContentDigest::parse(input["digest"].as_str().unwrap_or_default())?;
                 let residency = input["residency"].as_str().unwrap_or("local");
-                let blobs = residencies.for_content(&store, residency, &digest).await?;
+                let blobs = crate::recall::pipeline_source(
+                    &store, &residencies, &topology, &tenant, residency, &digest,
+                )
+                .await?;
                 let content = blobs.read(&digest).await?;
                 // A scanner that cannot be reached is an ERROR, not a
                 // pass: the run retries, and the file never reaches
@@ -235,15 +249,21 @@ pub fn standard_registry<B: BlobStore>(
         .activity("render_rendition", move |input: Value| {
             let store = derive_store.clone();
             let residencies = derive_residencies.clone();
-            async move { render_rendition(&store, &residencies, input).await }
+            let topology = derive_topology.clone();
+            async move { render_rendition(&store, &residencies, &topology, input).await }
         })
         .activity("sniff_type", move |input: Value| {
             let store = sniff_store.clone();
             let residencies = sniff_residencies.clone();
+            let topology = sniff_topology.clone();
             async move {
+                let tenant = TenantId::parse(input["tenant"].as_str().unwrap_or_default())?;
                 let digest = ContentDigest::parse(input["digest"].as_str().unwrap_or_default())?;
                 let residency = input["residency"].as_str().unwrap_or("local");
-                let blobs = residencies.for_content(&store, residency, &digest).await?;
+                let blobs = crate::recall::pipeline_source(
+                    &store, &residencies, &topology, &tenant, residency, &digest,
+                )
+                .await?;
                 let (_, mut stream) = blobs.open_read(&digest).await?;
                 let head = match stream.next().await {
                     Some(chunk) => chunk?,
@@ -375,8 +395,11 @@ pub fn standard_registry<B: BlobStore>(
         .activity("transform_external", move |input: Value| {
             let store = transform_store.clone();
             let residencies = transform_residencies.clone();
+            let topology = transform_topology.clone();
             let transformers = transform_map.clone();
-            async move { transform_external(&store, &residencies, &transformers, input).await }
+            async move {
+                transform_external(&store, &residencies, &topology, &transformers, input).await
+            }
         })
         .workflow(TRANSFORM_WORKFLOW, &["transform_external"], 3)
         .activity("fetch_source", move |input: Value| {
@@ -397,6 +420,7 @@ pub fn standard_registry<B: BlobStore>(
 async fn transform_external<B: BlobStore>(
     store: &Store,
     residencies: &crate::app::Residencies<B>,
+    topology: &crate::tiering::Topology,
     transformers: &std::collections::HashMap<String, crate::config::TransformerConfig>,
     input: Value,
 ) -> copal_core::Result<Value> {
@@ -436,13 +460,15 @@ async fn transform_external<B: BlobStore>(
         let reason = format!("source is {declared_size} bytes; the transform ceiling is {ceiling}");
         return refuse_derived(store, &tenant, &derived, reason).await;
     }
-    let source_backend = residencies
-        .for_content(
-            store,
-            input["source_residency"].as_str().unwrap_or("local"),
-            &source_digest,
-        )
-        .await?;
+    let source_backend = crate::recall::pipeline_source(
+        store,
+        residencies,
+        topology,
+        &tenant,
+        input["source_residency"].as_str().unwrap_or("local"),
+        &source_digest,
+    )
+    .await?;
     let source = source_backend.read(&source_digest).await?;
     // A transform reading its source is a byte read; the tiering
     // classifier must see it or a much-derived-from source looks cold.
@@ -579,6 +605,7 @@ async fn transform_external<B: BlobStore>(
 async fn render_rendition<B: BlobStore>(
     store: &Store,
     residencies: &crate::app::Residencies<B>,
+    topology: &crate::tiering::Topology,
     input: Value,
 ) -> copal_core::Result<Value> {
     let tenant = TenantId::parse(input["tenant"].as_str().unwrap_or_default())?;
@@ -606,13 +633,15 @@ async fn render_rendition<B: BlobStore>(
         return refuse_derived(store, &tenant, &derived, reason).await;
     }
 
-    let source_backend = residencies
-        .for_content(
-            store,
-            input["source_residency"].as_str().unwrap_or("local"),
-            &source_digest,
-        )
-        .await?;
+    let source_backend = crate::recall::pipeline_source(
+        store,
+        residencies,
+        topology,
+        &tenant,
+        input["source_residency"].as_str().unwrap_or("local"),
+        &source_digest,
+    )
+    .await?;
     let source = source_backend.read(&source_digest).await?;
     // A derive reading its source is a byte read, same as transform.
     crate::tiering::note_blob_read(
@@ -716,6 +745,7 @@ fn decode_bounded(source: &[u8]) -> Result<image::DynamicImage, image::ImageErro
 async fn extract_text<B: BlobStore>(
     store: &Store,
     residencies: &crate::app::Residencies<B>,
+    topology: &crate::tiering::Topology,
     extractor: Option<&str>,
     input: Value,
 ) -> copal_core::Result<Value> {
@@ -733,7 +763,9 @@ async fn extract_text<B: BlobStore>(
     let declared = input["declared_type"].as_str().unwrap_or_default();
     let sniffed = input["sniffed_type"].as_str().unwrap_or_default();
 
-    let blobs = residencies.for_content(store, residency, &digest).await?;
+    let blobs =
+        crate::recall::pipeline_source(store, residencies, topology, &tenant, residency, &digest)
+            .await?;
     let content = blobs.read(&digest).await?;
 
     let native = declared.starts_with("text/")

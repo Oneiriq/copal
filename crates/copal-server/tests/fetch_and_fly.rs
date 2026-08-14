@@ -35,6 +35,8 @@ async fn stack(allow_private_fetch: bool) -> (axum::Router, FlowEngine, tempfile
             allow_private_targets: allow_private_fetch,
             max_bytes: 1 << 20,
         },
+        copal_server::tiering::Topology::default(),
+        Default::default(),
     );
     let mut state = AppState::new(store, blobs).with_flow(registry);
     state.limits.allow_private_fetch_targets = allow_private_fetch;

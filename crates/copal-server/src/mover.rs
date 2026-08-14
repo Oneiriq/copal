@@ -48,7 +48,10 @@ pub struct MoveReport {
 
 /// Read the copy back through the ordinary open path -- decrypt,
 /// stream, hash -- and compare to the digest the address claims.
-async fn verified<B: BlobStore>(backend: &B, digest: &ContentDigest) -> copal_core::Result<bool> {
+pub(crate) async fn verified<B: BlobStore>(
+    backend: &B,
+    digest: &ContentDigest,
+) -> copal_core::Result<bool> {
     let (_, mut stream) = backend.open_read(digest).await?;
     let mut hasher = DigestBuilder::new();
     while let Some(chunk) = stream.next().await {
@@ -215,10 +218,12 @@ async fn handle_row<B: BlobStore>(
 
     let judged = placement(row, policies, topology);
     match (&row.tier, judged) {
-        // Hot and judged cold: demote. Online classes only -- the
-        // class gate is what recall, once it ships, will relax.
+        // Hot and judged cold: demote. Both classes move -- an
+        // archive-destined object is written readable and verified
+        // BEFORE the bucket's lifecycle archives it; recall answers
+        // for it afterward.
         (None, Placement::Cold { tier }) if *moved < move_batch => {
-            if topology.class_of(&residency, &tier) != Some(TierClass::Online) {
+            if topology.class_of(&residency, &tier).is_none() {
                 return Ok(());
             }
             let hot = residencies.get(&residency)?.clone();
@@ -240,6 +245,20 @@ async fn handle_row<B: BlobStore>(
             // tier at collection, and promoting a corpse first would
             // only delay it.
             if stay || judged == Placement::Unreferenced {
+                return Ok(());
+            }
+            // Archive-cold bytes cannot be read directly, so their
+            // promotion IS a recall: enqueue the journaled run (which
+            // issues the restore and polls) instead of a copy the
+            // backend would refuse. Idempotent; every pass until the
+            // run lands re-enqueues onto the same key.
+            if topology.class_of(&residency, current) == Some(TierClass::Archive) {
+                if let Some(referent) = row.referencing_tenants().next() {
+                    if let Ok(tenant) = copal_core::TenantId::parse(referent) {
+                        crate::recall::enqueue(store, &tenant, &residency, current, &digest)
+                            .await?;
+                    }
+                }
                 return Ok(());
             }
             let cold = residencies.tier_backend(&residency, current)?.clone();

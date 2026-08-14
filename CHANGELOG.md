@@ -11,6 +11,42 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ### Lifecycle and tiering
 
+- **Recall ships, and archive classes unlock.** An archive-class
+  tier cannot answer a GET until a restore, so recall is explicit,
+  journaled, and idempotent: the request that finds bytes
+  archive-cold enqueues a flow run (one per blob per hour, shared by
+  every caller who wants the same bytes) and answers 202 with the
+  run to poll -- 202 rather than 503 because durable work started,
+  and retrying the GET is harmless. The run issues the backend's
+  restore (S3 `RestoreObject`, signed outbound with the tier's own
+  credentials by the same canonical SigV4 construction the gateway
+  verifies -- proven by signing forward and verifying with the
+  gateway's own math; instant for filesystem and GCS tiers; Azure
+  rehydration stays refused at configuration until driven), polls
+  readability on the flow engine's budget, then runs the promote
+  motions: raw copy home, digest verify, CAS flip, cold copy left
+  for the mover's grace-erase. Readability is PROBED, never assumed
+  from the class -- an object still readable in an archive tier
+  (written before the bucket's lifecycle transitioned it, or
+  temporarily restored) serves directly, exactly as S3 itself
+  behaves, which also kills the demote-recall ping-pong a
+  class-only answer would invite. Each face speaks its own dialect:
+  REST byte routes answer 202-and-run with `Retry-After`; a counted
+  grant is NOT consumed by a 202 (resolution moved ahead of the
+  consume, so no byte read means no use burned); the S3 face
+  answers `403 InvalidObjectState` on GET, accepts `RestoreObject`
+  (202 initiated, 200 replayed), and HEAD reports `x-amz-restore`;
+  pipeline source reads enqueue and retry on their run's budget; an
+  inline rendition answers 202 and recalls its source. Search,
+  facets, and extracted text are untouched entirely -- an
+  archive-cold file remains fully searchable and its excerpts keep
+  serving; only following the hit to the bytes meets the 202, and
+  the api and operations documentation now state that contract. The
+  mover demotes to archive tiers (verified while still readable,
+  before the bucket archives) and delegates their promotion to
+  recall. Proven end to end on a filesystem archive tier and
+  through the S3 gateway's independent client-side signer.
+
 - **The mover ships: cold bytes move, verified, and reads follow.**
   Four motions per blob, each window analyzed: copy the raw object
   to the destination's staging and land it at the same content

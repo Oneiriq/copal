@@ -755,6 +755,22 @@ replay from their recorded output, and a failed subject file returns to
 a newer upload of different content refuses with 409. See
 [processing.md](processing.md) for the underlying semantics.
 
+## Archive-cold content
+
+Operators may place cold bytes on archive-class storage. When they
+do, a byte read that finds its content archived answers **202** with
+a body naming the recall run; poll the run at `/v1/runs/{id}` and
+retry the request when it completes (a `Retry-After` header suggests
+when). The 202 itself started the recall -- retrying is harmless,
+nothing is double-charged, and a counted grant is not consumed by
+it. On the S3 face the same state answers `403 InvalidObjectState`,
+and `RestoreObject` starts the recall the way it does on AWS.
+
+Metadata is never archived. Listings, file metadata, versions, and
+events answer at full speed regardless of where bytes live, and an
+archive-cold file remains fully searchable and its excerpts keep
+serving; only following the hit to the bytes meets the 202.
+
 ## GraphQL
 
 `POST /graphql` executes queries, mutations, and subscriptions;

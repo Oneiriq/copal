@@ -44,6 +44,8 @@ async fn stack(extractor: Option<String>) -> (axum::Router, FlowEngine, tempfile
         None,
         std::collections::HashMap::new(),
         copal_server::pipeline::FetchPolicy::default(),
+        copal_server::tiering::Topology::default(),
+        Default::default(),
     );
     let state = AppState::new(store, blobs).with_flow(registry);
     let engine = state.flow.clone();
@@ -295,6 +297,8 @@ async fn semantic_stack() -> (axum::Router, FlowEngine, tempfile::TempDir) {
         embedding.clone(),
         std::collections::HashMap::new(),
         copal_server::pipeline::FetchPolicy::default(),
+        copal_server::tiering::Topology::default(),
+        Default::default(),
     );
     let state = AppState::new(store, blobs)
         .with_flow(registry)
@@ -646,6 +650,8 @@ async fn the_backfill_drains_stale_embeddings() {
         None,
         std::collections::HashMap::new(),
         copal_server::pipeline::FetchPolicy::default(),
+        copal_server::tiering::Topology::default(),
+        Default::default(),
     );
     let state = AppState::new(store.clone(), blobs).with_flow(registry);
     let engine = state.flow.clone();
@@ -963,6 +969,8 @@ async fn reranking_stack(
         None,
         std::collections::HashMap::new(),
         copal_server::pipeline::FetchPolicy::default(),
+        copal_server::tiering::Topology::default(),
+        Default::default(),
     );
     let addr = fake_reranker(mode).await;
     let state = AppState::new(store, blobs)

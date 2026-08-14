@@ -270,6 +270,16 @@ pub trait BlobStore: Clone + Send + Sync + 'static {
     where
         S: Stream<Item = Result<bytes::Bytes, E>> + Send + Unpin,
         E: std::fmt::Display + Send;
+
+    /// Whether the object's BYTES answer right now. `HEAD` succeeds
+    /// on an archived S3 object while `GET` refuses, so existence is
+    /// not readability: this probes one raw byte. Absent objects are
+    /// a NotFound error; an unreadable-but-present object answers
+    /// `false`, which is the poll answer recall waits on.
+    fn read_probe(
+        &self,
+        digest: &ContentDigest,
+    ) -> impl std::future::Future<Output = copal_core::Result<bool>> + Send;
 }
 
 /// The OpenDAL-backed blob store: one type over every configured
@@ -950,6 +960,36 @@ impl BlobStore for ObjectStore {
             .await
             .map_err(|e| CopalError::Blob(format!("close staging: {e}")))?;
         self.land(&staging, &Self::addressed(digest)).await
+    }
+
+    async fn read_probe(&self, digest: &ContentDigest) -> copal_core::Result<bool> {
+        let path = Self::addressed(digest);
+        let stat = self.op.stat(&path).await.map_err(|e| {
+            if e.kind() == opendal::ErrorKind::NotFound {
+                CopalError::not_found(format!("blob {digest}"))
+            } else {
+                CopalError::Blob(format!("stat {digest}: {e}"))
+            }
+        })?;
+        // Whatever is at the address, if it is not a readable FILE it
+        // does not answer.
+        if stat.mode() != opendal::EntryMode::FILE {
+            return Ok(false);
+        }
+        // An empty object has no byte to read and nothing to archive.
+        if stat.content_length() == 0 {
+            return Ok(true);
+        }
+        // One raw byte decides. A refusal here is the archived state
+        // (or a transient fault), and both read as "not yet" to the
+        // poller -- retrying is the whole of the recovery.
+        match self.op.read_with(&path).range(0..1).await {
+            Ok(_) => Ok(true),
+            Err(e) if e.kind() == opendal::ErrorKind::NotFound => {
+                Err(CopalError::not_found(format!("blob {digest}")))
+            }
+            Err(_) => Ok(false),
+        }
     }
 
     async fn open_read(&self, digest: &ContentDigest) -> copal_core::Result<(u64, ByteStream)> {

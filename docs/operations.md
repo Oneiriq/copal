@@ -58,7 +58,7 @@ Every value comes from the environment. Defaults target local development.
 | `COPAL_PERSISTED_OPERATIONS` | unset | JSON file of sha256 to document; set, GraphQL runs listed operations only. |
 | `COPAL_MAX_SEMANTIC_DISTANCE` | `0.65` | Cosine distance beyond which a passage is not a semantic match (0 identical, 1 unrelated). Without a floor, nearest-neighbor search answers every query with its nearest results however far away they are. |
 | `COPAL_WEBHOOK_ALLOW_PRIVATE_TARGETS` | `false` | Permit webhook endpoints resolving to private, loopback, or link-local addresses. Off by default: tenant-supplied URLs pointing inside the deployment are server-side request forgery. Turn on only when receivers are genuinely internal and tenants are trusted. |
-| `COPAL_RESIDENCIES` | unset | JSON map of named storage residencies beyond `local`, e.g. `{"eu": {"scheme": "s3", "bucket": "...", "endpoint": "...", "region": "...", "access_key_id": "...", "secret_access_key": "...", "encryption_key": "<64 hex>"}}`. Filesystem residencies use `{"scheme": "fs", "root": "...", "encryption_key": "<64 hex>"}`; Google Cloud Storage uses `{"scheme": "gcs", "bucket": "...", "credential": "<base64 service-account JSON>"}` (unset credential falls back to the ambient chain, so workload identity needs nothing in the config); Azure Blob Storage uses `{"scheme": "azblob", "container": "...", "endpoint": "https://{account}.blob.core.windows.net", "account_name": "...", "account_key": "..."}`. `encryption_key` is optional and seals that residency's objects under its own key instead of the master; `previous_encryption_key` carries that residency's retiring key during a rotation. Names are lowercase alphanumeric. A residency may nest a `tiers` block naming its cheaper backends: `{"eu": {..., "tiers": {"cold": {"scheme": "s3", "bucket": "...-cold", "...": "...", "class": "online"}}}}`. A tier never carries its own encryption key (it seals under the residency's), and `class` is `online` only until the recall stage ships -- `archive` refuses at boot. |
+| `COPAL_RESIDENCIES` | unset | JSON map of named storage residencies beyond `local`, e.g. `{"eu": {"scheme": "s3", "bucket": "...", "endpoint": "...", "region": "...", "access_key_id": "...", "secret_access_key": "...", "encryption_key": "<64 hex>"}}`. Filesystem residencies use `{"scheme": "fs", "root": "...", "encryption_key": "<64 hex>"}`; Google Cloud Storage uses `{"scheme": "gcs", "bucket": "...", "credential": "<base64 service-account JSON>"}` (unset credential falls back to the ambient chain, so workload identity needs nothing in the config); Azure Blob Storage uses `{"scheme": "azblob", "container": "...", "endpoint": "https://{account}.blob.core.windows.net", "account_name": "...", "account_key": "..."}`. `encryption_key` is optional and seals that residency's objects under its own key instead of the master; `previous_encryption_key` carries that residency's retiring key during a rotation. Names are lowercase alphanumeric. A residency may nest a `tiers` block naming its cheaper backends: `{"eu": {..., "tiers": {"cold": {"scheme": "s3", "bucket": "...-cold", "...": "...", "class": "online"}}}}`. A tier never carries its own encryption key (it seals under the residency's). `class` is `online` (a GET answers: Standard-IA, Glacier Instant Retrieval, GCS classes, Azure Cool) or `archive` (a GET cannot answer until a restore; copal drives S3 `RestoreObject` with the tier's own credentials, `restore_days` naming how long the restored copy stays readable, default 7). Archive on a backend whose rehydration copal does not drive yet (Azure) refuses at boot. |
 | `COPAL_LOCAL_TIERS` | unset | Tiers of the `local` residency, the sibling knob to the `tiers` block named residencies nest: a JSON map of tier name to backend config with `class`, e.g. `{"cold": {"scheme": "fs", "root": "/data/cold", "class": "online"}}`. Same rules as residency tiers. |
 | `COPAL_TIER_MOVE_BATCH` | `100` | Tier moves initiated per mover pass. Each is a full read-write-read of the object, so this bounds a pass's IO; deferred moves resume next pass. |
 | `COPAL_TIER_ERASE_GRACE_SECS` | `86400` | How long a displaced copy survives its placement flip before the mover erases it. Set to at least your backup cadence, for the same reason the GC grace covers restores. |
@@ -583,12 +583,12 @@ for when bytes belong there; the design lives in
 [design/lifecycle-tiering.md](design/lifecycle-tiering.md). Tiers
 configure and validate, the policy surface lands, byte reads record
 day-coarse access recency on the blob row, a classifier walks the
-corpus each sweep pass and reports what would move, and the MOVER
-acts on what the classifier says -- online classes only, until
-recall ships. Watch the report before setting an aggressive policy:
-the measured would-be recall rate is the figure the cost model
-assumes, and the observe figures exist so it is checked against
-real traffic, not guessed.
+corpus each sweep pass and reports what would move, the MOVER acts
+on what the classifier says, and RECALL answers for archive classes
+whose bytes cannot answer a GET. Watch the report before setting an
+aggressive policy: the measured would-be recall rate is the figure
+the cost model assumes, and the observe figures exist so it is
+checked against real traffic, not guessed.
 
 ```
 PUT    /v1/admin/tenants/{tenant}/tiering
@@ -651,6 +651,48 @@ erases from every tier the residency configures, and a master key
 rotation's reseal sweep walks tier backends beside their
 residencies. The restore drill grows one leg: download and
 digest-check one object per tier per residency.
+
+### Recall
+
+An archive-class placement is PROBED, never assumed: an object still
+readable in an archive tier (written before the bucket's lifecycle
+transitioned it, or temporarily restored) serves directly, which is
+how S3 itself behaves. Only bytes that genuinely cannot answer meet
+the recall path, and each face answers in its own dialect:
+
+- REST byte routes (content, version content, ranges, grant and edge
+  redemptions) answer **202** with a body naming the recall run and a
+  `Retry-After`; the GET itself enqueues the recall, idempotently.
+  202 rather than 503, because the request started durable work: a
+  run exists, it is pollable at `/v1/runs/{id}`, and retrying the GET
+  is harmless. A counted grant is NOT consumed by a 202 -- no byte
+  was read -- and a TTL that expires mid-recall re-issues.
+- The S3 face answers `403 InvalidObjectState` on GET (AWS's own
+  vocabulary, which existing S3 clients already speak), accepts
+  `RestoreObject` (202 initiated, 200 already in flight or already
+  readable), and HEAD reports progress through `x-amz-restore`.
+- Pipeline reads (a transform or derive whose source is archive-cold,
+  a re-run scan or extraction) enqueue the recall and retry on the
+  flow engine's budget; an inline rendition answers 202 and recalls
+  its source.
+- Search, facets, and extracted text are untouched entirely: chunks
+  and text live in the metadata plane, so an archive-cold file
+  remains fully searchable and its excerpts keep serving; only
+  following the hit to the bytes meets the 202.
+
+The recall run issues the backend's restore (S3 `RestoreObject`,
+signed with the tier's credentials; instant for filesystem and GCS
+tiers), polls readability, then runs the promote motions: raw copy
+home, digest verify, CAS flip, with the cold copy left for the
+mover's grace-erase. Requests share one run per blob per hour (the
+idempotency key is hour-bucketed, so a terminally failed run stalls
+at most the rest of its hour before a fresh request starts a new
+one). One run's polling budget is roughly two and a half hours;
+Glacier Flexible retrievals in the Standard class can take longer,
+in which case the run fails, the 202 keeps answering with its state,
+and the next hour's request resumes the wait against a by-then
+warmer object. `copal_tiering_recalled_total` counts recalls that
+promoted bytes home.
 
 The audit trail records `tenant.tiering_policy_set`,
 `tenant.tiering_policy_cleared`, `file.tier_pinned`, and

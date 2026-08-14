@@ -105,6 +105,8 @@ async fn stack(seen: Arc<Mutex<Seen>>) -> (axum::Router, FlowEngine, tempfile::T
         None,
         transformers.clone(),
         copal_server::pipeline::FetchPolicy::default(),
+        copal_server::tiering::Topology::default(),
+        Default::default(),
     );
     let state = AppState::new(store, blobs)
         .with_flow(registry)

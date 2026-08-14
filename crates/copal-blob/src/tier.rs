@@ -45,8 +45,66 @@ impl TierClass {
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct TierConfig {
     pub class: TierClass,
+    /// Archive classes only: how many days a restored copy stays
+    /// readable at the backend (S3 `RestoreObject` `Days`). Default 7.
+    #[serde(default)]
+    pub restore_days: Option<u32>,
     #[serde(flatten)]
     pub backend: BackendConfig,
+}
+
+/// How a recall makes an archive-cold object readable again. Derived
+/// from the tier's backend, because the restore call is a backend
+/// dialect, not a policy.
+#[derive(Debug, Clone)]
+pub enum RestoreSpec {
+    /// No restore call exists or is needed: filesystem tiers are
+    /// always readable, and GCS archive classes answer GETs
+    /// directly. The recall's readability probe passes immediately.
+    Instant,
+    /// S3 `RestoreObject`, signed with the tier's own credentials.
+    S3Restore {
+        bucket: String,
+        root: Option<String>,
+        endpoint: Option<String>,
+        region: Option<String>,
+        access_key_id: String,
+        secret_access_key: String,
+        days: u32,
+    },
+    /// A rehydration this build does not drive. Archive classes on
+    /// such backends refuse at configuration, so no deployment can
+    /// strand bytes behind a restore nothing issues.
+    Undriven(&'static str),
+}
+
+impl TierConfig {
+    /// The restore dialect this tier's backend speaks.
+    pub fn restore(&self) -> RestoreSpec {
+        match &self.backend {
+            BackendConfig::Fs { .. } | BackendConfig::Gcs { .. } => RestoreSpec::Instant,
+            BackendConfig::S3 {
+                bucket,
+                root,
+                endpoint,
+                region,
+                access_key_id,
+                secret_access_key,
+                ..
+            } => RestoreSpec::S3Restore {
+                bucket: bucket.clone(),
+                root: root.clone(),
+                endpoint: endpoint.clone(),
+                region: region.clone(),
+                access_key_id: access_key_id.clone(),
+                secret_access_key: secret_access_key.clone(),
+                days: self.restore_days.unwrap_or(7).max(1),
+            },
+            BackendConfig::Azblob { .. } => {
+                RestoreSpec::Undriven("azure archive rehydration is not driven yet")
+            }
+        }
+    }
 }
 
 /// A residency's full configuration: its primary backend plus any
@@ -75,7 +133,9 @@ pub fn valid_tier_name(name: &str) -> bool {
 /// it enforces:
 ///
 /// - an invalid tier name (the alphabet above);
-/// - `class: "archive"` -- invalid until recall lands;
+/// - `class: "archive"` on a backend whose rehydration this build
+///   does not drive -- a GET against it would have no recall to
+///   answer with;
 /// - a tier carrying its own encryption key -- keys are per residency
 ///   because a key boundary scopes dedupe exactly as a backend
 ///   boundary does, and a per-tier key would turn every move into a
@@ -95,10 +155,12 @@ pub fn validate_tiers(
             )));
         }
         if tier.class == TierClass::Archive {
-            return Err(CopalError::validation(format!(
-                "tier {residency}/{name} declares class \"archive\", which is not \
-                 servable yet: a GET against it would have no recall to answer with",
-            )));
+            if let RestoreSpec::Undriven(reason) = tier.restore() {
+                return Err(CopalError::validation(format!(
+                    "tier {residency}/{name} declares class \"archive\", but {reason}: \
+                     a GET against it would have no recall to answer with",
+                )));
+            }
         }
         if tier.backend.encryption_key().is_some()
             || tier.backend.previous_encryption_key().is_some()
@@ -141,10 +203,43 @@ mod tests {
     }
 
     #[test]
-    fn archive_class_refuses_until_recall_ships() {
+    fn archive_class_needs_a_driven_restore() {
+        // Filesystem archive tiers are always readable: Instant
+        // restore, valid.
         let raw = r#"{
             "scheme": "fs", "root": "/data/eu",
             "tiers": { "deep": { "scheme": "fs", "root": "/data/eu-deep",
+                                 "class": "archive" } }
+        }"#;
+        let config: ResidencyConfig = serde_json::from_str(raw).unwrap();
+        assert!(validate_tiers("eu", &config.tiers).is_ok());
+        assert!(matches!(
+            config.tiers["deep"].restore(),
+            RestoreSpec::Instant
+        ));
+
+        // S3 archive tiers restore through RestoreObject, with the
+        // declared days riding along.
+        let raw = r#"{
+            "scheme": "fs", "root": "/data/eu",
+            "tiers": { "deep": { "scheme": "s3", "bucket": "eu-deep",
+                                 "access_key_id": "ak", "secret_access_key": "sk",
+                                 "class": "archive", "restore_days": 3 } }
+        }"#;
+        let config: ResidencyConfig = serde_json::from_str(raw).unwrap();
+        assert!(validate_tiers("eu", &config.tiers).is_ok());
+        assert!(matches!(
+            config.tiers["deep"].restore(),
+            RestoreSpec::S3Restore { days: 3, .. }
+        ));
+
+        // A rehydration this build does not drive refuses at
+        // configuration rather than stranding bytes.
+        let raw = r#"{
+            "scheme": "fs", "root": "/data/eu",
+            "tiers": { "deep": { "scheme": "azblob", "container": "eu-deep",
+                                 "endpoint": "http://127.0.0.1:10000/dev",
+                                 "account_name": "dev", "account_key": "a2V5",
                                  "class": "archive" } }
         }"#;
         let config: ResidencyConfig = serde_json::from_str(raw).unwrap();

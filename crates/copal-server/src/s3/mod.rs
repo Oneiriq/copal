@@ -140,11 +140,71 @@ async fn object_route<B: BlobStore>(
                 .await
             }
         }
+        Method::POST => {
+            let (parts, _) = request.into_parts();
+            if parse_query(parts.uri.query().unwrap_or_default()).contains_key("restore") {
+                restore_object(
+                    State(gateway),
+                    parts.method,
+                    parts.uri,
+                    parts.headers,
+                    Path((bucket, key)),
+                )
+                .await
+            } else {
+                xml_error(
+                    StatusCode::METHOD_NOT_ALLOWED,
+                    "MethodNotAllowed",
+                    "unsupported method for this route",
+                )
+            }
+        }
         _ => xml_error(
             StatusCode::METHOD_NOT_ALLOWED,
             "MethodNotAllowed",
             "unsupported method for this route",
         ),
+    }
+}
+
+/// RestoreObject: the S3 dialect for starting a recall. Maps onto the
+/// same idempotent flow run every face shares -- 202 when this
+/// request started it, 200 when one was already in flight or the
+/// object is already readable, which is AWS's own answer shape.
+async fn restore_object<B: BlobStore>(
+    State(gateway): State<S3Gateway<B>>,
+    method: Method,
+    uri: Uri,
+    headers: HeaderMap,
+    Path((bucket, key)): Path<(String, String)>,
+) -> Response {
+    let caller = match authorize_bucket(&gateway, &method, &uri, &headers, &bucket).await {
+        Ok(caller) => caller,
+        Err(response) => return response,
+    };
+    let tenant = &caller.tenant;
+    let store = match caller.store(&gateway.app).await {
+        Ok(store) => store,
+        Err(response) => return response,
+    };
+    let record = match lookup_servable(&store, tenant, &key).await {
+        Ok(record) => record,
+        Err(response) => return response,
+    };
+    match gateway.app.resolve_record(&record).await {
+        // Already readable: nothing to restore.
+        Ok(crate::app::ContentResolution::Ready(_)) => StatusCode::OK.into_response(),
+        Ok(crate::app::ContentResolution::ArchiveCold { tier }) => {
+            let residency = record.blob_residency.as_deref().unwrap_or("local");
+            let digest = record.digest.as_ref().expect("servable implies digest");
+            match crate::recall::enqueue(&gateway.app.store, tenant, residency, &tier, digest).await
+            {
+                Ok((_, true)) => StatusCode::ACCEPTED.into_response(),
+                Ok((_, false)) => StatusCode::OK.into_response(),
+                Err(err) => copal_to_s3(err),
+            }
+        }
+        Err(err) => copal_to_s3(err.0),
     }
 }
 
@@ -205,7 +265,6 @@ const UNSUPPORTED_SUBRESOURCES: &[&str] = &[
     "publicAccessBlock",
     "replication",
     "requestPayment",
-    "restore",
     "retention",
     "tagging",
     "torrent",
@@ -989,8 +1048,18 @@ async fn get_object<B: BlobStore>(
         Err(response) => return response,
     };
     let digest = record.digest.as_ref().expect("servable implies digest");
-    let backend = match gateway.app.backend_for_record(&record).await {
-        Ok(backend) => backend,
+    // AWS's own vocabulary for exactly this: an archived object's GET
+    // refuses with InvalidObjectState, and the client speaks
+    // RestoreObject to start the recall. The GET does not enqueue.
+    let backend = match gateway.app.resolve_record(&record).await {
+        Ok(crate::app::ContentResolution::Ready(backend)) => backend,
+        Ok(crate::app::ContentResolution::ArchiveCold { .. }) => {
+            return xml_error(
+                StatusCode::FORBIDDEN,
+                "InvalidObjectState",
+                "the object is archived; issue a RestoreObject request",
+            )
+        }
         Err(err) => return copal_to_s3(err.0),
     };
     crate::tiering::note_blob_read(
@@ -1071,6 +1140,20 @@ async fn head_object<B: BlobStore>(
     if let Some(value) = http_date(&record.updated_at) {
         if let Ok(value) = value.parse() {
             response.headers_mut().insert(header::LAST_MODIFIED, value);
+        }
+    }
+    // Archive-cold objects report restore progress the way AWS does:
+    // `x-amz-restore` with an ongoing request while the recall run is
+    // in flight. Absent otherwise -- a restore never requested has
+    // nothing to report.
+    if let Ok(crate::app::ContentResolution::ArchiveCold { .. }) =
+        gateway.app.resolve_record(&record).await
+    {
+        let residency = record.blob_residency.as_deref().unwrap_or("local");
+        if crate::recall::in_flight(&gateway.app.store, tenant, residency, digest).await {
+            if let Ok(value) = "ongoing-request=\"true\"".parse() {
+                response.headers_mut().insert("x-amz-restore", value);
+            }
         }
     }
     response

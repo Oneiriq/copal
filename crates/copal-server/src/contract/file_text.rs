@@ -10,7 +10,10 @@ pub fn query() -> Query {
     Query {
         name: "file_text".into(),
         path: "/v1/files/{id}/text".into(),
-        // No backing: this is a keyed read, not a search.
+        // Searches nothing and rests on nothing: this is a keyed
+        // read. Both empty, which is what every query that is not a
+        // search declares, and is why the gate can tell the two apart.
+        searches: vec![],
         backing: vec![],
         input: vec![ActionField {
             name: "id".into(),

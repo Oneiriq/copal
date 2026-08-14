@@ -213,7 +213,12 @@ async fn redeem_edge<B: BlobStore>(
         return Err(refused().into());
     }
     let digest = record.digest.as_ref().expect("servable implies digest");
-    let backend = state.app.backend_for_record(&record).await?;
+    // Redemption answers the same 202 the tenant-authed GET does: the
+    // token verified, the recall started, and retrying is harmless.
+    let backend = match state.app.backend_or_recall(&tenant, &record).await? {
+        Ok(backend) => backend,
+        Err(run) => return Ok(crate::recall::accepted_response(&run)),
+    };
     crate::tiering::note_blob_read(
         &state.app.store,
         record.blob_residency.as_deref().unwrap_or("local"),

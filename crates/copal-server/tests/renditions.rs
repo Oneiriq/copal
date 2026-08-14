@@ -28,6 +28,8 @@ async fn stack() -> (axum::Router, FlowEngine, tempfile::TempDir) {
         None,
         std::collections::HashMap::new(),
         copal_server::pipeline::FetchPolicy::default(),
+        copal_server::tiering::Topology::default(),
+        Default::default(),
     );
     let state = AppState::new(store, blobs).with_flow(registry);
     let engine = state.flow.clone();

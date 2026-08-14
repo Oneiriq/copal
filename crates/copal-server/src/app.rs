@@ -142,23 +142,47 @@ impl<B: BlobStore> Residencies<B> {
     /// then tier. One projected point-read of the blob row when the
     /// residency configures tiers; a residency without any skips the
     /// read entirely, so deployments that never tier pay nothing.
-    pub async fn for_content(
+    ///
+    /// Archive-class placements PROBE rather than assume: an object
+    /// still readable in an archive tier (written before the
+    /// bucket's lifecycle transitioned it, or temporarily restored)
+    /// answers [`ContentResolution::Ready`] and serves directly --
+    /// exactly how S3 itself treats restored objects. Only bytes
+    /// that genuinely cannot answer resolve
+    /// [`ContentResolution::ArchiveCold`], and what each face does
+    /// with that is the face's dialect: 202-and-run on REST,
+    /// `InvalidObjectState` on S3, a retryable refusal in pipelines.
+    pub async fn resolve_content(
         &self,
         store: &Store,
+        topology: &crate::tiering::Topology,
         residency: &str,
         digest: &copal_core::ContentDigest,
-    ) -> copal_core::Result<B> {
+    ) -> copal_core::Result<ContentResolution<B>> {
         if self.tiers.get(residency).is_none_or(|t| t.is_empty()) {
-            return Ok(self.get(residency)?.clone());
+            return Ok(ContentResolution::Ready(self.get(residency)?.clone()));
         }
         let tier = copal_store::repo::blob::get_location(store, residency, digest)
             .await?
             .and_then(|location| location.tier);
-        match tier {
-            Some(tier) => Ok(self.tier_backend(residency, &tier)?.clone()),
-            None => Ok(self.get(residency)?.clone()),
+        let Some(tier) = tier else {
+            return Ok(ContentResolution::Ready(self.get(residency)?.clone()));
+        };
+        let backend = self.tier_backend(residency, &tier)?.clone();
+        if topology.class_of(residency, &tier) == Some(copal_blob::tier::TierClass::Archive)
+            && !backend.read_probe(digest).await?
+        {
+            return Ok(ContentResolution::ArchiveCold { tier });
         }
+        Ok(ContentResolution::Ready(backend))
     }
+}
+
+/// Where a read finds its bytes: a backend that answers now, or an
+/// archive placement whose bytes cannot answer until a recall.
+pub enum ContentResolution<B> {
+    Ready(B),
+    ArchiveCold { tier: String },
 }
 
 /// Shared application state.
@@ -386,18 +410,47 @@ impl<B: BlobStore> AppState<B> {
         Ok((name, backend))
     }
 
-    /// The backend holding a record's landed content, resolved
+    /// Where a record's landed content answers from, resolved
     /// residency-then-tier: a demoted blob serves from its tier's
-    /// backend. Costs nothing extra when the record's residency
-    /// configures no tiers.
-    pub async fn backend_for_record(&self, record: &copal_core::FileRecord) -> Result<B, ApiError> {
+    /// backend, and archive-cold bytes resolve as such for the face
+    /// to answer in its own dialect. Costs nothing extra when the
+    /// record's residency configures no tiers.
+    pub async fn resolve_record(
+        &self,
+        record: &copal_core::FileRecord,
+    ) -> Result<ContentResolution<B>, ApiError> {
         let name = record.blob_residency.as_deref().unwrap_or("local");
         match record.digest.as_ref() {
             Some(digest) => Ok(self
                 .residencies
-                .for_content(&self.store, name, digest)
+                .resolve_content(&self.store, &self.tiering, name, digest)
                 .await?),
-            None => Ok(self.residencies.get(name)?.clone()),
+            None => Ok(ContentResolution::Ready(
+                self.residencies.get(name)?.clone(),
+            )),
+        }
+    }
+
+    /// [`Self::resolve_record`] for faces that must have bytes now or
+    /// answer 202: archive-cold content enqueues the recall
+    /// idempotently and yields the run id to poll.
+    pub async fn backend_or_recall(
+        &self,
+        tenant: &TenantId,
+        record: &copal_core::FileRecord,
+    ) -> Result<Result<B, String>, ApiError> {
+        match self.resolve_record(record).await? {
+            ContentResolution::Ready(backend) => Ok(Ok(backend)),
+            ContentResolution::ArchiveCold { tier } => {
+                let residency = record.blob_residency.as_deref().unwrap_or("local");
+                let digest = record
+                    .digest
+                    .as_ref()
+                    .ok_or_else(|| CopalError::Store("archive-cold without digest".into()))?;
+                let (run, _) =
+                    crate::recall::enqueue(&self.store, tenant, residency, &tier, digest).await?;
+                Ok(Err(run))
+            }
         }
     }
 
@@ -2291,7 +2344,10 @@ async fn serve_rendition<B: BlobStore>(
         .digest
         .as_ref()
         .ok_or_else(|| CopalError::Store("servable file without digest".into()))?;
-    let backend = state.backend_for_record(&record).await?;
+    let backend = match state.backend_or_recall(&record.tenant_id, &record).await? {
+        Ok(backend) => backend,
+        Err(run) => return Ok(crate::recall::accepted_response(&run)),
+    };
     crate::tiering::note_blob_read(
         &state.store,
         record.blob_residency.as_deref().unwrap_or("local"),
@@ -2393,7 +2449,22 @@ async fn get_rendition<B: BlobStore>(
     )
     .await?;
 
-    let backend = state.backend_for_record(&source).await?;
+    // An inline derive whose source is archive-cold answers 202 and
+    // recalls the source; the derived record is refused (retryable)
+    // so the next attempt after the recall re-derives.
+    let backend = match state.backend_or_recall(&tenant, &source).await? {
+        Ok(backend) => backend,
+        Err(run) => {
+            crate::pipeline::refuse_derived(
+                &state.store,
+                &tenant,
+                &derived.id,
+                format!("source is archive-cold; recall run {run} is in flight"),
+            )
+            .await?;
+            return Ok(crate::recall::accepted_response(&run));
+        }
+    };
     let bytes = backend.read(&source_digest).await?;
     let rendered =
         match crate::pipeline::render_image(&bytes, spec.width, spec.height, &spec.format) {
@@ -3233,7 +3304,10 @@ async fn download_content<B: BlobStore>(
         .digest
         .as_ref()
         .ok_or_else(|| CopalError::Store("servable file without digest".into()))?;
-    let backend = state.backend_for_record(&record).await?;
+    let backend = match state.backend_or_recall(&record.tenant_id, &record).await? {
+        Ok(backend) => backend,
+        Err(run) => return Ok(crate::recall::accepted_response(&run)),
+    };
     crate::tiering::note_blob_read(
         &state.store,
         record.blob_residency.as_deref().unwrap_or("local"),
@@ -3645,13 +3719,20 @@ async fn redeem_grant<B: BlobStore>(
         return Ok(crate::serve::not_modified_response(&spec));
     }
 
+    // Resolve BEFORE consuming: archive-cold content answers 202
+    // without burning a use -- no byte was read, and a counted grant
+    // must survive until the recall lands. A TTL that expires
+    // mid-recall re-issues; the operator docs say so.
+    let backend = match state.backend_or_recall(&tenant, &record).await? {
+        Ok(backend) => backend,
+        Err(run) => return Ok(crate::recall::accepted_response(&run)),
+    };
     // Guards live in the UPDATE: two racing redemptions of a one-use
     // grant serialize here, and this stays the single authorization
     // point for actually reading bytes.
     if !grant_repo::consume(&state.store, &token.grant_id).await? {
         return Err(refused().into());
     }
-    let backend = state.backend_for_record(&record).await?;
     crate::tiering::note_blob_read(
         &state.store,
         record.blob_residency.as_deref().unwrap_or("local"),
@@ -3897,10 +3978,29 @@ async fn download_version<B: BlobStore>(
         )
         .into());
     }
-    let backend = state
+    let backend = match state
         .residencies
-        .for_content(&state.store, &version.blob_residency, &version.digest)
-        .await?;
+        .resolve_content(
+            &state.store,
+            &state.tiering,
+            &version.blob_residency,
+            &version.digest,
+        )
+        .await?
+    {
+        ContentResolution::Ready(backend) => backend,
+        ContentResolution::ArchiveCold { tier } => {
+            let (run, _) = crate::recall::enqueue(
+                &state.store,
+                tenant,
+                &version.blob_residency,
+                &tier,
+                &version.digest,
+            )
+            .await?;
+            return Ok(crate::recall::accepted_response(&run));
+        }
+    };
     crate::tiering::note_blob_read(&state.store, &version.blob_residency, &version.digest);
     crate::serve::serve_blob(
         &backend,

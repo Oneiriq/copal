@@ -135,7 +135,9 @@ pub async fn enqueue(
     Ok((run_id, true))
 }
 
-async fn find_by_idempotency_key(
+/// The run an idempotency key names, when one exists. Public so the
+/// recall faces can report whether a shared run is still in flight.
+pub async fn find_by_idempotency_key(
     store: &Store,
     tenant: &TenantId,
     key: &str,

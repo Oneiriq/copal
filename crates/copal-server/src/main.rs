@@ -170,6 +170,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(list) => copal_core::ExtensionPolicy::from_list(list),
         None => copal_core::ExtensionPolicy::standard(),
     };
+    // Restore drivers ride beside the topology: one per tier that
+    // speaks a restore dialect, executed by the recall flow.
+    let restore_drivers: copal_server::recall::RestoreDrivers = {
+        let mut map = std::collections::HashMap::new();
+        let mut add =
+            |residency: &str,
+             tiers: &std::collections::HashMap<String, copal_blob::tier::TierConfig>| {
+                let drivers: std::collections::HashMap<_, _> = tiers
+                    .iter()
+                    .filter_map(|(name, tier)| {
+                        copal_server::recall::RestoreDriver::from_spec(&tier.restore())
+                            .map(|driver| (name.clone(), driver))
+                    })
+                    .collect();
+                if !drivers.is_empty() {
+                    map.insert(residency.to_owned(), drivers);
+                }
+            };
+        add("local", &config.local_tiers);
+        for (name, residency_config) in &config.residencies {
+            add(name, &residency_config.tiers);
+        }
+        map
+    };
     let registry = copal_server::pipeline::standard_registry(
         store.clone(),
         residencies.clone(),
@@ -186,6 +210,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             allow_private_targets: config.allow_private_fetch_targets,
             max_bytes: config.max_upload_bytes as u64,
         },
+        tiering.clone(),
+        restore_drivers,
     );
     if let Some(addr) = &config.embedding_addr {
         // The index has to exist at the model's width before the

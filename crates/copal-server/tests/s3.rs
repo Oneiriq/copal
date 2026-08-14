@@ -1569,3 +1569,148 @@ async fn the_served_query_forms_still_work() {
         assert!(body.contains(marker), "?{query}: {body}");
     }
 }
+
+/// Archive-cold objects speak AWS's own dialect: GET refuses with
+/// InvalidObjectState, RestoreObject starts the shared recall run
+/// (202 first, 200 on replay), and HEAD reports the restore in
+/// flight -- proven with the independent client-side signer.
+#[tokio::test]
+async fn archive_cold_objects_speak_the_restore_dialect() {
+    use copal_blob::tier::TierClass;
+    use copal_core::ContentDigest;
+    use std::collections::HashMap;
+
+    let store = Store::connect(StoreConfig::memory()).await.unwrap();
+    let hot_dir = tempfile::tempdir().unwrap();
+    let cold_dir = tempfile::tempdir().unwrap();
+    let hot = ObjectStore::open(hot_dir.path().to_str().unwrap()).unwrap();
+    let frozen = ObjectStore::open(cold_dir.path().to_str().unwrap()).unwrap();
+    let mut residencies = copal_server::app::Residencies::local_only(hot);
+    residencies.tiers.insert(
+        "local".to_owned(),
+        HashMap::from([("frozen".to_owned(), frozen)]),
+    );
+    let mut topology = copal_server::tiering::Topology::default();
+    topology.insert(
+        "local",
+        HashMap::from([("frozen".to_owned(), TierClass::Archive)]),
+    );
+    let cipher = BlobCipher::from_hex(MASTER_KEY).unwrap();
+    let mut state = AppState::new(store.clone(), residencies.local.clone())
+        .with_auth(AuthConfig {
+            admin_token: Some("root".to_owned()),
+            ..AuthConfig::default()
+        })
+        .with_cipher(Some(cipher))
+        .with_tiering(topology.clone());
+    state.residencies = residencies.clone();
+    let gateway = s3_router(state.clone());
+    let admin = s3_admin_router(state);
+    let (access_key, secret) = mint(&admin, "acme").await;
+
+    // Land an object through the gateway, then settle it on the
+    // archive tier with the hot copy erased.
+    let payload = b"deep archive dialect";
+    let request = signed_request(
+        "PUT",
+        "/acme/frozen.bin",
+        "",
+        &sha256_hex(payload),
+        &access_key,
+        &secret,
+        Body::from(payload.to_vec()),
+        &[("content-length", "20")],
+    );
+    let response = gateway.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    copal_store::repo::tier::set_policy(
+        &store,
+        &copal_core::TenantId::parse("acme").unwrap(),
+        &copal_store::repo::tier::TieringPolicy {
+            tier: "frozen".to_owned(),
+            after_seconds: 0,
+            basis: "created".to_owned(),
+            min_bytes: 0,
+        },
+    )
+    .await
+    .unwrap();
+    copal_server::mover::move_pass(&store, &residencies, &topology, 100, 86_400).await;
+    let report = copal_server::mover::move_pass(&store, &residencies, &topology, 100, 0).await;
+    assert_eq!(report.hot_erased, 1);
+
+    // The bucket "archives" the object: reads stop answering.
+    let digest = ContentDigest::of_bytes(payload);
+    let object = cold_dir.path().join("objects").join(digest.storage_key());
+    std::fs::remove_file(&object).unwrap();
+    std::fs::create_dir(&object).unwrap();
+
+    // GET refuses with AWS's vocabulary and starts nothing.
+    let request = signed_request(
+        "GET",
+        "/acme/frozen.bin",
+        "",
+        "UNSIGNED-PAYLOAD",
+        &access_key,
+        &secret,
+        Body::empty(),
+        &[],
+    );
+    let response = gateway.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert!(text_body(response).await.contains("InvalidObjectState"));
+
+    // HEAD before any restore request: no x-amz-restore to report.
+    let request = signed_request(
+        "HEAD",
+        "/acme/frozen.bin",
+        "",
+        "UNSIGNED-PAYLOAD",
+        &access_key,
+        &secret,
+        Body::empty(),
+        &[],
+    );
+    let response = gateway.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(response.headers().get("x-amz-restore").is_none());
+
+    // RestoreObject initiates the recall: 202 the first time, 200 on
+    // the idempotent replay.
+    let restore = || {
+        signed_request(
+            "POST",
+            "/acme/frozen.bin",
+            "restore=",
+            "UNSIGNED-PAYLOAD",
+            &access_key,
+            &secret,
+            Body::empty(),
+            &[],
+        )
+    };
+    let response = gateway.clone().oneshot(restore()).await.unwrap();
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let response = gateway.clone().oneshot(restore()).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // HEAD now reports the restore in flight.
+    let request = signed_request(
+        "HEAD",
+        "/acme/frozen.bin",
+        "",
+        "UNSIGNED-PAYLOAD",
+        &access_key,
+        &secret,
+        Body::empty(),
+        &[],
+    );
+    let response = gateway.clone().oneshot(request).await.unwrap();
+    assert_eq!(
+        response
+            .headers()
+            .get("x-amz-restore")
+            .and_then(|v| v.to_str().ok()),
+        Some("ongoing-request=\"true\""),
+    );
+}

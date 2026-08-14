@@ -45,6 +45,8 @@ async fn stack() -> (axum::Router, FlowEngine, Store, tempfile::TempDir) {
             allow_private_targets: true,
             max_bytes: 1 << 20,
         },
+        copal_server::tiering::Topology::default(),
+        Default::default(),
     );
     let mut state = AppState::new(store.clone(), blobs).with_flow(registry);
     state.limits.allow_private_fetch_targets = true;
@@ -635,6 +637,8 @@ async fn the_rerank_window_never_receives_withheld_text() {
         None,
         std::collections::HashMap::new(),
         FetchPolicy::default(),
+        copal_server::tiering::Topology::default(),
+        Default::default(),
     );
     let state = AppState::new(store.clone(), blobs)
         .with_flow(registry)
@@ -825,6 +829,8 @@ async fn the_semantic_leg_withholds_the_same_passages() {
         embedding.clone(),
         std::collections::HashMap::new(),
         FetchPolicy::default(),
+        copal_server::tiering::Topology::default(),
+        Default::default(),
     );
     let state = AppState::new(store.clone(), blobs)
         .with_flow(registry)

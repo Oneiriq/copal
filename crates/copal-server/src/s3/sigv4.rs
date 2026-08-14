@@ -130,6 +130,89 @@ pub fn verify(
     }
 }
 
+/// Sign an OUTBOUND request: the same canonical construction
+/// [`verify`] rebuilds, run forward. Answers the header set to
+/// attach -- `authorization`, `x-amz-date`, `x-amz-content-sha256`
+/// -- signing exactly `host`, `x-amz-content-sha256`, and
+/// `x-amz-date`. `raw_path` percent-encoded as it will be sent,
+/// `raw_query` without the leading question mark, `payload` the
+/// bytes the request will carry.
+#[allow(clippy::too_many_arguments)]
+pub fn sign_outbound(
+    method: &Method,
+    host: &str,
+    raw_path: &str,
+    raw_query: &str,
+    payload: &[u8],
+    access_key_id: &str,
+    secret: &str,
+    region: &str,
+) -> Vec<(&'static str, String)> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    let amz_date = format_amz_date(now);
+    let date = &amz_date[..8];
+    let payload_hash = hex::encode(Sha256::digest(payload));
+
+    let canonical_headers =
+        format!("host:{host}\nx-amz-content-sha256:{payload_hash}\nx-amz-date:{amz_date}\n");
+    let signed_headers = "host;x-amz-content-sha256;x-amz-date";
+    let canonical_request = format!(
+        "{}\n{}\n{}\n{}\n{}\n{}",
+        method.as_str(),
+        raw_path,
+        canonicalize_query(raw_query),
+        canonical_headers,
+        signed_headers,
+        payload_hash,
+    );
+    let scope = format!("{date}/{region}/s3/aws4_request");
+    let string_to_sign = format!(
+        "AWS4-HMAC-SHA256\n{}\n{}\n{}",
+        amz_date,
+        scope,
+        hex::encode(Sha256::digest(canonical_request.as_bytes())),
+    );
+    let key = derive_signing_key(secret, date, region, "s3");
+    let signature = hex::encode(hmac(&key, string_to_sign.as_bytes()));
+    vec![
+        (
+            "authorization",
+            format!(
+                "AWS4-HMAC-SHA256 Credential={access_key_id}/{scope}, \
+                 SignedHeaders={signed_headers}, Signature={signature}"
+            ),
+        ),
+        ("x-amz-date", amz_date),
+        ("x-amz-content-sha256", payload_hash),
+    ]
+}
+
+/// A unix timestamp as `YYYYMMDDTHHMMSSZ`: the inverse of
+/// [`parse_amz_date`], civil-days run backward.
+fn format_amz_date(unix: i64) -> String {
+    let days = unix.div_euclid(86_400);
+    let secs = unix.rem_euclid(86_400);
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if month <= 2 { y + 1 } else { y };
+    format!(
+        "{year:04}{month:02}{day:02}T{:02}{:02}{:02}Z",
+        secs / 3_600,
+        (secs / 60) % 60,
+        secs % 60,
+    )
+}
+
 /// The SigV4 key derivation chain.
 pub fn derive_signing_key(secret: &str, date: &str, region: &str, service: &str) -> Vec<u8> {
     let k_date = hmac(format!("AWS4{secret}").as_bytes(), date.as_bytes());
@@ -247,5 +330,49 @@ mod tests {
         );
         assert_eq!(canonicalize_query("flag&x=1"), "flag=&x=1");
         assert_eq!(canonicalize_query(""), "");
+    }
+
+    #[test]
+    fn amz_date_formatting_inverts_parsing() {
+        for unix in [0, 1_440_938_160, 1_700_000_000, 4_102_444_799] {
+            let formatted = format_amz_date(unix);
+            assert_eq!(parse_amz_date(&formatted), Some(unix), "{formatted}");
+        }
+    }
+
+    #[test]
+    fn outbound_signatures_verify_with_the_gateway_math() {
+        // Sign a request forward, then verify it with the same code
+        // the gateway runs against inbound S3 tooling: one canonical
+        // construction, proven from both ends.
+        let method = Method::POST;
+        let secret = "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY";
+        let body = b"<RestoreRequest><Days>7</Days></RestoreRequest>";
+        let signed = sign_outbound(
+            &method,
+            "bucket.s3.us-east-1.amazonaws.com",
+            "/objects/ab/cd/feed",
+            "restore=",
+            body,
+            "AKIDEXAMPLE",
+            secret,
+            "us-east-1",
+        );
+        let mut headers = HeaderMap::new();
+        headers.insert("host", "bucket.s3.us-east-1.amazonaws.com".parse().unwrap());
+        for (name, value) in &signed {
+            headers.insert(*name, value.parse().unwrap());
+        }
+        let auth = parse_authorization(&headers).unwrap();
+        assert_eq!(auth.access_key_id, "AKIDEXAMPLE");
+        verify(
+            &auth,
+            secret,
+            &method,
+            "/objects/ab/cd/feed",
+            "restore=",
+            &headers,
+        )
+        .expect("the gateway's own verification accepts the outbound signature");
     }
 }

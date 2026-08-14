@@ -25,26 +25,24 @@ only party who knows, and every fail direction lands on withholding
 or on yesterday's behavior. The classifier seam this file warned
 against stayed rejected; the CHANGELOG carries the details.
 
-1. **Lifecycle and tiering: recall.** The design
-   ([design/lifecycle-tiering.md](design/lifecycle-tiering.md))
-   ships in three stages and two are done: the vocabulary, policy
-   surface, recency signal, and observe-only classifier landed
-   first, and the mover followed -- demote and the symmetric
-   promote as copy, verify, flip, grace-delayed erase, with reads
-   resolving residency-then-tier from the flip on, the GC erasing
-   every tier, and the reseal sweep walking tier backends. What
-   remains is recall, which unlocks archive classes: the
-   flow-run restore, the 202-and-run answer on REST,
-   `InvalidObjectState` plus `RestoreObject` on the S3 face, and
-   the staleness-of-availability contract in operator and tenant
-   documentation verbatim. Until it lands, `class: "archive"`
-   refuses at configuration, so no deployment can strand bytes
-   behind a GET nothing answers.
+Lifecycle and tiering retired whole, through
+[design/lifecycle-tiering.md](design/lifecycle-tiering.md) in the
+three stages it declared: the vocabulary and observe-only classifier,
+then the mover (copy, verify, flip, grace-delayed erase, both
+directions), then recall -- the journaled restore that unlocks
+archive classes, with 202-and-run on REST, `InvalidObjectState` plus
+`RestoreObject` on the S3 face, and the availability contract stated
+in operator and tenant documentation. Every fail direction lands on
+latency or on yesterday's behavior, never on loss; the CHANGELOG
+carries the details.
 
-2. **Multi-region replication.** Residencies place bytes; nothing
+1. **Multi-region replication.** Residencies place bytes; nothing
    copies them. A second region is currently a second deployment.
+   The design is in the tree
+   ([design/multi-region-replication.md](design/multi-region-replication.md));
+   its observer-only applier is the natural first slice.
 
-3. **The embedded tier.** One process with the engine in it, as a
+2. **The embedded tier.** One process with the engine in it, as a
    positioned single-replica mode. Docker already answers deployment
    simplicity; what embedding buys is the wire's removal: every
    repository call stops being a round trip, caller sessions become
@@ -59,6 +57,11 @@ against stayed rejected; the CHANGELOG carries the details.
 
 ## Deferred, with reasons
 
+3. **Azure archive rehydration.** Archive classes on Azure Blob
+   refuse at configuration because copal does not drive Set Blob
+   Tier rehydration yet; Azure deployments tier to online classes
+   today. The recall machinery is dialect-agnostic -- this is one
+   driver away when someone needs it.
 4. **OTel spans.** OTLP export means new dependencies and a cargo
    feature CI would not compile, which is untested code by
    construction. The `/metrics` endpoint set a dependency-free

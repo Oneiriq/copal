@@ -246,6 +246,30 @@ pub trait BlobStore: Clone + Send + Sync + 'static {
         &self,
         ttl: std::time::Duration,
     ) -> impl std::future::Future<Output = copal_core::Result<u64>> + Send;
+
+    /// Open the object AS STORED: the on-disk bytes, envelope and all,
+    /// with no decryption. The tier mover ships objects between
+    /// backends with this, so a sealed object moves opaque and the
+    /// destination needs no key material.
+    fn open_raw(
+        &self,
+        digest: &ContentDigest,
+    ) -> impl std::future::Future<Output = copal_core::Result<(u64, ByteStream)>> + Send;
+
+    /// Land raw bytes at the digest's content address, verbatim: no
+    /// hashing, no sealing, staged then renamed like every landing.
+    /// The caller owns verification -- nothing weaker than reading
+    /// the copy back through the ordinary open path and comparing
+    /// digests earns an erase of the source. Idempotent: content
+    /// addressing makes an overwrite byte-identical.
+    fn put_raw<S, E>(
+        &self,
+        digest: &ContentDigest,
+        body: S,
+    ) -> impl std::future::Future<Output = copal_core::Result<()>> + Send
+    where
+        S: Stream<Item = Result<bytes::Bytes, E>> + Send + Unpin,
+        E: std::fmt::Display + Send;
 }
 
 /// The OpenDAL-backed blob store: one type over every configured
@@ -878,6 +902,56 @@ impl BlobStore for ObjectStore {
         Ok(removed)
     }
 
+    async fn open_raw(&self, digest: &ContentDigest) -> copal_core::Result<(u64, ByteStream)> {
+        let path = Self::addressed(digest);
+        let stat = self.op.stat(&path).await.map_err(|e| {
+            if e.kind() == opendal::ErrorKind::NotFound {
+                CopalError::not_found(format!("blob {digest}"))
+            } else {
+                CopalError::Blob(format!("stat {digest}: {e}"))
+            }
+        })?;
+        let disk_len = stat.content_length();
+        let reader = self
+            .op
+            .reader(&path)
+            .await
+            .map_err(|e| CopalError::Blob(format!("open raw {digest}: {e}")))?;
+        let owned = digest.clone();
+        let stream = reader
+            .into_bytes_stream(0..disk_len)
+            .await
+            .map_err(|e| CopalError::Blob(format!("stream raw {digest}: {e}")))?
+            .map(move |chunk| chunk.map_err(|e| CopalError::Blob(format!("raw {owned}: {e}"))))
+            .boxed();
+        Ok((disk_len, stream))
+    }
+
+    async fn put_raw<S, E>(&self, digest: &ContentDigest, mut body: S) -> copal_core::Result<()>
+    where
+        S: Stream<Item = Result<bytes::Bytes, E>> + Send + Unpin,
+        E: std::fmt::Display + Send,
+    {
+        let staging = format!("staging/{}", ulid::Ulid::new().to_string().to_lowercase());
+        let mut writer = self
+            .op
+            .writer(&staging)
+            .await
+            .map_err(|e| CopalError::Blob(format!("open staging writer: {e}")))?;
+        while let Some(chunk) = body.next().await {
+            let chunk = chunk.map_err(|e| CopalError::Blob(format!("read raw body: {e}")))?;
+            writer
+                .write(chunk)
+                .await
+                .map_err(|e| CopalError::Blob(format!("write staging: {e}")))?;
+        }
+        writer
+            .close()
+            .await
+            .map_err(|e| CopalError::Blob(format!("close staging: {e}")))?;
+        self.land(&staging, &Self::addressed(digest)).await
+    }
+
     async fn open_read(&self, digest: &ContentDigest) -> copal_core::Result<(u64, ByteStream)> {
         let path = Self::addressed(digest);
         let not_found = |e: &opendal::Error| e.kind() == opendal::ErrorKind::NotFound;
@@ -1120,6 +1194,48 @@ mod tests {
         assert!(config.encryption_key().is_none());
         assert_eq!(config.previous_encryption_key().unwrap().len(), 64);
         assert!(ObjectStore::open_backend(&config).is_ok());
+    }
+
+    #[tokio::test]
+    async fn raw_copy_ships_the_envelope_opaque() {
+        // A sealed object moves between backends as stored: the
+        // destination holds ciphertext it cannot open, and a store
+        // holding the residency's key reads the copy back plaintext.
+        let hot_dir = tempfile::tempdir().unwrap();
+        let cold_dir = tempfile::tempdir().unwrap();
+        let key = "c".repeat(64);
+        let hot = ObjectStore::open_encrypted(hot_dir.path().to_str().unwrap(), &key).unwrap();
+        let payload: Vec<u8> = (0..crypto::FRAME + 13).map(|i| (i % 251) as u8).collect();
+        let stored = hot
+            .put_streamed(futures::stream::iter(vec![Ok::<_, String>(
+                bytes::Bytes::from(payload.clone()),
+            )]))
+            .await
+            .unwrap();
+
+        // Keyless destination: the copy lands and stays opaque.
+        let cold_bare = ObjectStore::open(cold_dir.path().to_str().unwrap()).unwrap();
+        let (_, raw) = hot.open_raw(&stored.digest).await.unwrap();
+        cold_bare.put_raw(&stored.digest, raw).await.unwrap();
+        assert!(cold_bare.exists(&stored.digest).await.unwrap());
+        assert!(
+            cold_bare.read(&stored.digest).await.is_err(),
+            "the cold backend holds ciphertext it cannot open",
+        );
+
+        // The same backend opened WITH the residency's key verifies
+        // the copy through the ordinary open path.
+        let cold = ObjectStore::open_encrypted(cold_dir.path().to_str().unwrap(), &key).unwrap();
+        let (len, stream) = cold.open_read(&stored.digest).await.unwrap();
+        assert_eq!(len, payload.len() as u64);
+        let back: Vec<u8> = stream.try_collect::<Vec<_>>().await.unwrap().concat();
+        assert_eq!(ContentDigest::of_bytes(&back), stored.digest);
+
+        // Re-copy is a byte-identical overwrite: crash recovery is
+        // replay, not repair.
+        let (_, raw) = hot.open_raw(&stored.digest).await.unwrap();
+        cold.put_raw(&stored.digest, raw).await.unwrap();
+        assert_eq!(cold.read(&stored.digest).await.unwrap(), &payload[..]);
     }
 
     #[tokio::test]

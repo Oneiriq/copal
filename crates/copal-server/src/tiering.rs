@@ -54,6 +54,14 @@ impl Topology {
             .is_some_and(|t| t.contains_key(tier))
     }
 
+    /// The declared class of one residency's tier, when configured.
+    pub fn class_of(&self, residency: &str, tier: &str) -> Option<TierClass> {
+        self.residencies
+            .get(residency)
+            .and_then(|t| t.get(tier))
+            .copied()
+    }
+
     /// Whether any tiers are configured at all.
     pub fn is_empty(&self) -> bool {
         self.residencies.is_empty()
@@ -298,33 +306,49 @@ const HELD_YOUNG: &str = "not_yet_cold";
 /// recall": one month, the unit tier pricing quotes retrieval in.
 const RECALL_WINDOW_SECS: i64 = 30 * 86_400;
 
-/// Classify one blob against the loaded policies. Answers the tally
-/// bucket the blob lands in, or the hold reason that kept it out.
-fn classify_row(
+/// Where a blob's bytes belong right now, judged over every
+/// reference. Blind to where the bytes currently ARE: the observer
+/// compares it against `row.tier` to count, and the mover compares
+/// to act.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Placement {
+    /// Nothing references it: the GC's business, never the mover's.
+    Unreferenced,
+    /// Every rule marks it movable to this tier.
+    Cold { tier: String },
+    /// Old enough to move on creation age; a recent read holds it --
+    /// the measured would-be recall.
+    WouldRecall,
+    /// Some rule holds it hot, named.
+    Hot(&'static str),
+}
+
+/// Judge one blob against the loaded policies: the most demanding
+/// reference wins, every referencing tenant must agree on the target
+/// tier, and the blob's own residency must configure it.
+pub(crate) fn placement(
     row: &tier_repo::BlobClassifyRow,
     policies: &HashMap<String, tier_repo::TieringPolicy>,
     topology: &Topology,
-) -> Result<Option<bool>, &'static str> {
-    // Already cold, or nothing referencing it: not this feature's
-    // business (the GC owns unreferenced rows).
-    if row.tier.is_some() || row.referencing_tenants().next().is_none() {
-        return Ok(None);
+) -> Placement {
+    if row.referencing_tenants().next().is_none() {
+        return Placement::Unreferenced;
     }
     if !row.pinned_tenants.is_empty() {
-        return Err(HELD_PIN);
+        return Placement::Hot(HELD_PIN);
     }
     // Every referencing tenant must carry a policy: a tenant without
-    // one demands hot, and the most demanding reference wins.
+    // one demands hot.
     let mut target: Option<&str> = None;
     let mut coldest_min_bytes = 0u64;
     let mut all_cold = true;
     for tenant in row.referencing_tenants() {
         let Some(policy) = policies.get(tenant) else {
-            return Err(HELD_NO_POLICY);
+            return Placement::Hot(HELD_NO_POLICY);
         };
         match target {
             None => target = Some(policy.tier.as_str()),
-            Some(named) if named != policy.tier => return Err(HELD_TIER_DISAGREE),
+            Some(named) if named != policy.tier => return Placement::Hot(HELD_TIER_DISAGREE),
             Some(_) => {}
         }
         coldest_min_bytes = coldest_min_bytes.max(policy.min_bytes);
@@ -341,13 +365,15 @@ fn classify_row(
     }
     let target = target.unwrap_or_default();
     if !topology.residency_has(&row.residency(), target) {
-        return Err(HELD_TIER_MISMATCH);
+        return Placement::Hot(HELD_TIER_MISMATCH);
     }
     if (row.size_bytes.max(0) as u64) < coldest_min_bytes {
-        return Err(HELD_MIN_BYTES);
+        return Placement::Hot(HELD_MIN_BYTES);
     }
     if all_cold {
-        return Ok(Some(true));
+        return Placement::Cold {
+            tier: target.to_owned(),
+        };
     }
     // Not cold yet. When creation age alone would have moved it and a
     // recent read is what holds it, that read is a measured would-be
@@ -361,9 +387,29 @@ fn classify_row(
         .read_age_secs
         .is_some_and(|age| age < RECALL_WINDOW_SECS);
     if held_by_reads_alone {
-        return Ok(Some(false));
+        return Placement::WouldRecall;
     }
-    Err(HELD_YOUNG)
+    Placement::Hot(HELD_YOUNG)
+}
+
+/// Classify one blob for OBSERVATION. Answers the tally bucket the
+/// blob lands in, or the hold reason that kept it out; rows already
+/// placed cold are out of scope, because the report counts what
+/// WOULD move.
+fn classify_row(
+    row: &tier_repo::BlobClassifyRow,
+    policies: &HashMap<String, tier_repo::TieringPolicy>,
+    topology: &Topology,
+) -> Result<Option<bool>, &'static str> {
+    if row.tier.is_some() {
+        return Ok(None);
+    }
+    match placement(row, policies, topology) {
+        Placement::Unreferenced => Ok(None),
+        Placement::Cold { .. } => Ok(Some(true)),
+        Placement::WouldRecall => Ok(Some(false)),
+        Placement::Hot(reason) => Err(reason),
+    }
 }
 
 /// One observe-only pass: walk every blob row in keyset batches,
@@ -527,6 +573,7 @@ mod tests {
             id: "blob:aaaa".to_owned(),
             size_bytes: 1_000_000,
             tier: None,
+            demoted_age_secs: None,
             created_age_secs: Some(100 * 86_400),
             read_age_secs: None,
             file_tenants: tenants.iter().map(|t| (*t).to_owned()).collect(),

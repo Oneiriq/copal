@@ -39,6 +39,15 @@ pub struct SweepConfig {
     /// Resumable-upload sessions idle longer than this are discarded
     /// with their staged bytes.
     pub tus_session_ttl_secs: u64,
+    /// Tier moves initiated per mover pass. Each is a full
+    /// read-write-read of the object, so this bounds the pass's IO,
+    /// not its correctness: what one pass defers, the next resumes.
+    pub tier_move_batch: usize,
+    /// How long a displaced copy survives its placement flip before
+    /// the mover erases it. Must be at least the backup cadence: a
+    /// flip landing between a backend's backup and the metadata
+    /// export must leave the bytes findable in that backup.
+    pub tier_erase_grace_secs: u32,
 }
 
 impl Default for SweepConfig {
@@ -50,6 +59,8 @@ impl Default for SweepConfig {
             gc_batch: 1_000,
             scan_stale_secs: 3_600,
             tus_session_ttl_secs: 86_400,
+            tier_move_batch: 100,
+            tier_erase_grace_secs: 86_400,
         }
     }
 }
@@ -212,6 +223,17 @@ async fn gc_pass<B: BlobStore>(
                         match residencies.get(&residency) {
                             Ok(backend) => {
                                 backend.delete(&digest).await?;
+                                // Collection erases from every tier
+                                // the residency configures: delete is
+                                // a no-op on absent paths, so the
+                                // unconditional sweep across tiers is
+                                // replay-safe and covers a
+                                // grace-window double copy.
+                                if let Some(tiers) = residencies.tiers.get(&residency) {
+                                    for tier in tiers.values() {
+                                        tier.delete(&digest).await?;
+                                    }
+                                }
                                 report.blobs_collected += 1;
                             }
                             Err(err) => {
@@ -266,6 +288,27 @@ pub async fn run_forever<B: BlobStore>(
         // multiply it. Observe-only -- it counts and reports, and
         // with no policy set it returns before the walk.
         crate::tiering::observe_pass(&store, &tiering).await;
+        // Then the mover acts on what the observer just published:
+        // same lease, same walk discipline, moves bounded per pass.
+        let moves = crate::mover::move_pass(
+            &store,
+            &residencies,
+            &tiering,
+            config.tier_move_batch,
+            config.tier_erase_grace_secs,
+        )
+        .await;
+        if moves != crate::mover::MoveReport::default() {
+            tracing::info!(
+                demoted = moves.demoted,
+                promoted = moves.promoted,
+                hot_erased = moves.hot_erased,
+                cold_erased = moves.cold_erased,
+                verify_failures = moves.verify_failures,
+                move_failures = moves.move_failures,
+                "tier mover pass",
+            );
+        }
         if report != SweepReport::default() {
             tracing::info!(
                 reaped = report.reaped_uploads,

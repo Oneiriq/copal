@@ -89,6 +89,10 @@ impl Default for Limits {
 pub struct Residencies<B: BlobStore> {
     pub local: B,
     pub named: std::collections::HashMap<String, B>,
+    /// Tier backends by residency then tier name, each opened under
+    /// its residency's cipher: hot and cold copies of one digest are
+    /// the same object and seal under the same key.
+    pub tiers: std::collections::HashMap<String, std::collections::HashMap<String, B>>,
 }
 
 impl<B: BlobStore> Residencies<B> {
@@ -97,10 +101,12 @@ impl<B: BlobStore> Residencies<B> {
         Self {
             local,
             named: std::collections::HashMap::new(),
+            tiers: std::collections::HashMap::new(),
         }
     }
 
-    /// The backend for a residency name.
+    /// The backend for a residency name: its PRIMARY backend, where
+    /// new content lands and untiered rows serve from.
     pub fn get(&self, name: &str) -> copal_core::Result<&B> {
         if name == "local" {
             return Ok(&self.local);
@@ -115,6 +121,43 @@ impl<B: BlobStore> Residencies<B> {
     /// Whether a residency name is configured.
     pub fn contains(&self, name: &str) -> bool {
         name == "local" || self.named.contains_key(name)
+    }
+
+    /// The backend for a named tier of a residency. A row naming a
+    /// tier this instance does not configure is unreachable content,
+    /// reported loudly rather than silently served from the wrong
+    /// place.
+    pub fn tier_backend(&self, residency: &str, tier: &str) -> copal_core::Result<&B> {
+        self.tiers
+            .get(residency)
+            .and_then(|tiers| tiers.get(tier))
+            .ok_or_else(|| {
+                CopalError::Store(format!(
+                    "tier {tier} of residency {residency} is not configured on this instance"
+                ))
+            })
+    }
+
+    /// The backend currently holding a digest's bytes: residency,
+    /// then tier. One projected point-read of the blob row when the
+    /// residency configures tiers; a residency without any skips the
+    /// read entirely, so deployments that never tier pay nothing.
+    pub async fn for_content(
+        &self,
+        store: &Store,
+        residency: &str,
+        digest: &copal_core::ContentDigest,
+    ) -> copal_core::Result<B> {
+        if self.tiers.get(residency).is_none_or(|t| t.is_empty()) {
+            return Ok(self.get(residency)?.clone());
+        }
+        let tier = copal_store::repo::blob::get_location(store, residency, digest)
+            .await?
+            .and_then(|location| location.tier);
+        match tier {
+            Some(tier) => Ok(self.tier_backend(residency, &tier)?.clone()),
+            None => Ok(self.get(residency)?.clone()),
+        }
     }
 }
 
@@ -343,10 +386,19 @@ impl<B: BlobStore> AppState<B> {
         Ok((name, backend))
     }
 
-    /// The backend holding a record's landed content.
-    pub fn backend_for_record(&self, record: &copal_core::FileRecord) -> Result<B, ApiError> {
+    /// The backend holding a record's landed content, resolved
+    /// residency-then-tier: a demoted blob serves from its tier's
+    /// backend. Costs nothing extra when the record's residency
+    /// configures no tiers.
+    pub async fn backend_for_record(&self, record: &copal_core::FileRecord) -> Result<B, ApiError> {
         let name = record.blob_residency.as_deref().unwrap_or("local");
-        Ok(self.residencies.get(name)?.clone())
+        match record.digest.as_ref() {
+            Some(digest) => Ok(self
+                .residencies
+                .for_content(&self.store, name, digest)
+                .await?),
+            None => Ok(self.residencies.get(name)?.clone()),
+        }
     }
 
     /// Enforce the tenant quota before bytes move: refuses outright
@@ -2239,7 +2291,7 @@ async fn serve_rendition<B: BlobStore>(
         .digest
         .as_ref()
         .ok_or_else(|| CopalError::Store("servable file without digest".into()))?;
-    let backend = state.backend_for_record(&record)?;
+    let backend = state.backend_for_record(&record).await?;
     crate::tiering::note_blob_read(
         &state.store,
         record.blob_residency.as_deref().unwrap_or("local"),
@@ -2341,7 +2393,7 @@ async fn get_rendition<B: BlobStore>(
     )
     .await?;
 
-    let backend = state.backend_for_record(&source)?;
+    let backend = state.backend_for_record(&source).await?;
     let bytes = backend.read(&source_digest).await?;
     let rendered =
         match crate::pipeline::render_image(&bytes, spec.width, spec.height, &spec.format) {
@@ -3181,7 +3233,7 @@ async fn download_content<B: BlobStore>(
         .digest
         .as_ref()
         .ok_or_else(|| CopalError::Store("servable file without digest".into()))?;
-    let backend = state.backend_for_record(&record)?;
+    let backend = state.backend_for_record(&record).await?;
     crate::tiering::note_blob_read(
         &state.store,
         record.blob_residency.as_deref().unwrap_or("local"),
@@ -3599,7 +3651,7 @@ async fn redeem_grant<B: BlobStore>(
     if !grant_repo::consume(&state.store, &token.grant_id).await? {
         return Err(refused().into());
     }
-    let backend = state.backend_for_record(&record)?;
+    let backend = state.backend_for_record(&record).await?;
     crate::tiering::note_blob_read(
         &state.store,
         record.blob_residency.as_deref().unwrap_or("local"),
@@ -3845,7 +3897,10 @@ async fn download_version<B: BlobStore>(
         )
         .into());
     }
-    let backend = state.residencies.get(&version.blob_residency)?.clone();
+    let backend = state
+        .residencies
+        .for_content(&state.store, &version.blob_residency, &version.digest)
+        .await?;
     crate::tiering::note_blob_read(&state.store, &version.blob_residency, &version.digest);
     crate::serve::serve_blob(
         &backend,

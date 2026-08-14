@@ -323,8 +323,12 @@ fn blob_table() -> TableDefinition {
             // is the migration, no backfill. Mutable by design; this
             // is the one row in the content path that is.
             built(string_field("tier").nullable(true)),
-            // When the mover flipped the row cold; the grace-delayed
-            // hot erase ages against this. NONE while hot.
+            // The placement flip marker: set when the mover flips a
+            // row in either direction, cleared once the DISPLACED
+            // copy is erased a grace period later. With `tier` it
+            // reads "cold, hot copy pending erase"; alone, "hot
+            // again, cold copy pending erase"; absent both ways, the
+            // placement is settled.
             built(datetime_field("demoted_at").nullable(true)),
             // Access recency for the tiering classifier: the last
             // byte read, day-coarse (the serving path updates it only

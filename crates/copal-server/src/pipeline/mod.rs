@@ -120,8 +120,10 @@ pub fn standard_registry<B: BlobStore>(
     let extract_store = store.clone();
     let extract_residencies = residencies.clone();
     let extract_addr = extractor_addr;
+    let scan_store = store.clone();
     let scan_residencies = residencies.clone();
     let scan_addr = clamav_addr.clone();
+    let sniff_store = store.clone();
     let sniff_residencies = residencies.clone();
     let derive_store = store.clone();
     let derive_residencies = residencies.clone();
@@ -186,6 +188,7 @@ pub fn standard_registry<B: BlobStore>(
             async move { extract_text(&store, &residencies, addr.as_deref(), input).await }
         })
         .activity("scan_malware", move |input: Value| {
+            let store = scan_store.clone();
             let residencies = scan_residencies.clone();
             let addr = scan_addr.clone();
             async move {
@@ -205,7 +208,7 @@ pub fn standard_registry<B: BlobStore>(
                 }
                 let digest = ContentDigest::parse(input["digest"].as_str().unwrap_or_default())?;
                 let residency = input["residency"].as_str().unwrap_or("local");
-                let blobs = residencies.get(residency)?;
+                let blobs = residencies.for_content(&store, residency, &digest).await?;
                 let content = blobs.read(&digest).await?;
                 // A scanner that cannot be reached is an ERROR, not a
                 // pass: the run retries, and the file never reaches
@@ -235,11 +238,12 @@ pub fn standard_registry<B: BlobStore>(
             async move { render_rendition(&store, &residencies, input).await }
         })
         .activity("sniff_type", move |input: Value| {
+            let store = sniff_store.clone();
             let residencies = sniff_residencies.clone();
             async move {
                 let digest = ContentDigest::parse(input["digest"].as_str().unwrap_or_default())?;
                 let residency = input["residency"].as_str().unwrap_or("local");
-                let blobs = residencies.get(residency)?;
+                let blobs = residencies.for_content(&store, residency, &digest).await?;
                 let (_, mut stream) = blobs.open_read(&digest).await?;
                 let head = match stream.next().await {
                     Some(chunk) => chunk?,
@@ -432,7 +436,13 @@ async fn transform_external<B: BlobStore>(
         let reason = format!("source is {declared_size} bytes; the transform ceiling is {ceiling}");
         return refuse_derived(store, &tenant, &derived, reason).await;
     }
-    let source_backend = residencies.get(input["source_residency"].as_str().unwrap_or("local"))?;
+    let source_backend = residencies
+        .for_content(
+            store,
+            input["source_residency"].as_str().unwrap_or("local"),
+            &source_digest,
+        )
+        .await?;
     let source = source_backend.read(&source_digest).await?;
     // A transform reading its source is a byte read; the tiering
     // classifier must see it or a much-derived-from source looks cold.
@@ -596,7 +606,13 @@ async fn render_rendition<B: BlobStore>(
         return refuse_derived(store, &tenant, &derived, reason).await;
     }
 
-    let source_backend = residencies.get(input["source_residency"].as_str().unwrap_or("local"))?;
+    let source_backend = residencies
+        .for_content(
+            store,
+            input["source_residency"].as_str().unwrap_or("local"),
+            &source_digest,
+        )
+        .await?;
     let source = source_backend.read(&source_digest).await?;
     // A derive reading its source is a byte read, same as transform.
     crate::tiering::note_blob_read(
@@ -717,7 +733,7 @@ async fn extract_text<B: BlobStore>(
     let declared = input["declared_type"].as_str().unwrap_or_default();
     let sniffed = input["sniffed_type"].as_str().unwrap_or_default();
 
-    let blobs = residencies.get(residency)?;
+    let blobs = residencies.for_content(store, residency, &digest).await?;
     let content = blobs.read(&digest).await?;
 
     let native = declared.starts_with("text/")

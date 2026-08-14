@@ -19,6 +19,7 @@ pub mod kms;
 pub mod markers;
 pub mod mcp;
 pub mod metrics;
+pub mod mover;
 pub mod netguard;
 pub mod pipeline;
 pub mod rate;

@@ -53,6 +53,33 @@ pub fn incr(name: &str) {
     add(name, 1);
 }
 
+/// Registered gauges, separate from the counters because their verbs
+/// differ: a gauge is SET to the latest observation (a sweep's count
+/// of the moment), never accumulated.
+fn gauges() -> &'static Counters {
+    static GAUGES: OnceLock<Counters> = OnceLock::new();
+    GAUGES.get_or_init(|| RwLock::new(BTreeMap::new()))
+}
+
+/// Set a gauge to the latest observation, creating it on first use.
+/// The same bounded-series rule as [`add`]: label sets come from
+/// configuration and operator actions, never from request input.
+pub fn set_gauge(name: &str, value: u64) {
+    if let Ok(map) = gauges().read() {
+        if let Some(cell) = map.get(name) {
+            cell.store(value, Ordering::Relaxed);
+            return;
+        }
+    }
+    let Ok(mut map) = gauges().write() else {
+        return;
+    };
+    let cell = map
+        .entry(name.to_owned())
+        .or_insert_with(|| Box::leak(Box::new(AtomicU64::new(0))));
+    cell.store(value, Ordering::Relaxed);
+}
+
 /// Record one served request: its status class and its duration.
 pub fn observe_request(status: u16, seconds: f64) {
     let class = match status {
@@ -97,6 +124,18 @@ pub fn render() -> String {
         out.push_str(&format!("{name} {value}\n"));
     }
 
+    if let Ok(map) = gauges().read() {
+        let mut seen_gauge: BTreeMap<&str, ()> = BTreeMap::new();
+        for (name, cell) in map.iter() {
+            let value = cell.load(Ordering::Relaxed);
+            let base = name.split('{').next().unwrap_or(name);
+            if seen_gauge.insert(base, ()).is_none() {
+                out.push_str(&format!("# TYPE {base} gauge\n"));
+            }
+            out.push_str(&format!("{name} {value}\n"));
+        }
+    }
+
     out.push_str("# TYPE copal_http_request_duration_seconds summary\n");
     out.push_str(&format!(
         "copal_http_request_duration_seconds_sum {:.6}\n",
@@ -111,6 +150,15 @@ pub fn render() -> String {
 /// Test support: current value of one series, zero when absent.
 pub fn value(name: &str) -> u64 {
     counters()
+        .read()
+        .ok()
+        .and_then(|map| map.get(name).map(|c| c.load(Ordering::Relaxed)))
+        .unwrap_or(0)
+}
+
+/// Test support: current value of one gauge, zero when absent.
+pub fn gauge_value(name: &str) -> u64 {
+    gauges()
         .read()
         .ok()
         .and_then(|map| map.get(name).map(|c| c.load(Ordering::Relaxed)))
@@ -138,5 +186,15 @@ mod tests {
         assert!(text.contains("copal_http_request_duration_seconds_count 2"));
         // One TYPE line per metric family, labels excluded.
         assert_eq!(text.matches("# TYPE copal_http_responses_total").count(), 1);
+    }
+
+    #[test]
+    fn gauges_set_to_the_latest_observation() {
+        set_gauge("copal_test_depth{pool=\"a\"}", 7);
+        set_gauge("copal_test_depth{pool=\"a\"}", 3);
+        assert_eq!(gauge_value("copal_test_depth{pool=\"a\"}"), 3);
+        let text = render();
+        assert!(text.contains("# TYPE copal_test_depth gauge"));
+        assert!(text.contains("copal_test_depth{pool=\"a\"} 3"));
     }
 }

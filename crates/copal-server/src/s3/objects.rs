@@ -129,7 +129,7 @@ pub(crate) async fn copy_object<B: BlobStore>(
         .unwrap_or("local")
         .to_owned();
     let store_key = match blob_repo::get_location(&state.store, &residency, &digest).await {
-        Ok(Some((store_key, _))) => store_key,
+        Ok(Some(location)) => location.store_key,
         Ok(None) => {
             return xml_error(
                 StatusCode::INTERNAL_SERVER_ERROR,

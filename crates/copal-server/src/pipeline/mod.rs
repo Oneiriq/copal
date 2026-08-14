@@ -434,6 +434,13 @@ async fn transform_external<B: BlobStore>(
     }
     let source_backend = residencies.get(input["source_residency"].as_str().unwrap_or("local"))?;
     let source = source_backend.read(&source_digest).await?;
+    // A transform reading its source is a byte read; the tiering
+    // classifier must see it or a much-derived-from source looks cold.
+    crate::tiering::note_blob_read(
+        store,
+        input["source_residency"].as_str().unwrap_or("local"),
+        &source_digest,
+    );
     if source.len() as u64 > ceiling {
         let reason = "source exceeds the transform ceiling".to_owned();
         return refuse_derived(store, &tenant, &derived, reason).await;
@@ -591,6 +598,12 @@ async fn render_rendition<B: BlobStore>(
 
     let source_backend = residencies.get(input["source_residency"].as_str().unwrap_or("local"))?;
     let source = source_backend.read(&source_digest).await?;
+    // A derive reading its source is a byte read, same as transform.
+    crate::tiering::note_blob_read(
+        store,
+        input["source_residency"].as_str().unwrap_or("local"),
+        &source_digest,
+    );
     if source.len() as u64 > MAX_DERIVE_SOURCE_BYTES {
         let reason = "source exceeds the decode ceiling".to_owned();
         return refuse_derived(store, &tenant, &derived, reason).await;

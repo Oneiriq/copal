@@ -65,14 +65,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let build_residencies =
         || -> Result<copal_server::app::Residencies<ObjectStore>, Box<dyn std::error::Error>> {
             let mut named = std::collections::HashMap::new();
-            for (name, backend_config) in &config.residencies {
+            for (name, residency_config) in &config.residencies {
                 if !copal_store::repo::tenant::valid_residency_name(name) {
                     return Err(format!(
                         "residency name {name} is invalid: 1..=32 lowercase alphanumeric",
                     )
                     .into());
                 }
-                let mut backend = ObjectStore::open_backend(backend_config)?;
+                let mut backend = ObjectStore::open_backend(&residency_config.backend)?;
                 if let Some(key) = &config.blob_encryption_key {
                     backend = backend.with_cipher(key)?;
                 }
@@ -87,6 +87,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             })
         };
     let residencies = build_residencies()?;
+    // Tiers validate at boot, whole-deployment: names hold the
+    // residency alphabet, archive classes refuse until recall ships,
+    // no tier carries its own key, and every tier backend must open.
+    // A deployment cannot come up with a tier its policies could
+    // strand bytes behind.
+    let tiering = {
+        let mut topology = copal_server::tiering::Topology::default();
+        let mut register =
+            |residency: &str,
+             tiers: &std::collections::HashMap<String, copal_blob::tier::TierConfig>|
+             -> Result<(), Box<dyn std::error::Error>> {
+                copal_blob::tier::validate_tiers(residency, tiers)?;
+                let mut classes = std::collections::HashMap::new();
+                for (name, tier) in tiers {
+                    ObjectStore::open_backend(&tier.backend)?;
+                    classes.insert(name.clone(), tier.class);
+                }
+                topology.insert(residency, classes);
+                Ok(())
+            };
+        register("local", &config.local_tiers)?;
+        for (name, residency_config) in &config.residencies {
+            register(name, &residency_config.tiers)?;
+        }
+        topology
+    };
+    if !tiering.is_empty() {
+        tracing::info!("storage tiers configured; observe-only classifier active");
+    }
     if !residencies.named.is_empty() {
         tracing::info!(
             count = residencies.named.len(),
@@ -142,6 +171,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_flow(registry.clone())
         .with_auth(config.auth.clone())
         .with_residencies(residencies.named.clone())
+        .with_tiering(tiering.clone())
         .with_scan_gate(config.clamav_addr.is_some())
         .with_transformers(config.transformers.clone())
         .with_fleet(config.console_fleet.then(|| config.store.clone()))
@@ -373,6 +403,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         build_residencies()?,
         config.sweeps,
         instance_id,
+        tiering,
     ));
 
     // Embedding backfill: a model change drains old geometry in the

@@ -25,11 +25,22 @@ only party who knows, and every fail direction lands on withholding
 or on yesterday's behavior. The classifier seam this file warned
 against stayed rejected; the CHANGELOG carries the details.
 
-1. **Lifecycle and tiering.** Objects live at one cost forever. A
-   policy that moves cold bytes to cheaper storage, and the recall
-   path back, is the operating expense every hosted service competes
-   on. Retention already carries the policy vocabulary this would
-   extend.
+1. **Lifecycle and tiering: the mover, then recall.** The design
+   ([design/lifecycle-tiering.md](design/lifecycle-tiering.md))
+   ships in three stages and the first is done: tiers configure and
+   validate inside their residency, the per-tenant policy row landed
+   beside retention and storage, byte reads record day-coarse
+   recency on the blob row, and the observe-only classifier reports
+   candidates, bytes, and the measured would-be recall rate each
+   sweep pass while touching nothing. What remains is stage two --
+   the mover for online classes (copy, verify, flip, grace-erase,
+   with the symmetric promote, the GC/backup/reseal legs, and the
+   restore drill's per-tier check) -- and stage three, recall, which
+   unlocks archive classes with the 202-and-run answer on REST and
+   `InvalidObjectState` plus `RestoreObject` on the S3 face. The
+   observe stage should run against real traffic long enough to
+   check the cost model's recall assumption before stage two moves
+   a byte.
 
 2. **Multi-region replication.** Residencies place bytes; nothing
    copies them. A second region is currently a second deployment.

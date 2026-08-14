@@ -214,6 +214,11 @@ async fn redeem_edge<B: BlobStore>(
     }
     let digest = record.digest.as_ref().expect("servable implies digest");
     let backend = state.app.backend_for_record(&record)?;
+    crate::tiering::note_blob_read(
+        &state.app.store,
+        record.blob_residency.as_deref().unwrap_or("local"),
+        digest,
+    );
     crate::serve::serve_blob(
         &backend,
         &headers,

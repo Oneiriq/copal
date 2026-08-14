@@ -178,6 +178,12 @@ pub struct AppState<B: BlobStore> {
     /// Open caller sessions, reused across requests by the identity
     /// that minted them.
     pub sessions: std::sync::Arc<crate::session_cache::SessionCache>,
+    /// Which tiers each residency configures: the tiering policy
+    /// surface validates names against it, and the classifier asks it
+    /// whether a blob's residency carries the named tier. Empty means
+    /// no tiering anywhere, which is every deployment that has not
+    /// configured a `tiers` block.
+    pub tiering: crate::tiering::Topology,
 }
 
 impl<B: BlobStore> AppState<B> {
@@ -203,7 +209,14 @@ impl<B: BlobStore> AppState<B> {
             engine_access: None,
             engine_sessions: false,
             sessions: std::sync::Arc::new(crate::session_cache::SessionCache::default()),
+            tiering: crate::tiering::Topology::default(),
         }
+    }
+
+    /// Install the tier topology validated at boot.
+    pub fn with_tiering(mut self, tiering: crate::tiering::Topology) -> Self {
+        self.tiering = tiering;
+        self
     }
 
     /// Install the caller-session cache.
@@ -660,6 +673,17 @@ pub fn admin_router<B: BlobStore + 'static>(state: AppState<B>) -> Router {
                 .get(get_quota::<B>)
                 .delete(clear_quota::<B>),
         )
+        .route(
+            "/v1/admin/tenants/{tenant}/tiering",
+            put(crate::tiering::set_policy::<B>)
+                .get(crate::tiering::get_policy::<B>)
+                .delete(crate::tiering::clear_policy::<B>),
+        )
+        .route(
+            "/v1/admin/tenants/{tenant}/files/{file}/tier",
+            put(crate::tiering::set_pin::<B>).delete(crate::tiering::clear_pin::<B>),
+        )
+        .route("/v1/admin/tiering/report", get(crate::tiering::report::<B>))
         .route("/metrics", get(metrics_scrape::<B>))
         .with_state(state)
 }
@@ -2216,6 +2240,11 @@ async fn serve_rendition<B: BlobStore>(
         .as_ref()
         .ok_or_else(|| CopalError::Store("servable file without digest".into()))?;
     let backend = state.backend_for_record(&record)?;
+    crate::tiering::note_blob_read(
+        &state.store,
+        record.blob_residency.as_deref().unwrap_or("local"),
+        digest,
+    );
     crate::serve::serve_blob(
         &backend,
         headers,
@@ -3153,6 +3182,11 @@ async fn download_content<B: BlobStore>(
         .as_ref()
         .ok_or_else(|| CopalError::Store("servable file without digest".into()))?;
     let backend = state.backend_for_record(&record)?;
+    crate::tiering::note_blob_read(
+        &state.store,
+        record.blob_residency.as_deref().unwrap_or("local"),
+        digest,
+    );
     crate::serve::serve_blob(
         &backend,
         &headers,
@@ -3566,6 +3600,11 @@ async fn redeem_grant<B: BlobStore>(
         return Err(refused().into());
     }
     let backend = state.backend_for_record(&record)?;
+    crate::tiering::note_blob_read(
+        &state.store,
+        record.blob_residency.as_deref().unwrap_or("local"),
+        spec.digest,
+    );
     crate::serve::serve_blob(&backend, &headers, spec).await
 }
 
@@ -3807,6 +3846,7 @@ async fn download_version<B: BlobStore>(
         .into());
     }
     let backend = state.residencies.get(&version.blob_residency)?.clone();
+    crate::tiering::note_blob_read(&state.store, &version.blob_residency, &version.digest);
     crate::serve::serve_blob(
         &backend,
         &headers,

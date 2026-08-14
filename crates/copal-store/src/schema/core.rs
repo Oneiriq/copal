@@ -37,8 +37,40 @@ pub fn tables() -> Vec<TableDefinition> {
         tenant_storage_table(),
         tenant_quota_table(),
         tenant_retention_table(),
+        tenant_tiering_table(),
         tenant_usage_table(),
     ]
+}
+
+/// Tiering policy, per tenant: the third row in the drawer beside
+/// retention and storage. Evaluated LIVE at classification, the
+/// deliberate opposite of retention's stamp-at-creation, because the
+/// fail directions differ: retention's is erasure (a policy change
+/// must not shorten what exists), tiering's is latency (a policy is
+/// stated in order to reach the corpus it describes, and stamping
+/// would exempt exactly the cold data the operator is paying for).
+fn tenant_tiering_table() -> TableDefinition {
+    table_schema("tenant_tiering")
+        .with_mode(TableMode::Schemafull)
+        .with_fields([
+            built(string_field("tenant_id").assertion("$value != ''")),
+            // A configured tier name; validation at the surface
+            // refuses names no residency configures.
+            built(string_field("tier").assertion("$value != ''")),
+            built(int_field("after_seconds").assertion("$value >= 0")),
+            // What `after_seconds` ages from: the version's creation
+            // (no tracking needed) or the last byte read (blob-row
+            // `last_read`, falling back to creation age when no read
+            // was ever recorded -- the other honest basis, not
+            // "unknown means cold now").
+            built(string_field("basis").assertion("$value INSIDE ['created', 'accessed']")),
+            // Objects below this never move: S3 Standard-IA bills 128
+            // KiB per object minimum and every transition costs a
+            // request, so small objects can cost more cold than hot.
+            built(int_field("min_bytes").default("0").assertion("$value >= 0")),
+            built(datetime_field("updated_at").value("time::now()")),
+        ])
+        .with_indexes([unique_index("uniq_tenant_tiering", ["tenant_id"])])
 }
 
 /// Default retention for new versions, per tenant. The applied value
@@ -201,6 +233,18 @@ fn file_table() -> TableDefinition {
             // what the reaper sweeps to `failed`.
             built(string_field("upload_lease_owner").nullable(true)),
             built(datetime_field("upload_lease_expires_at").nullable(true)),
+            // The operator's tiering escape hatch: 'hot' holds this
+            // file's blob on the primary backend whatever the policy
+            // says. On the file row because a pin is about a file's
+            // availability, not a blob's placement; the classifier
+            // reads it through the blob row's inbound set, so one
+            // tenant's pin holds a shared blob hot for everyone --
+            // stated in the accounting rather than hidden.
+            built(
+                string_field("tier_pin")
+                    .nullable(true)
+                    .assertion("$value == NONE OR $value INSIDE ['hot']"),
+            ),
             // '' while live, the record id string once deleted. Probed:
             // VALUE recomputes on update, so the composite unique below
             // holds exactly one live row per (tenant, path).
@@ -273,6 +317,21 @@ fn blob_table() -> TableDefinition {
             // live data. Sweeps refresh this column.
             built(int_field("refcount").default("0")),
             built(datetime_field("unreferenced_since").nullable(true)),
+            // Placement: which of the residency's tiers currently
+            // holds the object. NONE means the primary backend, which
+            // is every row written before tiering existed -- the null
+            // is the migration, no backfill. Mutable by design; this
+            // is the one row in the content path that is.
+            built(string_field("tier").nullable(true)),
+            // When the mover flipped the row cold; the grace-delayed
+            // hot erase ages against this. NONE while hot.
+            built(datetime_field("demoted_at").nullable(true)),
+            // Access recency for the tiering classifier: the last
+            // byte read, day-coarse (the serving path updates it only
+            // when the stored value is older than a day, after the
+            // response). Lives here rather than on the file row
+            // because this row is never listed and fires no events.
+            built(datetime_field("last_read").nullable(true)),
             built(
                 string_field("lock_mode")
                     .nullable(true)

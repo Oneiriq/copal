@@ -11,6 +11,7 @@
 //! Storage, and Azure Blob Storage, all behind the same port.
 
 pub mod crypto;
+pub mod tier;
 
 use futures::Stream;
 use futures::StreamExt as _;

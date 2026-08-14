@@ -993,6 +993,11 @@ async fn get_object<B: BlobStore>(
         Ok(backend) => backend,
         Err(err) => return copal_to_s3(err.0),
     };
+    crate::tiering::note_blob_read(
+        &gateway.app.store,
+        record.blob_residency.as_deref().unwrap_or("local"),
+        digest,
+    );
     match serve_blob(
         &backend,
         &headers,

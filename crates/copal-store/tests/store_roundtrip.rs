@@ -278,8 +278,9 @@ async fn completion_links_blob_and_recount_derives_references() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(loc.0, "local");
-    assert_eq!(loc.1, digest.storage_key());
+    assert_eq!(loc.store_key, "local");
+    assert_eq!(loc.storage_path, digest.storage_key());
+    assert_eq!(loc.tier, None, "every existing row reads the primary tier");
 
     // Two files completing onto the same content: the authoritative
     // reference count is DERIVED from the links, immune to the

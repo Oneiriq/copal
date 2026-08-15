@@ -30,6 +30,7 @@ pub fn resource() -> Resource {
         // lets the prefix rule credit idx_file_listing for the
         // created_at sort.
         pinned: vec!["tenant_id".into()],
+        pinned_either: vec![],
         filterable: vec!["state".into()],
         // The set the schema asserts, so a caller narrowing by
         // state picks from what exists rather than guessing at

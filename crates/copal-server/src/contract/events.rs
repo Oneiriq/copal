@@ -22,6 +22,7 @@ pub fn resource() -> Resource {
             FieldExposure::column("created_at"),
         ],
         pinned: vec!["tenant_id".into()],
+        pinned_either: vec![],
         filterable: vec!["action".into()],
         sortable: vec!["created_at".into()],
         max_page_size: 100,

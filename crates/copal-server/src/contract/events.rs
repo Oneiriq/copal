@@ -4,12 +4,14 @@
 //! nothing here is anything else. `super::contract` puts them
 //! together, because what janus validates is the whole.
 
-use janus::{FieldExposure, Resource};
+use janus::{FieldExposure, Resource, ResourceFaces};
 
 pub fn resource() -> Resource {
     Resource {
         name: "events".into(),
         table: "file_event".into(),
+        // A browsable collection: paged and reachable by id.
+        faces: ResourceFaces::ALL,
         fields: vec![
             // `action` keeps its column name on the wire:
             // `event` is reserved in SurrealDB v3, and the

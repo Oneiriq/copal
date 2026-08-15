@@ -362,6 +362,13 @@
         ],
         "type": "object"
       }
+    },
+    "securitySchemes": {
+      "header": {
+        "in": "header",
+        "name": "x-copal-tenant",
+        "type": "apiKey"
+      }
     }
   },
   "info": {
@@ -1565,6 +1572,11 @@
       }
     }
   },
+  "security": [
+    {
+      "header": []
+    }
+  ],
   "x-limits": {
     "max_complexity": 500,
     "max_depth": 10,

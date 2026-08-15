@@ -21,6 +21,7 @@ pub fn resource() -> Resource {
             FieldExposure::column("ended_at"),
         ],
         pinned: vec!["tenant_id".into()],
+        pinned_either: vec![],
         // status rides idx_run_ops (tenant_id, status, created_at),
         // which is also what makes the created_at sort reachable.
         filterable: vec!["status".into()],

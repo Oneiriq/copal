@@ -4,12 +4,16 @@
 //! nothing here is anything else. `super::contract` puts them
 //! together, because what janus validates is the whole.
 
-use janus::{Action, ActionField, ActionOutput, FieldExposure, Resource, SubResource, TypeRef};
+use janus::{
+    Action, ActionField, ActionOutput, FieldExposure, Resource, ResourceFaces, SubResource, TypeRef,
+};
 
 pub fn resource() -> Resource {
     Resource {
         name: "webhooks".into(),
         table: "webhook_endpoint".into(),
+        // A browsable collection: paged and reachable by id.
+        faces: ResourceFaces::ALL,
         fields: vec![
             FieldExposure::column("target_url"),
             FieldExposure::column("events"),

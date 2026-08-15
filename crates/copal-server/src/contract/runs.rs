@@ -4,12 +4,14 @@
 //! nothing here is anything else. `super::contract` puts them
 //! together, because what janus validates is the whole.
 
-use janus::{Action, ActionField, ActionOutput, FieldExposure, Resource, TypeRef};
+use janus::{Action, ActionField, ActionOutput, FieldExposure, Resource, ResourceFaces, TypeRef};
 
 pub fn resource() -> Resource {
     Resource {
         name: "runs".into(),
         table: "workflow_run".into(),
+        // A browsable collection: paged and reachable by id.
+        faces: ResourceFaces::ALL,
         fields: vec![
             FieldExposure::renamed("workflow_key", "workflow"),
             FieldExposure::column("status"),

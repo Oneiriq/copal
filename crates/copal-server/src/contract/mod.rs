@@ -12,7 +12,7 @@
 //! hands janus the whole, because the checks that matter span it: a
 //! rate class a resource names, a query that collides with another.
 
-use janus::{Contract, ContractLimits};
+use janus::{AuthScheme, Contract, ContractLimits};
 
 mod events;
 mod file_text;
@@ -51,6 +51,20 @@ pub fn contract() -> Contract {
         name: "copal".into(),
         version: "0.1.0".into(),
         ir_revision: 1,
+        // Every generated client has always sent this header; until
+        // janus learned to carry a scheme it was hardcoded in the
+        // generators, which made them clients for copal rather than
+        // for contracts. Declared here, it is copal's convention
+        // living in copal's contract -- and the differ now treats
+        // changing it as breaking, which it is.
+        auth: AuthScheme::Header {
+            name: "x-copal-tenant".into(),
+            credential: "tenant".into(),
+        },
+        // Where the resource faces hang. The default, stated because
+        // copal's routes really are versioned and a reader should not
+        // have to know janus's default to know copal's paths.
+        api_prefix: "/v1".into(),
         // The ceilings the served schema enforces. Declared here so
         // they appear in the artifacts and tightening them is a
         // breaking change the differ names. The schema has no cycles,

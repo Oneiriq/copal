@@ -140,15 +140,11 @@ impl Client {
     }
 
     pub async fn list_files(&self, limit: Option<u32>, cursor: Option<&str>) -> Result<FilePage, Error> {
-        let mut url = format!("{}/v1/files", self.base_url);
-        let mut query: Vec<(String, String)> = Vec::new();
-        if let Some(limit) = limit { query.push(("limit".into(), limit.to_string())); }
-        if let Some(cursor) = cursor { query.push(("cursor".into(), cursor.to_string())); }
-        if !query.is_empty() {
-            let joined: Vec<String> = query.iter().map(|(k, v)| format!("{k}={v}")).collect();
-            url = format!("{url}?{}", joined.join("&"));
-        }
-        Ok(self.http.get(url).header("x-copal-tenant", &self.tenant).send().await?.error_for_status()?.json().await?)
+        let url = format!("{}/v1/files", self.base_url);
+        let mut query: Vec<(&str, String)> = Vec::new();
+        if let Some(limit) = limit { query.push(("limit", limit.to_string())); }
+        if let Some(cursor) = cursor { query.push(("cursor", cursor.to_string())); }
+        Ok(self.http.get(url).header("x-copal-tenant", &self.tenant).query(&query).send().await?.error_for_status()?.json().await?)
     }
 
     pub async fn get_file(&self, id: &str) -> Result<File, Error> {
@@ -157,15 +153,11 @@ impl Client {
     }
 
     pub async fn list_versions_files(&self, id: &str, limit: Option<u32>, cursor: Option<&str>)                  -> Result<FileVersionPage, Error> {
-        let mut url = format!("{}/v1/files/{id}/versions", self.base_url);
-        let mut query: Vec<(String, String)> = Vec::new();
-                         if let Some(limit) = limit { query.push(("limit".into(), limit.to_string())); }
-                         if let Some(cursor) = cursor { query.push(("cursor".into(), cursor.to_string())); }
-                         if !query.is_empty() {
-                             let joined: Vec<String> = query.iter().map(|(k, v)| format!("{k}={v}")).collect();
-                             url = format!("{url}?{}", joined.join("&"));
-                         }
-                         Ok(self.http.get(url).header("x-copal-tenant", &self.tenant)                 .send().await?.error_for_status()?.json().await?)
+        let url = format!("{}/v1/files/{id}/versions", self.base_url);
+        let mut query: Vec<(&str, String)> = Vec::new();
+                         if let Some(limit) = limit { query.push(("limit", limit.to_string())); }
+                         if let Some(cursor) = cursor { query.push(("cursor", cursor.to_string())); }
+                         Ok(self.http.get(url).header("x-copal-tenant", &self.tenant).query(&query)                 .send().await?.error_for_status()?.json().await?)
     }
 
     pub async fn create_file(&self, input: Value) -> Result<File, Error> {
@@ -210,15 +202,11 @@ impl Client {
     }
 
     pub async fn list_webhooks(&self, limit: Option<u32>, cursor: Option<&str>) -> Result<WebhookPage, Error> {
-        let mut url = format!("{}/v1/webhooks", self.base_url);
-        let mut query: Vec<(String, String)> = Vec::new();
-        if let Some(limit) = limit { query.push(("limit".into(), limit.to_string())); }
-        if let Some(cursor) = cursor { query.push(("cursor".into(), cursor.to_string())); }
-        if !query.is_empty() {
-            let joined: Vec<String> = query.iter().map(|(k, v)| format!("{k}={v}")).collect();
-            url = format!("{url}?{}", joined.join("&"));
-        }
-        Ok(self.http.get(url).header("x-copal-tenant", &self.tenant).send().await?.error_for_status()?.json().await?)
+        let url = format!("{}/v1/webhooks", self.base_url);
+        let mut query: Vec<(&str, String)> = Vec::new();
+        if let Some(limit) = limit { query.push(("limit", limit.to_string())); }
+        if let Some(cursor) = cursor { query.push(("cursor", cursor.to_string())); }
+        Ok(self.http.get(url).header("x-copal-tenant", &self.tenant).query(&query).send().await?.error_for_status()?.json().await?)
     }
 
     pub async fn get_webhook(&self, id: &str) -> Result<Webhook, Error> {
@@ -227,15 +215,11 @@ impl Client {
     }
 
     pub async fn list_deliveries_webhooks(&self, id: &str, limit: Option<u32>, cursor: Option<&str>)                  -> Result<WebhookDeliveryPage, Error> {
-        let mut url = format!("{}/v1/webhooks/{id}/deliveries", self.base_url);
-        let mut query: Vec<(String, String)> = Vec::new();
-                         if let Some(limit) = limit { query.push(("limit".into(), limit.to_string())); }
-                         if let Some(cursor) = cursor { query.push(("cursor".into(), cursor.to_string())); }
-                         if !query.is_empty() {
-                             let joined: Vec<String> = query.iter().map(|(k, v)| format!("{k}={v}")).collect();
-                             url = format!("{url}?{}", joined.join("&"));
-                         }
-                         Ok(self.http.get(url).header("x-copal-tenant", &self.tenant)                 .send().await?.error_for_status()?.json().await?)
+        let url = format!("{}/v1/webhooks/{id}/deliveries", self.base_url);
+        let mut query: Vec<(&str, String)> = Vec::new();
+                         if let Some(limit) = limit { query.push(("limit", limit.to_string())); }
+                         if let Some(cursor) = cursor { query.push(("cursor", cursor.to_string())); }
+                         Ok(self.http.get(url).header("x-copal-tenant", &self.tenant).query(&query)                 .send().await?.error_for_status()?.json().await?)
     }
 
     pub async fn register_webhook(&self, input: Value) -> Result<Value, Error> {
@@ -250,15 +234,11 @@ impl Client {
     }
 
     pub async fn list_events(&self, limit: Option<u32>, cursor: Option<&str>) -> Result<EventPage, Error> {
-        let mut url = format!("{}/v1/events", self.base_url);
-        let mut query: Vec<(String, String)> = Vec::new();
-        if let Some(limit) = limit { query.push(("limit".into(), limit.to_string())); }
-        if let Some(cursor) = cursor { query.push(("cursor".into(), cursor.to_string())); }
-        if !query.is_empty() {
-            let joined: Vec<String> = query.iter().map(|(k, v)| format!("{k}={v}")).collect();
-            url = format!("{url}?{}", joined.join("&"));
-        }
-        Ok(self.http.get(url).header("x-copal-tenant", &self.tenant).send().await?.error_for_status()?.json().await?)
+        let url = format!("{}/v1/events", self.base_url);
+        let mut query: Vec<(&str, String)> = Vec::new();
+        if let Some(limit) = limit { query.push(("limit", limit.to_string())); }
+        if let Some(cursor) = cursor { query.push(("cursor", cursor.to_string())); }
+        Ok(self.http.get(url).header("x-copal-tenant", &self.tenant).query(&query).send().await?.error_for_status()?.json().await?)
     }
 
     pub async fn get_event(&self, id: &str) -> Result<Event, Error> {
@@ -267,15 +247,11 @@ impl Client {
     }
 
     pub async fn list_runs(&self, limit: Option<u32>, cursor: Option<&str>) -> Result<RunPage, Error> {
-        let mut url = format!("{}/v1/runs", self.base_url);
-        let mut query: Vec<(String, String)> = Vec::new();
-        if let Some(limit) = limit { query.push(("limit".into(), limit.to_string())); }
-        if let Some(cursor) = cursor { query.push(("cursor".into(), cursor.to_string())); }
-        if !query.is_empty() {
-            let joined: Vec<String> = query.iter().map(|(k, v)| format!("{k}={v}")).collect();
-            url = format!("{url}?{}", joined.join("&"));
-        }
-        Ok(self.http.get(url).header("x-copal-tenant", &self.tenant).send().await?.error_for_status()?.json().await?)
+        let url = format!("{}/v1/runs", self.base_url);
+        let mut query: Vec<(&str, String)> = Vec::new();
+        if let Some(limit) = limit { query.push(("limit", limit.to_string())); }
+        if let Some(cursor) = cursor { query.push(("cursor", cursor.to_string())); }
+        Ok(self.http.get(url).header("x-copal-tenant", &self.tenant).query(&query).send().await?.error_for_status()?.json().await?)
     }
 
     pub async fn get_run(&self, id: &str) -> Result<Run, Error> {

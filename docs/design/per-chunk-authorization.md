@@ -254,7 +254,7 @@ whole objects under the file's level, as ever. See non-goals.
 ## API surface
 
 **Contract and differ.** `file_fetch` gains an optional `markers`
-input. In janus's vocabulary that is `Change::Compatible` ("optional
+input. In kayak's vocabulary that is `Change::Compatible` ("optional
 input added"); only a required input would be `Breaking`, and nothing
 here requires. The search query declaration changes not at all: no
 new inputs, no new outputs, withheld passages simply never appear.

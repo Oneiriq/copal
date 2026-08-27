@@ -2,9 +2,9 @@
 //!
 //! One entity per file: everything here is that entity, and
 //! nothing here is anything else. `super::contract` puts them
-//! together, because what janus validates is the whole.
+//! together, because what kayak validates is the whole.
 
-use janus::{ActionField, Query, TypeRef};
+use kayak::{ActionField, Query, TypeRef};
 
 pub fn query() -> Query {
     Query {

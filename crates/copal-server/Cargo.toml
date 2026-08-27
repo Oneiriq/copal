@@ -35,8 +35,8 @@ bytes = { workspace = true }
 # over copal-store's real schema; the drift gate compares generated
 # artifacts against the checked-in documents, and the RUNTIME serves
 # /graphql from the very same contract object; resolvers dispatch into
-# this crate's repositories through Janus middleware.
-oneiriq-janus = { git = "ssh://git@github.com/Oneiriq/janus.git", branch = "main", features = [
+# this crate's repositories through Kayak middleware.
+oneiriq-kayak = { git = "ssh://git@github.com/Oneiriq/kayak.git", branch = "main", features = [
     "graphql",
     "console",
 ] }
@@ -71,13 +71,13 @@ opentelemetry = "0.32"
 
 [dev-dependencies]
 base64 = "0.22"
-# The planner gate (`tests/planner.rs`) rides janus's `verify`
-# feature: the one part of janus that needs a database client, which
-# janus deliberately does not carry by default. Declared here so the
+# The planner gate (`tests/planner.rs`) rides kayak's `verify`
+# feature: the one part of kayak that needs a database client, which
+# kayak deliberately does not carry by default. Declared here so the
 # feature reaches test builds only and the shipped binary gains
 # nothing; the client it pulls unifies with the workspace surql's
 # client-rustls.
-oneiriq-janus = { git = "ssh://git@github.com/Oneiriq/janus.git", branch = "main", features = [
+oneiriq-kayak = { git = "ssh://git@github.com/Oneiriq/kayak.git", branch = "main", features = [
     "verify",
 ] }
 tempfile = { workspace = true }

@@ -1114,7 +1114,7 @@ dependencies = [
  "humantime",
  "image",
  "maud",
- "oneiriq-janus",
+ "oneiriq-kayak",
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
@@ -3787,9 +3787,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
-name = "oneiriq-janus"
+name = "oneiriq-kayak"
 version = "0.1.0"
-source = "git+ssh://git@github.com/Oneiriq/janus.git?branch=main#266dbdf0abc2063b85162acaa021fca4ece5e78a"
+source = "git+ssh://git@github.com/Oneiriq/kayak.git?branch=main#9eff4c02a70bd9a05523186af83cf2f9c28922ad"
 dependencies = [
  "async-graphql",
  "futures-core",

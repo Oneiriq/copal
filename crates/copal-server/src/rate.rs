@@ -10,7 +10,7 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use janus::runtime::RateStore;
+use kayak::runtime::RateStore;
 
 use copal_store::repo::rate as rate_repo;
 use copal_store::Store;
@@ -39,11 +39,11 @@ impl RateStore for SurrealRateStore {
         bucket: &'a str,
         units: u64,
         per_minute: u64,
-    ) -> janus::runtime::BoxFuture<'a, Result<bool, janus::runtime::JanusError>> {
+    ) -> kayak::runtime::BoxFuture<'a, Result<bool, kayak::runtime::KayakError>> {
         Box::pin(async move {
             let minute = Self::minute();
             let internal =
-                |e: copal_core::CopalError| janus::runtime::JanusError::Internal(e.to_string());
+                |e: copal_core::CopalError| kayak::runtime::KayakError::Internal(e.to_string());
             let key = rate_repo::window_key(bucket, minute).map_err(internal)?;
             rate_repo::ensure_window(&self.store, &key, minute)
                 .await

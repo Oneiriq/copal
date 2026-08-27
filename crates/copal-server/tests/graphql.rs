@@ -228,7 +228,7 @@ async fn tenancy_is_enforced_by_janus_middleware() {
     let (router, _dir) = test_router().await;
     seed_file(&router, "guarded.txt", b"secret").await;
 
-    // No tenant header: the Janus RequireTenant middleware rejects with
+    // No tenant header: the Kayak RequireTenant middleware rejects with
     // a coded error; data.files is null, not an empty page.
     let response = router
         .clone()

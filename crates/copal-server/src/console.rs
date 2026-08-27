@@ -1,4 +1,4 @@
-//! The operator console: janus's contract-driven pages mounted on
+//! The operator console: kayak's contract-driven pages mounted on
 //! the admin surface, plus the deployment panels only copal can
 //! know.
 //!
@@ -10,7 +10,7 @@
 //! a split `COPAL_ADMIN_BIND` keeps it off the tenant network.
 //!
 //! The deployment home lists tenants and tails the audit trail.
-//! Everything under `/t/{tenant}/` is the janus console for that
+//! Everything under `/t/{tenant}/` is the kayak console for that
 //! tenant: the operator acts as the tenant with full scopes through
 //! the same dispatcher every API face uses, so what the console
 //! shows and refuses is what the API shows and refuses.
@@ -26,11 +26,11 @@ use copal_core::TenantId;
 
 use crate::app::AppState;
 
-/// The console's look belongs to janus, which generates every other
+/// The console's look belongs to kayak, which generates every other
 /// page here. A second copy is a second console: this page kept one,
 /// so it went on printing raw byte counts and nanosecond timestamps
 /// after the generated pages stopped.
-use janus::runtime::{cell, document, rail_section, Page};
+use kayak::runtime::{cell, document, rail_section, Page};
 use serde_json::Value;
 
 /// Constant-time Basic check against the admin token (previous
@@ -92,10 +92,10 @@ fn gate<B: BlobStore>(
 fn operator_context(
     tenant: &TenantId,
     operator: &crate::auth::Operator,
-) -> janus::runtime::JanusContext {
-    let mut ctx = janus::runtime::JanusContext::new();
+) -> kayak::runtime::KayakContext {
+    let mut ctx = kayak::runtime::KayakContext::new();
     ctx.insert(crate::graphql::Tenant(tenant.clone()));
-    ctx.insert(janus::runtime::Principal::new(
+    ctx.insert(kayak::runtime::Principal::new(
         operator.as_str().to_owned(),
         vec![
             "read".to_owned(),
@@ -110,12 +110,12 @@ fn operator_context(
 fn console_router<B: BlobStore>(
     state: &AppState<B>,
     tenant: &TenantId,
-) -> Result<janus::runtime::ConsoleRouter, crate::error::ApiError> {
+) -> Result<kayak::runtime::ConsoleRouter, crate::error::ApiError> {
     let dispatcher = crate::graphql::dispatcher(state.clone())
         .map_err(|e| crate::error::ApiError::from(copal_core::CopalError::Store(e.to_string())))?;
-    Ok(janus::runtime::ConsoleRouter::new(
+    Ok(kayak::runtime::ConsoleRouter::new(
         dispatcher,
-        janus::runtime::ConsoleConfig {
+        kayak::runtime::ConsoleConfig {
             base: format!("/admin/console/t/{}", tenant.as_str()),
             title: format!("copal · {}", tenant.as_str()),
         },
@@ -215,7 +215,7 @@ pub async fn home<B: BlobStore>(State(state): State<AppState<B>>, headers: Heade
 }
 
 /// GET `/admin/console/t/{tenant}` and everything under it: the
-/// janus console for that tenant.
+/// kayak console for that tenant.
 pub async fn tenant_pages<B: BlobStore>(
     State(state): State<AppState<B>>,
     method: Method,
@@ -240,8 +240,8 @@ pub async fn tenant_pages<B: BlobStore>(
     if method == Method::POST {
         let pairs: Vec<(String, String)> = serde_urlencoded::from_bytes(&body).unwrap_or_default();
         match router.submit(&rest, &pairs, ctx).await {
-            janus::runtime::FormOutcome::Redirect(target) => Redirect::to(&target).into_response(),
-            janus::runtime::FormOutcome::Page(answer) => {
+            kayak::runtime::FormOutcome::Redirect(target) => Redirect::to(&target).into_response(),
+            kayak::runtime::FormOutcome::Page(answer) => {
                 let status = StatusCode::from_u16(answer.status)
                     .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
                 (status, Html(answer.html)).into_response()

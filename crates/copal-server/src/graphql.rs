@@ -1,10 +1,10 @@
-//! The GraphQL face, served by Janus from THE contract.
+//! The GraphQL face, served by Kayak from THE contract.
 //!
 //! Nothing here restates the API: the schema is built dynamically from
 //! [`crate::contract::contract`] and every field dispatches through the
-//! Janus runtime; resolvers below call the same repositories the REST
+//! Kayak runtime; resolvers below call the same repositories the REST
 //! handlers call, and the same wire mapper renders rows, so the two
-//! protocols cannot diverge. Tenancy is a Janus middleware: the HTTP
+//! protocols cannot diverge. Tenancy is a Kayak middleware: the HTTP
 //! layer seeds the per-request context through the SAME authenticator
 //! REST uses (trusted header or `ck1` bearer key, per configuration),
 //! and [`RequireTenant`] fails closed when identity is missing.
@@ -22,8 +22,8 @@ use copal_core::{CopalError, FileId, FileState, TenantId};
 use copal_store::repo::{file as file_repo, flow as flow_repo};
 
 use futures::StreamExt as _;
-use janus::runtime::{
-    BoxFuture, Dispatcher, JanusContext, JanusError, ListOutput, Middleware, Next, Operation,
+use kayak::runtime::{
+    BoxFuture, Dispatcher, KayakContext, KayakError, ListOutput, Middleware, Next, Operation,
     Outcome, Payload, Resolvers, RowStream, SortDirection,
 };
 
@@ -48,13 +48,13 @@ impl Middleware for RequireTenant {
     fn handle<'a>(
         &'a self,
         operation: Operation,
-        ctx: JanusContext,
+        ctx: KayakContext,
         payload: Payload,
         next: Next,
-    ) -> BoxFuture<'a, Result<Outcome, JanusError>> {
+    ) -> BoxFuture<'a, Result<Outcome, KayakError>> {
         Box::pin(async move {
             if ctx.get::<Tenant>().is_none() {
-                return Err(JanusError::Unauthorized(
+                return Err(KayakError::Unauthorized(
                     "no tenant identity on the request (missing or invalid credentials)".into(),
                 ));
             }
@@ -67,15 +67,15 @@ impl Middleware for RequireTenant {
 /// path opened when engine sessions are on, or the face's service
 /// store. Subscriptions carry the session for their whole lifetime,
 /// because the stream owns the clone.
-fn store_of(ctx: &JanusContext, fallback: &copal_store::Store) -> copal_store::Store {
+fn store_of(ctx: &KayakContext, fallback: &copal_store::Store) -> copal_store::Store {
     ctx.get::<copal_store::Store>()
         .cloned()
         .unwrap_or_else(|| fallback.clone())
 }
 
-fn tenant_of(ctx: &JanusContext) -> Result<TenantId, JanusError> {
+fn tenant_of(ctx: &KayakContext) -> Result<TenantId, KayakError> {
     ctx.get::<Tenant>().map(|t| t.0.clone()).ok_or_else(|| {
-        JanusError::Unauthorized(
+        KayakError::Unauthorized(
             "no tenant identity on the request (missing or invalid credentials)".into(),
         )
     })
@@ -83,40 +83,40 @@ fn tenant_of(ctx: &JanusContext) -> Result<TenantId, JanusError> {
 
 /// Domain errors in runtime vocabulary; infrastructure detail stays in
 /// the log, mirroring the REST error mapper.
-fn to_janus_error(err: CopalError) -> JanusError {
+fn to_janus_error(err: CopalError) -> KayakError {
     match err {
-        CopalError::Validation(m) => JanusError::BadRequest(m),
-        CopalError::Unauthorized(m) => JanusError::Unauthorized(m),
-        CopalError::Forbidden(m) => JanusError::Forbidden(m),
-        CopalError::NotFound(_) => JanusError::NotFound,
-        CopalError::Conflict(m) => JanusError::Conflict(m),
+        CopalError::Validation(m) => KayakError::BadRequest(m),
+        CopalError::Unauthorized(m) => KayakError::Unauthorized(m),
+        CopalError::Forbidden(m) => KayakError::Forbidden(m),
+        CopalError::NotFound(_) => KayakError::NotFound,
+        CopalError::Conflict(m) => KayakError::Conflict(m),
         // The runtime has no 412 vocabulary; a failed write condition
         // is a conflict with the current state, named as one.
-        CopalError::PreconditionFailed(m) => JanusError::Conflict(m),
-        CopalError::PayloadTooLarge(m) => JanusError::PayloadTooLarge(m),
-        CopalError::TooManyRequests(m) => JanusError::TooManyRequests(m),
+        CopalError::PreconditionFailed(m) => KayakError::Conflict(m),
+        CopalError::PayloadTooLarge(m) => KayakError::PayloadTooLarge(m),
+        CopalError::TooManyRequests(m) => KayakError::TooManyRequests(m),
         CopalError::Store(_) | CopalError::Blob(_) => {
             tracing::error!(error = %err, "internal failure");
-            JanusError::Internal("internal error".into())
+            KayakError::Internal("internal error".into())
         }
     }
 }
 
 /// Parse a wire state name through the enum's own serde names.
-fn parse_state(raw: &str) -> Result<FileState, JanusError> {
+fn parse_state(raw: &str) -> Result<FileState, KayakError> {
     serde_json::from_value(serde_json::Value::String(raw.to_owned()))
-        .map_err(|_| JanusError::BadRequest(format!("unknown state {raw:?}")))
+        .map_err(|_| KayakError::BadRequest(format!("unknown state {raw:?}")))
 }
 
-fn parse_file_id(raw: &str) -> Result<FileId, JanusError> {
-    FileId::parse(raw).map_err(|e| JanusError::BadRequest(e.to_string()))
+fn parse_file_id(raw: &str) -> Result<FileId, KayakError> {
+    FileId::parse(raw).map_err(|e| KayakError::BadRequest(e.to_string()))
 }
 
-/// Build the Janus dispatcher over this state: the resolvers are thin
+/// Build the Kayak dispatcher over this state: the resolvers are thin
 /// closures over the same repositories the REST handlers use.
 pub(crate) fn dispatcher<B: BlobStore + 'static>(
     state: AppState<B>,
-) -> Result<Arc<Dispatcher>, janus::runtime::RuntimeBuildError> {
+) -> Result<Arc<Dispatcher>, kayak::runtime::RuntimeBuildError> {
     let list_state = state.clone();
     let get_state = state.clone();
     let url_state = state.clone();
@@ -156,7 +156,7 @@ pub(crate) fn dispatcher<B: BlobStore + 'static>(
                     .as_deref()
                     .map(|raw| decode_cursor(raw, ascending))
                     .transpose()
-                    .map_err(|e| JanusError::BadRequest(e.0.to_string()))?;
+                    .map_err(|e| KayakError::BadRequest(e.0.to_string()))?;
                 let state_filter = args
                     .filters
                     .get("state")
@@ -212,9 +212,9 @@ pub(crate) fn dispatcher<B: BlobStore + 'static>(
                 let spec: copal_core::FileSpec = serde_json::from_value(serde_json::Value::Object(
                     args.input.clone().into_iter().collect(),
                 ))
-                .map_err(|e| JanusError::BadRequest(e.to_string()))?;
+                .map_err(|e| KayakError::BadRequest(e.to_string()))?;
                 let actor = ctx
-                    .get::<janus::runtime::Principal>()
+                    .get::<kayak::runtime::Principal>()
                     .map(|p| p.subject.clone())
                     .unwrap_or_else(|| "api".to_owned());
                 let created = copal_store::repo::file::create_file(&store, &tenant, &spec, &actor)
@@ -474,7 +474,7 @@ pub(crate) fn dispatcher<B: BlobStore + 'static>(
                     .input
                     .get("url")
                     .and_then(|v| v.as_str())
-                    .ok_or_else(|| JanusError::BadRequest("url is required".into()))?
+                    .ok_or_else(|| KayakError::BadRequest("url is required".into()))?
                     .to_owned();
                 let events = args
                     .input
@@ -578,7 +578,7 @@ pub(crate) fn dispatcher<B: BlobStore + 'static>(
                 // the default descending pages backward.
                 let ascending = matches!(
                     &args.sort,
-                    Some((column, janus::runtime::SortDirection::Asc)) if column == "created_at"
+                    Some((column, kayak::runtime::SortDirection::Asc)) if column == "created_at"
                 );
                 let (items, next_cursor) = crate::app::events_page(
                     &store,
@@ -639,7 +639,7 @@ pub(crate) fn dispatcher<B: BlobStore + 'static>(
                     .as_deref()
                     .map(|raw| decode_run_cursor(raw, ascending))
                     .transpose()
-                    .map_err(|e| JanusError::BadRequest(e.0.to_string()))?;
+                    .map_err(|e| KayakError::BadRequest(e.0.to_string()))?;
                 let status = args
                     .filters
                     .get("status")
@@ -845,7 +845,7 @@ pub fn graphql_router<B: BlobStore + 'static>(state: AppState<B>) -> Router {
     // the published document cannot disagree about the ceilings.
     // Introspection stays on by choice: GET /graphql serves the SDL
     // openly, so introspection reveals nothing the contract does not.
-    let schema = janus::runtime::graphql::schema_builder(
+    let schema = kayak::runtime::graphql::schema_builder(
         &tables,
         dispatcher(state.clone()).expect("resolver completeness"),
     )
@@ -853,7 +853,7 @@ pub fn graphql_router<B: BlobStore + 'static>(state: AppState<B>) -> Router {
     .finish()
     .expect("schema finishes");
     let sdl =
-        janus::generate_sdl(&crate::contract::contract(), &tables).expect("contract generates SDL");
+        kayak::generate_sdl(&crate::contract::contract(), &tables).expect("contract generates SDL");
     let gql = GraphqlState {
         schema,
         sdl: Arc::new(sdl),
@@ -952,7 +952,7 @@ async fn execute<B: BlobStore>(
     // REST face uses. A failed authentication seeds nothing, and the
     // RequireTenant middleware rejects each operation with the coded
     // error; GraphQL convention keeps auth failures in the body.
-    let mut ctx = JanusContext::new();
+    let mut ctx = KayakContext::new();
     if let Ok((tenant, identity)) =
         crate::auth::authenticate_with_identity(&gql.app, &headers).await
     {
@@ -985,7 +985,7 @@ async fn execute<B: BlobStore>(
             // its handle, and the key id stays in the identity for
             // audit's "using key" half.
             let subject = key.principal.clone().unwrap_or_else(|| key.key_id.clone());
-            ctx.insert(janus::runtime::Principal::new(subject, key.scopes));
+            ctx.insert(kayak::runtime::Principal::new(subject, key.scopes));
         }
     }
     if let Some(origin) = crate::app::forwarded_origin(&headers) {

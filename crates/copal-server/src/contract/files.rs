@@ -2,9 +2,9 @@
 //!
 //! One entity per file: everything here is that entity, and
 //! nothing here is anything else. `super::contract` puts them
-//! together, because what janus validates is the whole.
+//! together, because what kayak validates is the whole.
 
-use janus::{
+use kayak::{
     Action, ActionField, ActionOutput, FieldExposure, Resource, ResourceFaces, SubResource, TypeRef,
 };
 
@@ -12,6 +12,7 @@ pub fn resource() -> Resource {
     Resource {
         name: "files".into(),
         table: "file".into(),
+        identity: kayak::Identity::Id,
         // A browsable collection: paged and reachable by id.
         faces: ResourceFaces::ALL,
         fields: vec![
@@ -62,6 +63,7 @@ pub fn resource() -> Resource {
         sub_resources: vec![SubResource {
             name: "versions".into(),
             table: "file_version".into(),
+            identity: kayak::Identity::Id,
             parent_key: "file".into(),
             fields: vec![
                 FieldExposure::column("number"),
@@ -86,7 +88,7 @@ pub fn resource() -> Resource {
             description: Some("Every stored version of this file, newest first.".into()),
             graphql: None,
         }],
-        content: Some(janus::ContentFaces {
+        content: Some(kayak::ContentFaces {
             upload: true,
             download: true,
         }),

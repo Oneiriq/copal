@@ -91,7 +91,7 @@ sequenceDiagram
     autonumber
     participant A as Agent
     participant S as copal-server /mcp
-    participant D as Janus dispatcher
+    participant D as Kayak dispatcher
     participant R as Resolver
     participant M as SurrealDB
 
@@ -150,8 +150,8 @@ sequenceDiagram
     autonumber
     participant O as Operator browser
     participant S as copal-server /admin/console
-    participant J as Janus ConsoleRouter
-    participant D as Janus dispatcher
+    participant J as Kayak ConsoleRouter
+    participant D as Kayak dispatcher
     participant M as SurrealDB
 
     O->>S: GET /admin/console
@@ -219,8 +219,8 @@ sequenceDiagram
     autonumber
     participant Dev as Change to contract.rs
     participant T as cargo test
-    participant JV as janus validate
-    participant JG as janus generate_all
+    participant JV as kayak validate
+    participant JG as kayak generate_all
 
     Dev->>T: run the contract test
     T->>JV: contract against the real surql-rs schema

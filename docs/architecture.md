@@ -29,7 +29,7 @@ build rather than production.
 flowchart TB
     contract["Contract declaration<br/>copal-server/src/contract.rs"]
     schema["Schema as code<br/>copal-store/src/schema/"]
-    validate{"janus validate<br/>columns exist<br/>indexes cover every claim"}
+    validate{"kayak validate<br/>columns exist<br/>indexes cover every claim"}
 
     contract --> validate
     schema --> validate
@@ -77,7 +77,7 @@ flowchart LR
         gql["GraphQL and SSE"]
         mcp["MCP /mcp"]
         console["Console /admin/console"]
-        disp{{"Janus dispatcher<br/>scopes, validation,<br/>rate classes, row guards"}}
+        disp{{"Kayak dispatcher<br/>scopes, validation,<br/>rate classes, row guards"}}
         worker["Flow worker"]
         sweeps["Sweeps, rotation, backfill"]
     end
@@ -124,7 +124,7 @@ flowchart LR
 | `copal-server` | Every face: REST, the generated REST twin, GraphQL, MCP, the S3 gateway, the console, the admin surface, plus sweeps and the worker loop. |
 | `copal-cli` | `copalctl` and its live view, `copalctl top`. |
 
-Two libraries come from outside the workspace. `oneiriq-janus` holds the
+Two libraries come from outside the workspace. `oneiriq-kayak` holds the
 contract IR, the generators, the differ, and the runtime that dispatches
 GraphQL, REST, MCP, and console requests. `oneiriq-surql` holds the
 SurrealDB client, the schema-as-code builders, and the reconciliation that
@@ -274,9 +274,9 @@ identical content re-registered in the deletion window.
 **Boundaries.** The advisory `refcount` column is a cache for operators. No
 code path trusts it.
 
-### Contract-first surfaces through Janus
+### Contract-first surfaces through Kayak
 
-**Decision.** One `janus::Contract` object (in `copal-server/src/contract.rs`)
+**Decision.** One `kayak::Contract` object (in `copal-server/src/contract.rs`)
 drives the OpenAPI document, the GraphQL SDL, four generated clients, the
 live GraphQL endpoint, and the breaking-change gate.
 
@@ -286,7 +286,7 @@ checked-in artifacts cannot disagree, and the contract tests fail on any
 drift between schema, contract, and artifacts.
 
 **Implementation.** GraphQL resolvers are thin closures over the same
-repositories the REST handlers use, dispatched through the Janus runtime with
+repositories the REST handlers use, dispatched through the Kayak runtime with
 tenancy as middleware. One wire mapper renders rows for both faces.
 `tests/contract.rs` regenerates all six artifacts and compares byte-for-byte.
 

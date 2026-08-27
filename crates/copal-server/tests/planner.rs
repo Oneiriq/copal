@@ -7,7 +7,7 @@
 //! repo checks: an engine upgrade re-costs a plan, and a query that
 //! still answers correctly starts walking the table to do it. So this
 //! test stands up the real schema on the embedded engine and runs
-//! janus's `EXPLAIN` verification over THE contract: one probe per
+//! kayak's `EXPLAIN` verification over THE contract: one probe per
 //! filter claim, per sort claim, and per search backing, convicting
 //! on a table walk and on a backing whose plan does not reach its
 //! named index. It runs on every pull request and on the scheduled
@@ -23,7 +23,7 @@
 
 use copal_server::contract::contract;
 use copal_store::{Store, StoreConfig};
-use janus::verify::verify_contract;
+use kayak::verify::verify_contract;
 
 #[tokio::test]
 async fn the_planner_serves_every_claim_the_contract_makes() {

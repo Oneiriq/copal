@@ -35,7 +35,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      # oneiriq-janus is a private git dependency declared over ssh;
+      # oneiriq-kayak is a private git dependency declared over ssh;
       # in CI the org read token rewrites it to https. The committed
       # .cargo/config.toml already routes cargo through the git CLI,
       # which honors insteadOf.

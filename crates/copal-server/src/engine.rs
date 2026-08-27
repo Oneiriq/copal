@@ -27,19 +27,19 @@ pub struct EngineAccess {
 /// Derive the engine policy from the contract, so both enforcement
 /// layers read one declaration set.
 ///
-/// The derivation itself lives in janus beside the seven faces it
-/// agrees with, and the default [`janus::ClaimVocabulary`] IS this
+/// The derivation itself lives in kayak beside the seven faces it
+/// agrees with, and the default [`kayak::ClaimVocabulary`] IS this
 /// deployment's caller-token conventions - scopes ride as `sc`, the
 /// admin claim as `adm`, the principal handle as `pr` - proven
 /// byte-identical to the hand derivation this call replaced in
-/// janus's own tests. A guard the contract names without an engine
+/// kayak's own tests. A guard the contract names without an engine
 /// clause still refuses the boot: shipping it would silently drop
 /// the engine layer for that column while the application layer kept
 /// enforcing, and the two layers exist to agree.
 pub fn engine_policy() -> copal_core::Result<copal_store::schema::EnginePolicy> {
-    let derived = janus::derive_policy(
+    let derived = kayak::derive_policy(
         &crate::contract::contract(),
-        &janus::ClaimVocabulary::default(),
+        &kayak::ClaimVocabulary::default(),
     )
     .map_err(|e| copal_core::CopalError::Store(e.to_string()))?;
     let mut policy = copal_store::schema::EnginePolicy {

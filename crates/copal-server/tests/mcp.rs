@@ -83,7 +83,8 @@ async fn initialize_and_list_serve_the_generated_manifest() {
         json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" }),
     )
     .await;
-    let generated = janus::generate_mcp_tools(&copal_server::contract::contract());
+    let generated = kayak::generate_mcp_tools(&copal_server::contract::contract())
+        .expect("the contract validates; the drift gate enforces it");
     assert_eq!(body["result"], generated, "the manifest IS the artifact");
 }
 

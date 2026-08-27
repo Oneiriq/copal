@@ -2,14 +2,15 @@
 //!
 //! One entity per file: everything here is that entity, and
 //! nothing here is anything else. `super::contract` puts them
-//! together, because what janus validates is the whole.
+//! together, because what kayak validates is the whole.
 
-use janus::{FieldExposure, Resource, ResourceFaces};
+use kayak::{FieldExposure, Resource, ResourceFaces};
 
 pub fn resource() -> Resource {
     Resource {
         name: "events".into(),
         table: "file_event".into(),
+        identity: kayak::Identity::Id,
         // A browsable collection: paged and reachable by id.
         faces: ResourceFaces::ALL,
         fields: vec![

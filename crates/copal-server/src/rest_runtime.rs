@@ -1,6 +1,6 @@
 //! The contract-first REST face, mounted under `/v1c`.
 //!
-//! Janus's `RestRouter` derives its route table from the contract
+//! Kayak's `RestRouter` derives its route table from the contract
 //! and answers through the same dispatcher the GraphQL and MCP faces
 //! use, so everything served here exists because the declaration
 //! says so. The hand-written `/v1` routes stay canonical (they carry
@@ -52,7 +52,7 @@ pub async fn serve<B: BlobStore>(
                 .into_response();
         }
     };
-    let router = janus::runtime::RestRouter::new(dispatcher);
+    let router = kayak::runtime::RestRouter::new(dispatcher);
 
     // The contract's paths carry the canonical /v1 prefix; this face
     // serves them under /v1c, so the prefix swaps before matching.

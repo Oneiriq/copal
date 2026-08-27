@@ -211,7 +211,7 @@ pub struct AppState<B: BlobStore> {
     /// dodge a budget by switching protocols. In-memory by default;
     /// COPAL_RATE_LEDGER=store swaps in the shared implementation so
     /// a fleet holds ONE budget instead of one per replica.
-    pub rate_store: std::sync::Arc<dyn janus::runtime::RateStore>,
+    pub rate_store: std::sync::Arc<dyn kayak::runtime::RateStore>,
     /// Whether a pending scan withholds content. Set with malware
     /// scanning: serving bytes that no scanner has cleared would make
     /// the scanner decorative.
@@ -271,7 +271,7 @@ impl<B: BlobStore> AppState<B> {
             transformers: std::collections::HashMap::new(),
             fleet: None,
             cipher: None,
-            rate_store: std::sync::Arc::new(janus::runtime::MemoryRateStore::new()),
+            rate_store: std::sync::Arc::new(kayak::runtime::MemoryRateStore::new()),
             persisted_operations: None,
             engine_access: None,
             engine_sessions: false,
@@ -701,7 +701,7 @@ pub fn api_router<B: BlobStore + 'static>(state: AppState<B>) -> Router {
                 std::time::Duration::from_secs(state.limits.transfer_timeout_secs),
             ),
         ))
-        // The second face: /graphql, served by Janus from the same
+        // The second face: /graphql, served by Kayak from the same
         // contract, dispatching into the same repositories. Queries are
         // ordinary requests, so the request deadline applies.
         .merge(crate::graphql::graphql_router(state).layer(
@@ -3804,22 +3804,22 @@ async fn list_versions<B: BlobStore>(
     // The same declarations the dispatcher projects on the GraphQL
     // face, evaluated through the shared API, so the two faces redact
     // identically instead of drifting apart.
-    let mut ctx = janus::runtime::JanusContext::new();
+    let mut ctx = kayak::runtime::KayakContext::new();
     if let Some(key) = auth.identity {
         // Guards compare actors: a key under a principal answers as
         // its handle, and the key id stays in the identity for
         // audit's "using key" half.
         let subject = key.principal.clone().unwrap_or_else(|| key.key_id.clone());
-        ctx.insert(janus::runtime::Principal::new(subject, key.scopes));
+        ctx.insert(kayak::runtime::Principal::new(subject, key.scopes));
     }
-    let guarded = janus::runtime::guarded_fields(
+    let guarded = kayak::runtime::guarded_fields(
         &crate::contract::contract(),
         "files",
         Some("versions"),
         &crate::contract::guards(),
     );
     for row in &mut items {
-        janus::runtime::strip_guarded(row, &guarded, &ctx);
+        kayak::runtime::strip_guarded(row, &guarded, &ctx);
     }
     Ok(Json(json!({
         "items": items,

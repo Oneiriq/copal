@@ -1,6 +1,6 @@
 //! The operator console on the admin surface: Basic auth against
 //! the admin token, a deployment home only copal can render, and
-//! the janus contract pages per tenant, dispatched through the same
+//! the kayak contract pages per tenant, dispatched through the same
 //! chain every API face uses.
 
 use axum::body::Body;

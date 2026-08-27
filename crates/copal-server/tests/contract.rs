@@ -1,4 +1,4 @@
-//! The Janus contract gate, live in its first consumer.
+//! The Kayak contract gate, live in its first consumer.
 //!
 //! THE contract lives in `copal_server::contract` (the same object
 //! that serves `/graphql`) and is validated here over `copal-store`'s
@@ -16,7 +16,7 @@
 //!    prefix) breaks the `created_at` sort claim and fails here.
 
 use copal_server::contract::contract;
-use janus::{generate_all, validate};
+use kayak::{generate_all, validate};
 
 #[test]
 fn contract_validates_against_the_real_schema() {
@@ -35,7 +35,7 @@ fn generated_artifacts_match_the_checked_in_documents() {
     // review-visible the same way the other faces are: a scope
     // tightened in the contract shows up as a changed clause in
     // `docs/policy.json` in the same commit.
-    let targets: Vec<&str> = janus::generate::TARGETS
+    let targets: Vec<&str> = kayak::generate::TARGETS
         .iter()
         .copied()
         .chain(std::iter::once("engine-policy"))
@@ -80,9 +80,9 @@ fn the_differ_calls_the_markers_input_compatible() {
         .expect("the fetch action exists");
     fetch.input.retain(|field| field.name != "markers");
 
-    let changes = janus::diff(&without, &with_markers);
+    let changes = kayak::diff(&without, &with_markers);
     let mentions_markers = changes.iter().any(|change| match change {
-        janus::Change::Breaking(text) | janus::Change::Compatible(text) => text.contains("markers"),
+        kayak::Change::Breaking(text) | kayak::Change::Compatible(text) => text.contains("markers"),
     });
     assert!(
         mentions_markers,
@@ -90,7 +90,7 @@ fn the_differ_calls_the_markers_input_compatible() {
     );
     for change in &changes {
         assert!(
-            matches!(change, janus::Change::Compatible(_)),
+            matches!(change, kayak::Change::Compatible(_)),
             "an optional input must not break the wire: {change:?}",
         );
     }
@@ -114,7 +114,7 @@ fn the_live_graphql_schema_serves_the_generated_sdl_shapes() {
     // The dynamic schema and the checked-in SDL derive from one
     // contract object; spot-prove the agreement on load-bearing lines.
     let schema = copal_store::schema::tables();
-    let sdl = janus::generate_sdl(&contract(), &schema).expect("contract generates SDL");
+    let sdl = kayak::generate_sdl(&contract(), &schema).expect("contract generates SDL");
     for line in [
         "type File {",
         "size: Int",

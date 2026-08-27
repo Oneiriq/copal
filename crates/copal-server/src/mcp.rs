@@ -1,6 +1,6 @@
 //! The MCP face: the contract, served to agents.
 //!
-//! `tools/list` is the manifest Janus generates from the contract,
+//! `tools/list` is the manifest Kayak generates from the contract,
 //! and `tools/call` dispatches through the same chain every other
 //! face uses, so scopes, budgets, guards, and caller-bound engine
 //! sessions enforce identically whether the caller is a person's
@@ -19,7 +19,7 @@ use axum::Json;
 use serde_json::{json, Map, Value};
 
 use copal_core::TenantId;
-use janus::runtime::{ActionArgs, GetArgs, ListArgs, QueryArgs, SortDirection};
+use kayak::runtime::{ActionArgs, GetArgs, ListArgs, QueryArgs, SortDirection};
 
 use copal_blob::BlobStore;
 
@@ -77,7 +77,7 @@ fn routes() -> &'static BTreeMap<String, Route> {
 }
 
 fn janus_singular(name: &str) -> String {
-    // The manifest generator uses janus::naming::singular; the
+    // The manifest generator uses kayak::naming::singular; the
     // contract's resource names are regular plurals, and the tool
     // router must agree with the manifest byte for byte, which the
     // parity test holds.
@@ -86,7 +86,13 @@ fn janus_singular(name: &str) -> String {
 
 fn manifest() -> &'static Value {
     static MANIFEST: OnceLock<Value> = OnceLock::new();
-    MANIFEST.get_or_init(|| janus::generate_mcp_tools(&crate::contract::contract()))
+    MANIFEST.get_or_init(|| {
+        // Generation refuses on an invalid contract. The drift gate in
+        // tests/contract.rs fails first on any contract this would refuse,
+        // so reaching the panic means serving a build the gate never passed.
+        kayak::generate_mcp_tools(&crate::contract::contract())
+            .expect("the contract validates; the drift gate enforces it")
+    })
 }
 
 /// The version of the protocol this face speaks.
@@ -260,8 +266,8 @@ pub(crate) async fn seeded_context<B: BlobStore>(
     headers: &HeaderMap,
     tenant: &TenantId,
     identity: Option<crate::auth::KeyIdentity>,
-) -> Result<janus::runtime::JanusContext, (i64, String)> {
-    let mut ctx = janus::runtime::JanusContext::new();
+) -> Result<kayak::runtime::KayakContext, (i64, String)> {
+    let mut ctx = kayak::runtime::KayakContext::new();
     ctx.insert(crate::graphql::Tenant(tenant.clone()));
     if state.engine_sessions {
         let store = crate::auth::request_store(state, tenant, identity.as_ref())
@@ -271,7 +277,7 @@ pub(crate) async fn seeded_context<B: BlobStore>(
     }
     if let Some(key) = identity {
         let subject = key.principal.clone().unwrap_or_else(|| key.key_id.clone());
-        ctx.insert(janus::runtime::Principal::new(subject, key.scopes));
+        ctx.insert(kayak::runtime::Principal::new(subject, key.scopes));
     }
     if let Some(origin) = crate::app::forwarded_origin(headers) {
         ctx.insert(crate::graphql::RequestOrigin(origin));
@@ -279,7 +285,7 @@ pub(crate) async fn seeded_context<B: BlobStore>(
     Ok(ctx)
 }
 
-fn janus_to_rpc(err: janus::runtime::JanusError) -> (i64, String) {
+fn janus_to_rpc(err: kayak::runtime::KayakError) -> (i64, String) {
     (-32000, err.to_string())
 }
 

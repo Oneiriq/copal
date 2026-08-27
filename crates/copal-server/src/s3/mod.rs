@@ -1417,9 +1417,9 @@ async fn mint_credential<B: BlobStore>(
                 .into());
             }
             let ceiling = principal.scope_list();
-            if !ceiling.is_empty()
-                && !(ceiling.iter().any(|s| s == "read") && ceiling.iter().any(|s| s == "write"))
-            {
+            let covers_both =
+                ceiling.iter().any(|s| s == "read") && ceiling.iter().any(|s| s == "write");
+            if !ceiling.is_empty() && !covers_both {
                 return Err(copal_core::CopalError::validation(format!(
                     "principal {handle:?} must allow read and write for S3 credentials",
                 ))

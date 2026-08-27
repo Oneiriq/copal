@@ -281,7 +281,7 @@
         ],
         "type": "object"
       },
-      "WebhookDeliverie": {
+      "WebhookDelivery": {
         "properties": {
           "attempts": {
             "type": "integer"
@@ -318,11 +318,11 @@
         ],
         "type": "object"
       },
-      "WebhookDeliveriePage": {
+      "WebhookDeliveryPage": {
         "properties": {
           "items": {
             "items": {
-              "$ref": "#/components/schemas/WebhookDeliverie"
+              "$ref": "#/components/schemas/WebhookDelivery"
             },
             "type": "array"
           },
@@ -1559,7 +1559,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/WebhookDeliveriePage"
+                  "$ref": "#/components/schemas/WebhookDeliveryPage"
                 }
               }
             },

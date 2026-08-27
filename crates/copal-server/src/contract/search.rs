@@ -2,16 +2,16 @@
 //!
 //! One entity per file: everything here is that entity, and
 //! nothing here is anything else. `super::contract` puts them
-//! together, because what janus validates is the whole.
+//! together, because what kayak validates is the whole.
 
-use janus::{ActionField, Query, SearchBacking, SearchKind, TypeRef};
+use kayak::{ActionField, Query, SearchBacking, SearchKind, TypeRef};
 
 pub fn query() -> Query {
     Query {
         name: "search".into(),
         path: "/v1/search".into(),
         // What this query does, said out loud. Both halves of the
-        // fused search are declared, and janus refuses to generate if
+        // fused search are declared, and kayak refuses to generate if
         // either names no index behind it.
         //
         // The vector half used to stay undeclared, on the reasoning

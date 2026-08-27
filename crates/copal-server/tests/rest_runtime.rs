@@ -1,4 +1,4 @@
-//! The contract-first REST face under `/v1c`: janus's RestRouter
+//! The contract-first REST face under `/v1c`: kayak's RestRouter
 //! answering through the same dispatcher as GraphQL and MCP. The
 //! hand-written `/v1` routes stay canonical; these tests hold the
 //! generated face to the same answers.

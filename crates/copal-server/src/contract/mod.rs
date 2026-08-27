@@ -9,10 +9,10 @@
 //! Each entity lives in its own file beside this one, so opening
 //! `files.rs` puts nothing in front of a reader except the files
 //! resource. This module holds what belongs to no single entity, and
-//! hands janus the whole, because the checks that matter span it: a
+//! hands kayak the whole, because the checks that matter span it: a
 //! rate class a resource names, a query that collides with another.
 
-use janus::{AuthScheme, Contract, ContractLimits};
+use kayak::{AuthScheme, Contract, ContractLimits};
 
 mod events;
 mod file_text;
@@ -25,9 +25,9 @@ mod webhooks;
 /// evaluate these same closures: the dispatcher projects GraphQL rows
 /// through them, and the REST handlers strip through the shared
 /// projection API.
-pub fn guards() -> janus::runtime::Guards {
-    janus::runtime::Guards::new().guard("owner_or_admin", |ctx, row| {
-        let Some(principal) = ctx.get::<janus::runtime::Principal>() else {
+pub fn guards() -> kayak::runtime::Guards {
+    kayak::runtime::Guards::new().guard("owner_or_admin", |ctx, row| {
+        let Some(principal) = ctx.get::<kayak::runtime::Principal>() else {
             return false;
         };
         if principal.has("admin") {
@@ -52,7 +52,7 @@ pub fn contract() -> Contract {
         version: "0.1.0".into(),
         ir_revision: 1,
         // Every generated client has always sent this header; until
-        // janus learned to carry a scheme it was hardcoded in the
+        // kayak learned to carry a scheme it was hardcoded in the
         // generators, which made them clients for copal rather than
         // for contracts. Declared here, it is copal's convention
         // living in copal's contract -- and the differ now treats
@@ -63,7 +63,7 @@ pub fn contract() -> Contract {
         },
         // Where the resource faces hang. The default, stated because
         // copal's routes really are versioned and a reader should not
-        // have to know janus's default to know copal's paths.
+        // have to know kayak's default to know copal's paths.
         api_prefix: "/v1".into(),
         // The ceilings the served schema enforces. Declared here so
         // they appear in the artifacts and tightening them is a
@@ -82,11 +82,11 @@ pub fn contract() -> Contract {
         // everything else costs one. Reads run generous because
         // retrieval is the product; mutations run an order tighter.
         rate_classes: vec![
-            janus::RateClass {
+            kayak::RateClass {
                 name: "reads".into(),
                 units_per_minute: 6_000,
             },
-            janus::RateClass {
+            kayak::RateClass {
                 name: "mutations".into(),
                 units_per_minute: 600,
             },

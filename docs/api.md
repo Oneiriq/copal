@@ -329,7 +329,7 @@ the source's served type stands.
 
 ## The contract-first REST face
 
-`/v1c` mirrors the JSON surface of `/v1` through janus's runtime
+`/v1c` mirrors the JSON surface of `/v1` through kayak's runtime
 REST router: the route table derives from the contract, and every
 request runs the same dispatcher chain the GraphQL and MCP faces
 use, so `/v1c/files` exists because the declaration says so and

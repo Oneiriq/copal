@@ -69,6 +69,6 @@ carries the details.
 5. **SDK publishing pipelines** for the four generated clients.
    Generated and drift-gated already; publishing is packaging work
    that wants a release cadence to hang from.
-6. **Janus REST runtime router.** Copal's REST handlers carry real
+6. **Kayak REST runtime router.** Copal's REST handlers carry real
    behavior (streaming, ranges, conditionals) that a generic router
    has to earn the right to replace.

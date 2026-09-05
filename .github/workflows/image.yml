@@ -1,0 +1,42 @@
+name: image
+
+# Publishes the deployable image on main pushes. Deliberately its own
+# workflow, not a job behind the aur0 self-hosted checks: a parked
+# runner fleet must not park deploys, and the docker build compiles the
+# same locked tree the checks compile.
+#
+# ONEIRIQ_READ_TOKEN feeds the Dockerfile's BuildKit secret for the
+# private git dependencies; it never lands in a layer.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          secrets: |
+            oneiriq_token=${{ secrets.ONEIRIQ_READ_TOKEN }}
+          tags: |
+            ghcr.io/oneiriq/copal:${{ github.sha }}
+            ghcr.io/oneiriq/copal:latest

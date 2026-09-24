@@ -1,20 +1,40 @@
 # API guide
 
-Copal serves two faces from one contract: REST under `/v1` and GraphQL at
-`/graphql`. Both dispatch into the same repositories and render rows through
-the same wire mapper. The generated artifacts are the reference documents:
+Copal serves the same files on several faces:
+
+| Face | Where | Section |
+| --- | --- | --- |
+| Hand-written REST | `/v1` on the main listener | most of this guide |
+| Contract-generated REST | `/v1c` | [The contract-first REST face](#the-contract-first-rest-face) |
+| GraphQL | `POST /graphql` (schema at `GET /graphql`) | [GraphQL](#graphql) |
+| MCP for agents | `POST /mcp` | [The MCP face](#the-mcp-face) |
+| tus resumable uploads | `/v1/tus` | [Resumable uploads](#resumable-uploads) |
+| S3-compatible gateway | its own listener, `COPAL_S3_BIND` | [S3 gateway](#s3-gateway) |
+| Operator console | `/admin/console` on the admin surface | [operations.md](operations.md) |
+
+All of them reach the same repositories and enforce the same access
+rules. The generated artifacts are the reference documents:
 
 | Artifact | Path |
 | --- | --- |
 | OpenAPI 3.1 | `docs/openapi.json` |
 | GraphQL SDL | `docs/schema.graphql` (also served at `GET /graphql`) |
+| MCP tool manifest | `docs/mcp-tools.json` (also served by `tools/list`) |
 | Rust client | `clients/client.rs` |
 | TypeScript client | `clients/client.ts` |
 | Python client | `clients/client.py` |
 | Go client | `clients/client.go` |
 
-This guide covers what the generated documents cannot: authentication, the
-byte routes, error shapes, and the behaviors shared across faces.
+The generated clients have two limits you should know first. The
+contract declares header authentication, so they send only the
+`x-copal-tenant` header: they work against a server in
+`COPAL_AUTH_MODE=header` and cannot send API keys. They also cover the
+JSON routes only, with no methods for uploading or downloading bytes.
+None of them is published to a package registry yet. See
+[sdks.md](sdks.md).
+
+This guide covers what the generated documents cannot: authentication,
+the byte routes, error shapes, and the behaviors shared across faces.
 
 ## The root
 
@@ -23,6 +43,36 @@ on this listener. A request asking for `text/html` gets a page with
 links; anything else gets a JSON document. The console is listed only
 when an admin token is configured, because without one it does not
 exist.
+
+## Route map
+
+The tenant-facing families on the main listener. Each has its own
+section below.
+
+| Family | Routes |
+| --- | --- |
+| Files | `POST /v1/files`, `GET /v1/files`, `GET /v1/files/{id}`, `DELETE /v1/files/{id}` |
+| Content | `PUT /v1/files/{id}/content`, `GET /v1/files/{id}/content` |
+| Versions | `GET /v1/files/{id}/versions`, `GET /v1/files/{id}/versions/{n}/content` |
+| Signed read URLs (`cg1` grants) | `POST /v1/files/{id}/url`, redeemed at `GET /v1/grants/{token}`, revoked at `DELETE /v1/grants/{id}` |
+| Upload URLs | `POST /v1/files/{id}/upload-url`, redeemed at `PUT /v1/grants/{token}` |
+| Renditions | `POST /v1/files/{id}/renditions`, `GET /v1/files/{id}/renditions`, `GET /v1/files/{id}/renditions/{kind}-{w}x{h}.{format}` |
+| Transform | `POST /v1/files/{id}/transform` |
+| Fetch from a URL | `POST /v1/files/fetch` |
+| Extracted text | `GET /v1/files/{id}/text` |
+| Search | `GET /v1/search?q=...&mode=lexical\|semantic\|hybrid` |
+| Usage | `GET /v1/usage` |
+| Events | `GET /v1/events`, `GET /v1/events/{id}` |
+| Runs | `POST /v1/runs`, `GET /v1/runs`, `GET /v1/runs/{id}`, `POST /v1/runs/{id}/retry` |
+| Resumable uploads | `/v1/tus`, `/v1/tus/{id}` |
+| Webhooks | `POST /v1/webhooks`, `GET /v1/webhooks`, `DELETE /v1/webhooks/{id}`, `GET /v1/webhooks/deliveries`, `GET /v1/webhooks/{id}/deliveries` |
+| Edge URLs (`cg2`) | `POST /v1/files/{id}/edge-url`, redeemed at `GET /v1/edge/{token}` |
+| Health | `GET /healthz`, `GET /readyz` |
+
+Webhooks and edge URLs exist only when `COPAL_BLOB_ENCRYPTION_KEY` is
+set, because both store secrets sealed under it. Without the key those
+routes answer 404. The admin surface, `/metrics`, and the console are
+covered in [operations.md](operations.md).
 
 ## Authentication
 
@@ -39,20 +89,26 @@ enforces. An unscoped key holds every scope, which is what every key
 minted before scoping existed does, so upgrading tightens nothing by
 surprise.
 
-The contract declares what each operation demands and BOTH faces
-enforce it: reads (listings, gets, sub-collections, search, text,
-watching) need `read`; mutations need `write`; registering or removing
-webhooks needs `admin`, because a webhook endpoint receives every
-future event. A missing scope refuses 403 `forbidden`, naming the
-scope, identically on REST and GraphQL. OpenAPI operations carry
+The contract declares what each operation demands, and REST, GraphQL,
+and MCP all enforce it: reads (listings, gets, sub-collections, search,
+text, watching) need `read`; mutations need `write`; registering or
+removing webhooks needs `admin`, because a webhook endpoint receives
+every future event. A missing scope refuses 403 `forbidden`, naming
+the scope, identically on every face. OpenAPI operations carry
 `x-requires-scopes`. Header mode holds every scope, since header mode
 is full trust.
 
-Consumption is metered against one ledger on both faces: reads at
-6000 units a minute per caller, mutations at 600, where a listing
-costs its row limit and everything else costs one. Exhaustion is 429
-`too_many_requests`, retryable next minute. Switching protocols never
-dodges a budget, because both faces charge the same store.
+Consumption is metered against one ledger on every face. The contract
+declares two rate classes: `reads` at 6000 units a minute and
+`mutations` at 600, where a listing costs its row limit and everything
+else costs one. Exhaustion is 429 `too_many_requests`, retryable the
+next minute. Switching protocols does not dodge a budget, because
+every face charges the same ledger. The budget belongs to the caller:
+a key's principal when it has one, otherwise the key itself. In header
+mode every caller shares one bucket per class, whatever tenant it
+names, because header mode has no key to tell callers apart. The
+ledger is per process unless `COPAL_RATE_LEDGER=store` shares it
+across a fleet.
 
 One field is guarded: a version's `created_by` is audit data, visible
 to `admin`-scoped keys and to header mode, and absent for everyone
@@ -61,11 +117,16 @@ declaration, which is why the field reads as nullable in the schema
 and carries `x-guard` in the OpenAPI document.
 
 `header` is the development mode and the default until 1.0. The
-`x-copal-tenant` header is trusted as the tenant identity. The server logs a
-warning at startup. See [operations.md](operations.md) for key custody.
+`x-copal-tenant` header is trusted as the tenant identity. The server
+logs a warning at startup. Any value of `COPAL_AUTH_MODE` other than
+`keys` (a typo included) also selects header mode. See
+[operations.md](operations.md) for key custody.
 
-Two routes skip tenant authentication by design: grant redemption (the token
-is the authorization) and public-file content (anonymous by access level).
+Some routes skip tenant authentication by design, because the token or
+the access level is the authorization: grant redemption (`GET` and
+`PUT /v1/grants/{token}`), edge-token redemption
+(`GET /v1/edge/{token}`), and the content and existing renditions of
+`public` files.
 
 ## Files
 
@@ -96,32 +157,36 @@ keeps serving the previous version until the new one clears. See
 Upload is a single PUT of raw bytes. The server streams to staging while the
 digest accumulates, then finalizes with a rename. The size ceiling
 (`COPAL_MAX_UPLOAD_BYTES`) is enforced inside the stream and returns 413.
-With a processing pipeline configured the record lands in `scanning` and a
-run is enqueued; without one it lands in `ready`.
+The server registers the upload pipeline, so the record lands in
+`scanning` and a `post_upload` run is enqueued; the run finalizes it to
+`ready` or `quarantined` (see [processing.md](processing.md)). An
+application that embeds the server library without the pipeline gets
+`ready` directly.
 
 The PUT accepts an `x-copal-markers` header carrying confidentiality
 markers for exactly these bytes: a JSON array of spans, each an
 `access` level with a character `range` (`{"start", "end"}`, native
 text only) or a text anchor (`"from"`, optional `"until"`, quoting
 the document at itself). Marked passages answer retrieval only at
-their own level; see the search section below. Markers narrow, never
-widen - a marker looser than the file's level is a 400 before any
-byte moves - and they describe content, so they ride the content
+their own level; see the search section below. A marker can only
+narrow access: a marker looser than the file's level is a 400 before
+any byte moves. Markers describe content, so they ride the content
 calls (this header, `file_fetch`'s `markers` field, tus
-`Upload-Metadata`) rather than `POST /v1/files`, and die with the
-version they described: a re-upload without markers is unmarked
-content.
+`Upload-Metadata`) and are not accepted on `POST /v1/files`. They last
+as long as the version they describe: a re-upload without markers is
+unmarked content.
 
 ### Listing and cursors
 
 List endpoints take `limit`, `cursor`, a filter, and `sort`. Filters and sorts
 are contract-validated: every filterable column rides an index and every sort
-is reachable through an index prefix. The response envelope is
-`{ "items": [...], "next_cursor": "..." | null }`.
+is reachable through an index prefix. The REST response envelope is
+`{ "items": [...], "next_cursor": "..." | null }`; GraphQL names the same
+field `nextCursor`.
 
 Cursors are opaque and embed their sort direction. Replaying a cursor under a
 different sort returns 400, because the alternative is silently wrong pages.
-A cursor minted on one face works on the other; both use the same codec.
+A cursor minted on one face works on the others; they share one codec.
 
 ### Access levels
 
@@ -130,7 +195,7 @@ The `access` field is enforced at the byte boundary.
 | Level | Content behavior |
 | --- | --- |
 | `public` | Anonymous. Served with `Cache-Control: public, max-age=31536000, immutable`. |
-| `private`, `tenant` | Owning tenant only. Served with `no-store`. The two levels coincide until principals within a tenant exist. |
+| `private`, `tenant` | Owning tenant only. Served with `no-store`. Principals within a tenant exist, but the code still enforces these two levels identically. |
 | `grant` | Direct download refuses with 403 for everyone, owner included. Bytes flow through issued URLs only. |
 
 Metadata, listing, and version routes require tenant authentication for every
@@ -274,7 +339,7 @@ first:
 | Versioning API (`?versions`, `versionId`) | A file's version list: `GET /v1/files/{id}/versions`. The gateway serves the live version of a key and refuses to copy a specific one. |
 | Object Lock, legal hold | Retention policy and holds, tenant-wide and admin-set. See [retention.md](retention.md). |
 | Bucket and object ACLs | The file's access level, and grants for anything narrower. A bucket is a tenant, so a bucket-wide ACL would be a tenant-wide one. |
-| Lifecycle rules (`?lifecycle`) | Retention handles expiry. Cost tiering is genuinely absent and on the [roadmap](roadmap.md). |
+| Lifecycle rules (`?lifecycle`) | Retention handles expiry. Moving cold bytes to cheaper storage is operator-set storage tiering on the admin surface; see the storage tiers section of [operations.md](operations.md). |
 
 The rest are absent because nothing has needed them: object tagging,
 `?cors`, `?policy`, `?encryption`, `?replication`, `?website`,
@@ -317,8 +382,8 @@ When the bytes live behind a URL, one call replaces all three:
 `POST /v1/files/fetch` (`file_fetch` on the other faces) takes `url`
 and `path` plus the usual `content_type`, `access`, `metadata`,
 `idempotency_key`, and optional `markers`, creates the record, and
-the server pulls the bytes itself. Fetched content walks the standard pipeline (sniff,
-policy, scan, extract, embed, finalize), so a fetched file is
+the server pulls the bytes itself. Fetched content walks the standard
+pipeline (sniff, policy, scan, extract, embed, finalize), so a fetched file is
 indistinguishable from an uploaded one by the time it serves. The
 URL is tenant-supplied, so the outbound policy applies (private
 address space refuses unless `COPAL_FETCH_ALLOW_PRIVATE_TARGETS` is
@@ -329,17 +394,18 @@ the source's served type stands.
 
 ## The contract-first REST face
 
-`/v1c` mirrors the JSON surface of `/v1` through kayak's runtime
-REST router: the route table derives from the contract, and every
+`/v1c` mirrors the JSON surface of `/v1` through Kayak's runtime
+REST router. The route table derives from the contract, and every
 request runs the same dispatcher chain the GraphQL and MCP faces
 use, so `/v1c/files` exists because the declaration says so and
 refuses the way every declared face refuses. The hand-written `/v1`
-routes stay canonical; they carry REST-specific semantics (201 and
-202 on creation and derivation, byte streaming, headers) the
-generic face does not restate. A parity test holds the two faces to
-the same answers on listings, gets, actions, and queries. The
-long-term line is one face generated from the declaration; `/v1c`
-is that face, proving itself beside the original.
+routes stay canonical. They carry REST-specific semantics (201 and
+202 on creation and derivation, byte streaming, headers) that the
+generated face does not restate, and `/v1c` has no byte routes. A
+parity test holds the two faces to the same answers on listings,
+gets, actions, and queries. The plan is for one face generated from
+the declaration; `/v1c` is that face, running beside the original
+until it can replace it.
 
 ## The MCP face
 
@@ -398,8 +464,9 @@ half of the same surface: catch up with the cursor, then watch.
 
 ## Conditional writes
 
-Writes take the standard preconditions on both faces, and the ETag is
-the content digest, so the conditions say exactly what they mean:
+Content writes take the standard preconditions on the REST and S3
+faces, and the ETag is the content digest, so the conditions say
+exactly what they mean:
 
 - `If-None-Match: *` creates and never replaces: 412 when the key
   already holds content. Two agents racing to create the same key
@@ -409,19 +476,18 @@ the content digest, so the conditions say exactly what they mean:
   is a compare-and-swap.
 
 `PUT /v1/files/{id}/content`, S3 `PutObject`, and S3
-`CompleteMultipartUpload` all honor them. Both headers absent means
-unconditional, as before; both present is a 400, because the pair is
+`CompleteMultipartUpload` all honor them. With neither header the
+write is unconditional; both present is a 400, because the pair is
 contradictory.
 
 ## Search
 
 Search and extracted text are contract queries: declared parameters,
-declared scopes, declared budget, rendered into `docs/openapi.json`
-and `docs/schema.graphql`, and served on both faces through one
-implementation. `GET /v1/search` and the GraphQL `search` field
+declared scopes, declared budget, rendered into `docs/openapi.json`,
+`docs/schema.graphql`, and the MCP manifest, and served on every
+contract face through one implementation. `GET /v1/search` and the GraphQL `search` field
 answer the same value; the same holds for `GET /v1/files/{id}/text`
 and `fileText`.
-
 
 ```
 GET /v1/search?q=terms&mode=hybrid&limit=20   search a tenant's documents
@@ -445,7 +511,7 @@ extractor service to be configured (see
 [operations.md](operations.md)), and a file with no extraction
 answers 404 on its text rather than an empty document.
 
-Retrieval works over passages, not whole documents. Extraction splits
+Retrieval works over passages. Extraction splits
 text at boundaries a reader would recognize (blank lines, then
 sentence ends) into overlapping windows, and each passage is indexed
 and embedded on its own. A hit therefore names the passage that
@@ -475,10 +541,10 @@ text, and no positions are disclosed, because the length of a secret
 is part of the secret. A marker that cannot be located (a typo'd
 anchor, a range past the extraction ceiling or on extractor-produced
 text) restricts the whole file, with the reason under
-`metadata.processing`. All four levels are accepted on the wire;
-until principals split the read path, `grant` is the operative
-restriction, because the other three all admit the same
-tenant-scoped, read-scoped callers.
+`metadata.processing`. All four levels are accepted on the wire.
+`grant` is the operative restriction: principals exist, but the read
+path does not yet tell them apart, so `public`, `private`, and
+`tenant` all admit the same tenant-scoped, read-scoped callers.
 
 Semantic retrieval applies a relevance floor, so a query about
 something nobody stored returns nothing rather than the least-distant
@@ -487,11 +553,11 @@ passage in the corpus. The floor is a cosine distance
 and 1 is unrelated); raise it for looser recall, lower it for
 stricter.
 
-Hybrid fuses the two rankings by reciprocal rank rather than by
-score. Lexical and semantic relevance are not on a comparable scale,
-and this engine reports no lexical score at all, so fusing positions
-is both simpler and more honest: a document near the top of either
-ranking scores well, one near the top of both scores best.
+Hybrid fuses the two rankings by reciprocal rank, using positions
+instead of scores. Lexical and semantic relevance are not on a
+comparable scale, and this engine reports no lexical score at all. A
+document near the top of either ranking scores well, and one near the
+top of both scores best.
 
 Hits carry the file id, the passage that matched, an excerpt bounded
 at 400 characters, and `matches`, in the engine's relevance order.
@@ -548,13 +614,12 @@ GET /v1/search?q=inspecting&facets=content_type,access
 }
 ```
 
-Counts are **documents**, and they are **exact over the whole match
-set**. Both halves are choices worth stating. The engine counts rows,
-and a row is a passage, so a document matching in six places would
-otherwise be six documents; the count measures the distinct set of
-files instead. And the ranked page comes from a rescore window bounded
-at 500 candidates, so a count taken from it would quietly mean "of the
-first five hundred". The facet query carries no limit.
+Counts are documents, and they are exact over the whole match set.
+The engine counts rows, and a row is a passage, so a document matching
+in six places would otherwise count six times; the count measures the
+distinct set of files instead. The ranked page comes from a rescore
+window bounded at 500 candidates, so a count taken from it would mean
+"of the first five hundred". The facet query carries no limit.
 
 Filters apply to the counts, so `prefix` and `content_type` narrow
 what is counted the same way they narrow what is returned. Faceting on
@@ -640,10 +705,11 @@ code. `GET /v1/events` lists a tenant's recent events, and
 poll, subscribe over GraphQL (below).
 
 ```
-POST   /v1/webhooks               register: { "url": ..., "events": [...] }
-GET    /v1/webhooks               list endpoints (never secrets)
-DELETE /v1/webhooks/{id}          deactivate
-GET    /v1/webhooks/deliveries    delivery attempts and outcomes
+POST   /v1/webhooks                    register: { "url": ..., "events": [...] }
+GET    /v1/webhooks                    list endpoints (never secrets)
+DELETE /v1/webhooks/{id}               deactivate
+GET    /v1/webhooks/deliveries         delivery attempts and outcomes
+GET    /v1/webhooks/{id}/deliveries    one endpoint's delivery attempts
 ```
 
 The register response carries the signing secret exactly once. Every
@@ -663,9 +729,10 @@ capped at one hour) up to eight attempts, then the delivery reads
 `failed` in the deliveries listing. The dispatcher wakes on a live
 query over the outbox, so delivery latency is normally milliseconds.
 
-Webhooks require `COPAL_BLOB_ENCRYPTION_KEY`: signing needs the secret
-back, and Copal stores such secrets sealed or not at all, the same
-custody rule as S3 gateway credentials.
+Webhooks require `COPAL_BLOB_ENCRYPTION_KEY`. Signing needs the secret
+back, and Copal stores such secrets only in sealed form, the same
+custody rule as S3 gateway credentials. Without the key, the webhook
+routes and the delivery dispatcher do not exist.
 
 ## Grants
 
@@ -723,15 +790,18 @@ redeems anonymously, verifying the signature, the expiry, and the key
 against the token's own claims; refusals are the same uniform 404 the
 grant family uses.
 
-The point of `cg2` is verification WITHOUT a database hop: a CDN
+The point of `cg2` is verification with no database lookup. A CDN
 worker or reverse proxy holding the same edge secret validates the
-signature and expiry locally and serves its cache, never touching the
+signature and expiry locally and serves its cache, and never asks the
 origin for authorization. Edge keys are minted on the admin surface
-(`POST /v1/admin/tenants/{tenant}/edge-keys`), stored sealed under the
-blob master key, and the secret appears once; install that value at
-the edge. Statelessness trades away per-token revocation: a token
-lives until it expires or its whole key is revoked, so keep TTLs
-short and use `cg1` grants where revocation or use counting matters.
+(`POST /v1/admin/tenants/{tenant}/edge-keys`) and stored sealed under
+the blob master key. The secret appears once; install that value at
+the edge. Edge URLs and edge keys exist only when
+`COPAL_BLOB_ENCRYPTION_KEY` is set.
+
+Statelessness gives up per-token revocation: a token lives until it
+expires or its whole key is revoked. Keep TTLs short, and use `cg1`
+grants where revocation or use counting matters.
 
 ## Runs
 
@@ -744,7 +814,8 @@ POST   /v1/runs/{id}/retry    retry a failed run
 
 Start takes `workflow`, `input`, an optional subject `file`, an optional
 `idempotency_key`, and `mode`. Async mode (the default) answers 202 with the
-run id. Sync mode executes in-request and answers 200 with the output, or 202
+run id, or 200 with the existing run id when the idempotency key replays.
+Sync mode executes in-request and answers 200 with the output, or 202
 with `status: "pending"` when a worker claimed the run first. A pending
 answer means poll the run; it is distinct from a completed run whose output
 is null.
@@ -758,13 +829,13 @@ a newer upload of different content refuses with 409. See
 ## Archive-cold content
 
 Operators may place cold bytes on archive-class storage. When they
-do, a byte read that finds its content archived answers **202** with
-a body naming the recall run; poll the run at `/v1/runs/{id}` and
-retry the request when it completes (a `Retry-After` header suggests
-when). The 202 itself started the recall -- retrying is harmless,
-nothing is double-charged, and a counted grant is not consumed by
-it. On the S3 face the same state answers `403 InvalidObjectState`,
-and `RestoreObject` starts the recall the way it does on AWS.
+do, a byte read that finds its content archived answers 202 with a
+body naming the recall run. Poll the run at `/v1/runs/{id}` and retry
+the request when it completes; a `Retry-After` header suggests when.
+The 202 itself started the recall, so retrying is harmless, nothing is
+charged twice, and a counted grant is not consumed by it. On the S3
+face the same state answers `403 InvalidObjectState`, and
+`RestoreObject` starts the recall the way it does on AWS.
 
 Metadata is never archived. Listings, file metadata, versions, and
 events answer at full speed regardless of where bytes live, and an
@@ -788,9 +859,11 @@ client.
 Queries follow the contract vocabulary: `files(limit, cursor, state, sort)`,
 `file(id)`, `events(limit, cursor, action, sort)`, `event(id)`,
 `webhooks(limit, cursor, sort)`, `webhook(id)`,
-`runs(limit, cursor, status, sort)`, `run(id)`. Mutations map the
-contract actions: `fileIssueUrl`, `fileIssueUploadUrl`,
-`fileIssueEdgeUrl`, `fileRequestRendition`, `fileRemove`,
+`runs(limit, cursor, status, sort)`, `run(id)`,
+`search(q, mode, limit, prefix, contentType, cursor, facets)`, and
+`fileText(id)`. Mutations map the contract actions: `fileCreate`,
+`fileIssueUrl`, `fileIssueUploadUrl`, `fileIssueEdgeUrl`,
+`fileRequestRendition`, `fileTransform`, `fileFetch`, `fileRemove`,
 `webhookRegister`, `webhookRemove`, `runStart`, `runRetry`.
 
 One subscription is served, `eventChanged(action)`, which delivers
@@ -817,9 +890,11 @@ subscriptions at once; over the ceiling refuses with
 Usage and quotas stay REST-only: they report a number rather than a
 collection of rows, which is not a shape this contract expresses.
 
-Field names stay as the contract declares them (`created_at`, not
-`createdAt`), because the generated SDL, the OpenAPI document, and
-the four clients all render from the same field list. The outbox
+Record fields keep the names the contract declares, so a file's
+creation time is `created_at` on GraphQL as it is on REST. Arguments
+and the page cursor follow GraphQL convention instead: arguments are
+camelCase (`contentType`, `idempotencyKey`, `ttlSecs`), and a page's
+cursor field is `nextCursor` where REST says `next_cursor`. The outbox
 exposes its column as `action`: `event` is reserved in SurrealDB v3,
 and the contract refuses renames that would collide there.
 
@@ -840,14 +915,27 @@ REST errors share one envelope:
 { "error": { "kind": "bad_request", "message": "..." } }
 ```
 
-GraphQL errors carry the same vocabulary in `extensions.code`. The kinds are
-`bad_request`, `unauthorized`, `forbidden`, `not_found`, `conflict`,
-`payload_too_large` (REST only), and `internal`. Internal failures log the
-cause server-side and return no detail.
+GraphQL errors carry the same vocabulary in `extensions.code`. The kinds:
+
+| Kind | REST status | Notes |
+| --- | --- | --- |
+| `bad_request` | 400 | |
+| `unauthorized` | 401 | |
+| `forbidden` | 403 | |
+| `not_found` | 404 | |
+| `conflict` | 409 | |
+| `precondition_failed` | 412 | A failed `If-Match` or `If-None-Match`. GraphQL reports it as `conflict`. |
+| `payload_too_large` | 413 | REST only. |
+| `too_many_requests` | 429 | A rate class is exhausted, or a caller holds too many subscriptions. |
+| `internal` | 500 | The cause is logged server-side; the response carries no detail. |
+
+The S3 gateway answers in S3's own XML error vocabulary instead.
 
 ## Admin surface
 
-Key custody and the audit trail live under `/v1/admin`, guarded by
-`x-copal-admin-token` and excluded from the contract. With
-`COPAL_ADMIN_BIND` set they exist only on that listener. See
-[operations.md](operations.md).
+The operator surface lives under `/v1/admin`, guarded by
+`x-copal-admin-token` and outside the contract: API keys, principals,
+S3 credentials, edge keys, quotas, storage residencies, retention and
+holds, tiering, and the audit trail. `/metrics` and the console ride
+the same surface. With `COPAL_ADMIN_BIND` set, all of it exists only on
+that listener. See [operations.md](operations.md).

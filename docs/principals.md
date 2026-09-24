@@ -1,44 +1,52 @@
 # Principals within tenants
 
-Design, ahead of code. The API key is the smallest identity Copal
-has: a key belongs to a tenant, carries scopes, and every audit event
-names the key that acted. That is enough to answer "which credential
-did this" and not enough to answer "who", which is the question a
-compliance reviewer asks and the one an agent deployment asks about
-its own fleet.
+Status: shipped. All five slices in the build order below are in the
+code: the `principal` table and admin routes, scope intersection at
+authentication, the `pr` claim and the ownership guard, per-principal
+rate buckets, and `created_by` recording the handle. Two gaps remain,
+both named where they apply: grant and tus uploads still record their
+source labels instead of an actor, and the `private` and `tenant`
+access levels are still enforced identically. The operator reference
+is the principals section of [operations.md](operations.md).
 
-## What the key model already gives
+This page explains the model and why it is shaped this way.
+
+Without principals, the API key is the smallest identity Copal has: a
+key belongs to a tenant, carries scopes, and every audit event names
+the key that acted. That answers "which credential did this" but not
+"who", which is the question a compliance reviewer asks and the one an
+agent deployment asks about its own fleet.
+
+## What a key alone gives
 
 A key is an identity with scopes, an expiry, and a revocation. It
 reaches the engine as a token claim (`id`, `tn`, `sc`, `adm`), so
-engine `PERMISSIONS` already filter by the tenant it belongs to and
-by the scopes it holds. Field guards evaluate against a `Principal`
-whose subject is the key id.
+engine `PERMISSIONS` filter by the tenant it belongs to and by the
+scopes it holds. Field guards evaluate against a `Principal` whose
+subject is the key id.
 
-So the mechanism for identity-shaped policy exists end to end. What
-is missing is a subject worth naming: every key is a peer of every
-other key in its tenant, and two keys with the same scopes are
-indistinguishable to every layer.
+So the mechanism for identity-shaped policy exists end to end. A key
+alone lacks a subject worth naming: every key is a peer of every other
+key in its tenant, and two keys with the same scopes look the same to
+every layer.
 
 ## What a principal adds
 
 A **principal** is a named actor under a tenant: a person, a service,
-or an agent. Keys stop being identities and become credentials
-*belonging to* a principal, which is what makes the following
-expressible:
+or an agent. Keys become credentials that belong to a principal, which
+makes the following expressible:
 
 - **Audit that names the actor.** "ck1_abc removed the file" becomes
   "alice removed the file, using key ck1_abc". Rotating a key stops
   breaking the audit trail's continuity, because the actor outlives
   the credential.
-- **Guards that distinguish people.** Today a guard can ask "does the
-  caller hold admin". With principals it can ask "did this principal
-  create this row", which is the shape most per-field policy actually
+- **Guards that distinguish people.** With keys alone a guard can ask
+  "does the caller hold admin". With principals it can ask "did this
+  principal create this row", which is the shape most per-field policy
   wants (`created_by` visible to its author and to admins).
 - **Per-agent attribution and budget.** An agent fleet issues one
   principal per agent, so a runaway agent is identifiable, revocable,
-  and meterable on its own rather than sharing its tenant's ledger
-  with every sibling.
+  and metered on its own budget.
 - **Delegation with a shorter leash.** A principal may hold fewer
   scopes than its tenant permits, and a key may hold fewer than its
   principal, so narrowing is always possible and widening never is.
@@ -54,45 +62,46 @@ One table, `principal`:
 - `kind`: `human`, `service`, or `agent`. Carried for reporting; the
   enforcement layers do not branch on it, because a rule that treats
   agents differently from people is a policy decision a deployment
-  should state explicitly rather than inherit.
+  should state explicitly.
 - `scopes`: the ceiling for keys issued to this principal.
 - `disabled_at`: disabling a principal refuses every one of its keys
-  at once, which is the operation an incident actually needs.
+  at once, which is the operation an incident needs.
 
-`api_key` gains `principal_id`. A key without one keeps working as a
-tenant-level credential, which is what makes this migratable: today's
-keys are principal-less and behave exactly as they do now.
+`api_key` carries an optional `principal_id`. A key without one works
+as a tenant-level credential, which made the change safe to adopt:
+keys minted before principals existed behave exactly as they did.
 
 ## How it reaches the layers
 
-The token claims gain `pr` (the principal handle) beside the existing
-`id` (the key). Everything downstream follows:
+The token claims carry `pr` (the principal handle) beside `id` (the
+key). Everything downstream follows:
 
 - **The application layer** puts the principal in `Principal.subject`
-  rather than the key id, so guards compare actors. The key id stays
+  in place of the key id, so guards compare actors. The key id stays
   available for audit's "using key" half.
-- **The engine layer** gains `$token.pr`, so a compiled `PERMISSIONS`
+- **The engine layer** has `$token.pr`, so a compiled `PERMISSIONS`
   clause can express ownership: `created_by = $token.pr` beside the
-  tenancy rule. This is the point of the whole design, because it
-  makes the second enforcement layer able to say what the first says.
+  tenancy rule. This lets the second enforcement layer say what the
+  first says.
 - **Scopes** resolve as the intersection of the key's and the
   principal's, computed at authentication. A widened key under a
-  narrowed principal grants nothing extra, and the narrowing is
-  visible at the moment it is applied rather than at the moment it is
-  needed.
+  narrowed principal grants nothing extra. Minting refuses a key whose
+  scopes exceed its principal's ceiling, so the narrowing shows up
+  when it is applied.
 - **Rate classes** key their buckets on the principal, so an agent's
-  budget is its own. Keyless surfaces (header mode) keep the tenant
-  bucket they use now.
+  budget is its own. A key without a principal keeps a bucket of its
+  own. Header mode has no key, so every header-mode caller, whatever
+  tenant it names, shares one bucket per rate class.
 
-## What changes in the record
+## What the record says
 
-`created_by` currently holds `"api"` or a key-derived string. It
-becomes the principal handle, which is what makes the ownership guard
-meaningful. Rows written before principals exist keep their current
-value, so the guard must treat an unrecognized `created_by` as
-"nobody in particular": visible to admins, hidden from ordinary
-principals. Stated plainly because the alternative, treating unknown
-authorship as ownership, would silently widen access on upgrade.
+A version's `created_by` holds the principal handle when the upload
+came from a key with a principal, through the REST body path or an S3
+credential. Grant and tus uploads still record their source labels,
+and rows written before principals existed keep their old value. The
+ownership guard treats any `created_by` that matches no handle as
+nobody's: visible to admins, hidden from ordinary principals. Treating
+unknown authorship as ownership would widen access on upgrade.
 
 ## The admin surface
 
@@ -102,12 +111,13 @@ Principals are managed on the admin listener, beside keys:
 POST   /v1/admin/tenants/{tenant}/principals      { handle, kind, scopes }
 GET    /v1/admin/tenants/{tenant}/principals
 DELETE /v1/admin/tenants/{tenant}/principals/{handle}   (disables)
-POST   /v1/admin/tenants/{tenant}/keys            { principal, name, scopes, ttl }
+POST   /v1/admin/tenants/{tenant}/keys            { principal, name, scopes, ttl_secs }
 ```
 
-Every one writes an audit event naming the acting admin, the
-principal, and the change, because the trail of who was granted what
-is the reason this design exists.
+Each writes an audit event (`principal.created`, `principal.disabled`,
+`key.minted`) naming the acting admin, the principal, and the change,
+because the trail of who was granted what is the reason this design
+exists.
 
 ## Build order
 
@@ -138,5 +148,5 @@ is the reason this design exists.
    attribute to the credential's actor.
 
 Slices 1 and 2 are additive: a deployment with no principals behaves
-exactly as it does today, which is the property that lets this land
-before anyone has to adopt it.
+exactly as it did before principals existed, so adopting them is
+optional.

@@ -3,8 +3,8 @@ services:
     image: surrealdb/surrealdb:v3.2.4
     command: start --user root --pass root rocksdb:/data/copal.db
     environment:
-      # Buckets stay experimental in v3; enabling them costs nothing and
-      # keeps the surreal-bucket blob backend testable.
+      # Enables SurrealDB's experimental file buckets. Copal does not use
+      # them: its blob backends are fs, s3, gcs, and azblob.
       SURREAL_CAPS_ALLOW_EXPERIMENTAL: files
     ports:
       - "127.0.0.1:8000:8000"

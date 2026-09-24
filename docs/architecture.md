@@ -2,8 +2,10 @@
 
 Copal is a self-hosted file service. Metadata, search, access control, the
 processing journal, and the audit trail live in one SurrealDB database. File
-bytes live behind a content-addressed blob port. One contract declaration
-drives every surface a caller can reach.
+bytes live behind a content-addressed blob port: the local filesystem by
+default, with S3, Google Cloud Storage, and Azure Blob Storage as named
+residencies. One contract declaration drives the generated faces, the
+reference documents, and the generated clients.
 
 Sequence-level walkthroughs live in [sequences.md](sequences.md).
 
@@ -15,8 +17,9 @@ in step.
 At **build time** one contract declaration compiles into the documents and
 clients that describe the service, validated against the database schema
 that backs it. At **run time** the faces callers reach converge on one
-dispatcher that enforces the same declaration. A surface cannot drift from
-the contract because no surface is written twice.
+dispatcher that enforces the same declaration. The generated surfaces cannot
+drift from the contract because each is rendered from it, and a parity test
+holds the hand-written `/v1` face to the same answers as `/v1c`.
 
 ### Build time: the contract compiles
 
@@ -27,9 +30,9 @@ build rather than production.
 
 ```mermaid
 flowchart TB
-    contract["Contract declaration<br/>copal-server/src/contract.rs"]
-    schema["Schema as code<br/>copal-store/src/schema/"]
-    validate{"kayak validate<br/>columns exist<br/>indexes cover every claim"}
+    contract["Contract declaration<br/>crates/copal-server/src/contract/"]
+    schema["Schema as code<br/>crates/copal-store/src/schema/"]
+    validate{"Kayak validate<br/>columns exist<br/>indexes cover every claim"}
 
     contract --> validate
     schema --> validate
@@ -37,27 +40,31 @@ flowchart TB
     validate --> openapi["docs/openapi.json"]
     validate --> sdl["docs/schema.graphql"]
     validate --> manifest["docs/mcp-tools.json"]
+    validate --> policy["docs/policy.json"]
     validate --> clients["clients/<br/>rust, typescript, python, go"]
-    validate --> guards["engine PERMISSIONS<br/>copal-server/src/engine.rs"]
-    clients --> sdks["sdks/build.sh<br/>four installable packages"]
+    validate --> guards["engine PERMISSIONS<br/>crates/copal-server/src/engine.rs"]
+    clients --> sdks["sdks/build.sh<br/>four packages"]
 
     validate -.->|"drift fails the test"| gate(["cargo test"])
 ```
 
-Checked-in artifacts are compared byte for byte by
-`crates/copal-server/tests/contract.rs`; `COPAL_BLESS=1` re-blesses them as
-a deliberate step. The engine's `PERMISSIONS` are compiled from the same
-declaration, so the database enforces tenancy even for a caller holding a
-session directly.
+The contract lives in `crates/copal-server/src/contract/mod.rs`, with one
+file per entity beside it (`files.rs`, `webhooks.rs`, `events.rs`,
+`runs.rs`, `search.rs`, `file_text.rs`). The eight checked-in artifacts
+(the four documents in `docs/` and the four clients) are compared byte for
+byte by `crates/copal-server/tests/contract.rs`; `COPAL_BLESS=1` re-blesses
+them as an explicit step. The engine's `PERMISSIONS` are compiled from the
+same declaration, so the database enforces tenancy even for a caller
+holding a session directly.
 
 ### Run time: the faces converge
 
 Four faces render from the contract at run time and dispatch through one
-chain: the generated REST face, GraphQL, the MCP tool surface, and the
-operator console. The hand-written REST face and the S3 gateway carry
-protocol-specific semantics (byte streaming, 201 and 202 shapes, SigV4) and
-reach the repositories directly, under the same authentication and the same
-engine policy.
+chain: the generated REST face (`/v1c`), GraphQL, the MCP tool surface, and
+the operator console. The hand-written REST face, tus, and the S3 gateway
+carry protocol-specific semantics (byte streaming, 201 and 202 shapes,
+resumable offsets, SigV4) and reach the repositories directly, under the
+same authentication and the same engine policy.
 
 ```mermaid
 flowchart LR
@@ -70,7 +77,7 @@ flowchart LR
     end
 
     subgraph server [copal-server]
-        rest["REST /v1"]
+        rest["REST /v1 and tus"]
         s3["S3 gateway"]
         admin["Admin surface"]
         restc["REST /v1c"]
@@ -88,6 +95,7 @@ flowchart LR
     end
 
     app --> rest
+    app --> restc
     app --> gql
     agent --> mcp
     tools --> s3
@@ -221,8 +229,9 @@ registered activity pipelines, and journals each attempt. `workflow_run`,
 `copal-store/src/schema/flow.rs`.
 
 **Boundaries.** Activities are process-local Rust closures registered at
-startup. Definitions-as-data workflows and event-driven dispatch (LIVE SELECT)
-are planned, and neither changes the journal model.
+startup, and workflows are defined in code. The worker polls for
+pending runs, idling two seconds when the queue is empty, and executes one
+run at a time.
 
 ### Digest-based servability
 
@@ -235,7 +244,8 @@ and after a later attempt fails. Tying serving to state
 would make every transition a visible outage.
 
 **Implementation.** `FileRecord::servable_content()` is the single check, used
-by content routes and grant issuance.
+by content routes and grant issuance. With a malware scanner configured,
+serving also requires that a scan cleared the record's current digest.
 
 **Boundaries.** A failed current version refuses its own bytes on the version
 route (unscanned content). Historical versions that passed their own pipelines
@@ -243,20 +253,24 @@ keep serving.
 
 ### Stateful capabilities instead of signed URLs
 
-**Decision.** Grant tokens and API keys are database rows. A token is
-`prefix.id.secret`; the row stores `sha256(secret)`. There is no signing key.
+**Decision.** Grant tokens (`cg1`) and API keys (`ck1`) are database rows. A
+token is `prefix.id.secret`; the row stores `sha256(secret)`. No signing key
+exists for either.
 
 **Rationale.** A row lookup makes revocation one write, makes use counts
 enforceable atomically, and leaves nothing to rotate or leak server-side. A
 database leak exposes hashes.
 
-**Implementation.** `copal-sign` mints and parses both families. Verification
-is constant-time. Grant redemption consumes a use inside a guarded UPDATE, and
-only after every precondition has passed. Unknown ids burn a dummy hash
-compare so timing does not reveal key existence.
+**Implementation.** `copal-sign` mints and parses the token families.
+Verification is constant-time. Grant redemption consumes a use inside a
+guarded UPDATE, and only after every precondition has passed. Unknown ids burn
+a dummy hash compare so timing does not reveal key existence.
 
-**Boundaries.** A stateless HMAC mode for CDN-edge verification (`cg2`) is
-planned as an addition beside `cg1`.
+**Boundaries.** Edge tokens (`cg2`, served by
+`crates/copal-server/src/edge.rs`) are the stateless exception, for CDN-edge
+verification without a database lookup: an HMAC under a per-tenant edge key
+that is stored sealed under the master key. A `cg2` token cannot be revoked on
+its own; revoking its edge key ends every token that key signed.
 
 ### Derived reference counts
 
@@ -276,9 +290,11 @@ code path trusts it.
 
 ### Contract-first surfaces through Kayak
 
-**Decision.** One `kayak::Contract` object (in `copal-server/src/contract.rs`)
-drives the OpenAPI document, the GraphQL SDL, four generated clients, the
-live GraphQL endpoint, and the breaking-change gate.
+**Decision.** One `kayak::Contract` object (assembled in
+`crates/copal-server/src/contract/mod.rs` from per-entity files beside it)
+drives the OpenAPI document, the GraphQL SDL, the MCP tool manifest, the
+engine policy document, four generated clients, the live GraphQL, `/v1c`,
+MCP, and console faces, and the breaking-change gate.
 
 **Rationale.** Hand-maintained API documents drift. Executing the same object
 that generates the documents removes the gap: the served schema and the
@@ -287,12 +303,14 @@ drift between schema, contract, and artifacts.
 
 **Implementation.** GraphQL resolvers are thin closures over the same
 repositories the REST handlers use, dispatched through the Kayak runtime with
-tenancy as middleware. One wire mapper renders rows for both faces.
-`tests/contract.rs` regenerates all six artifacts and compares byte-for-byte.
+tenancy as middleware. One wire mapper renders rows for every face.
+`tests/contract.rs` regenerates all eight artifacts and compares them byte
+for byte.
 
-**Boundaries.** Binary endpoints (upload, download) and the admin surface sit
-outside the contract. The drift gate covers them through integration tests
-instead.
+**Boundaries.** The byte handlers (upload, download, tus), the S3 gateway, and
+the admin surface are hand-written and do not run through the dispatcher. The
+content routes appear in the OpenAPI document as declared content faces;
+integration tests cover the rest.
 
 ### Compare-and-swap everywhere
 

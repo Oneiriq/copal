@@ -3,9 +3,10 @@
 MinIO's community edition stopped receiving development, security
 patches, and binaries in 2026. Its usual replacements hand back a
 bucket API and nothing else. Copal's S3 gateway accepts the same
-tooling and adds what a plain object store cannot: every migrated file
-gets scanning, dedupe, versioning, full-text and semantic search, an
-event stream, and a typed API beside the bucket one.
+tooling and adds what a plain object store lacks: every migrated file
+gets dedupe, versioning, full-text search, an event stream, and a
+typed API beside the bucket one, plus malware scanning and semantic
+search when those services are configured.
 
 The migration is one `mirror` run with stock tools. Nothing here is
 Copal-specific tooling to install.
@@ -17,9 +18,11 @@ Run Copal with the gateway enabled:
 ```
 COPAL_BLOB_ENCRYPTION_KEY=<64 hex>   # gateway credentials are sealed under it
 COPAL_S3_BIND=0.0.0.0:9000
+COPAL_ADMIN_TOKEN=<operator token>   # the admin surface exists only with one
 ```
 
-Mint a credential for the tenant that will own the content:
+Mint a credential for the tenant that will own the content (on the
+admin listener, if you set `COPAL_ADMIN_BIND`):
 
 ```
 curl -X POST -H "x-copal-admin-token: $ADMIN" \
@@ -59,9 +62,11 @@ Every object lands through the same path as any other upload:
 
 - Content is deduplicated by digest. Two identical objects store one
   blob, whatever their keys.
-- With a pipeline configured, each file is scanned, its text
-  extracted, and its passages embedded, so the corpus is searchable
-  when the mirror finishes. Without one, files serve immediately.
+- Each file runs the upload pipeline: scanned when a scanner is
+  configured, its text extracted, and its passages embedded when an
+  embedding service is configured, so the corpus is searchable when
+  the pipeline catches up with the mirror. Without a scanner, files
+  serve as soon as their bytes land.
 - Re-running the mirror is safe. Unchanged objects re-upload into the
   same digests; changed ones mint versions, and the previous content
   keeps serving until the new version is ready.
@@ -69,12 +74,13 @@ Every object lands through the same path as any other upload:
 ## 4. Verify
 
 ```
-mc diff old/data copal/acme          # empty output = every object arrived
+mc diff old/data copal/acme          # empty output means every object arrived
 curl -H "x-copal-tenant: acme" "http://copal:8080/v1/search?q=<term>"
 ```
 
-The second line is the point of moving: the mirrored bucket answers
-questions now.
+The second line searches the mirrored content. It uses header mode;
+with `COPAL_AUTH_MODE=keys`, send `Authorization: Bearer <key>`
+instead.
 
 ## The conformance table
 

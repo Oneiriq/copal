@@ -39,7 +39,7 @@ sequenceDiagram
     W->>M: claim the run
     W->>W: sniff, policy, scan, extract, embed
     W->>M: finalize_upload (CAS scanning to ready)
-    W->>M: emit file.ready event
+    Note over M: the engine writes the file.ready outbox row<br/>in the same transaction as the transition
 ```
 
 The record serves as soon as it has a digest, so a running scan never
@@ -57,10 +57,11 @@ the finalize compare-and-swap loses harmlessly on a repeat.
 sequenceDiagram
     autonumber
     participant W as Flow worker
-    participant J as Journal (SurrealDB)
+    participant J as Journal
     participant B as Blob store
     participant AV as clamd
     participant X as Extractor
+    participant E as Embedder
 
     W->>J: claim run, read step cursor
     W->>B: read first bytes
@@ -70,10 +71,17 @@ sequenceDiagram
         W->>AV: stream content
         AV-->>W: clean or signature
     end
-    W->>X: extract_text (native for text and json)
-    X-->>W: passages
+    W->>B: read content for extract_text
+    alt text or JSON
+        W->>W: decode natively
+    else other formats, extractor configured
+        W->>X: PUT /tika with the bytes
+        X-->>W: text
+    end
+    W->>W: resolve markers, split into passages
     opt embedding service configured
-        W->>W: embed_text for passages lacking vectors
+        W->>E: embed_text for passages lacking vectors
+        E-->>W: vectors
     end
     W->>J: finalize_upload (ready or quarantined)
     Note over W,J: every step records its output<br/>and a retry resumes at the cursor
@@ -90,7 +98,7 @@ a key could not.
 sequenceDiagram
     autonumber
     participant A as Agent
-    participant S as copal-server /mcp
+    participant S as MCP endpoint
     participant D as Kayak dispatcher
     participant R as Resolver
     participant M as SurrealDB
@@ -120,8 +128,8 @@ tenant identity, which is what makes the URL shareable.
 ```mermaid
 sequenceDiagram
     autonumber
-    participant C as Client (keyed)
-    participant V as Viewer (anonymous)
+    participant C as Keyed client
+    participant V as Anonymous viewer
     participant S as copal-server
     participant M as SurrealDB
     participant B as Blob store
@@ -149,7 +157,7 @@ the console shows is what the API would answer.
 sequenceDiagram
     autonumber
     participant O as Operator browser
-    participant S as copal-server /admin/console
+    participant S as Console routes
     participant J as Kayak ConsoleRouter
     participant D as Kayak dispatcher
     participant M as SurrealDB
@@ -217,10 +225,10 @@ fails in CI with the offending name.
 ```mermaid
 sequenceDiagram
     autonumber
-    participant Dev as Change to contract.rs
+    participant Dev as Contract change
     participant T as cargo test
-    participant JV as kayak validate
-    participant JG as kayak generate_all
+    participant JV as Kayak validate
+    participant JG as Kayak generate_all
 
     Dev->>T: run the contract test
     T->>JV: contract against the real surql-rs schema
@@ -231,7 +239,7 @@ sequenceDiagram
         JV-->>T: no violations
     end
     T->>JG: render every artifact
-    JG-->>T: openapi.json, schema.graphql, mcp-tools.json, four clients
+    JG-->>T: openapi.json, schema.graphql, mcp-tools.json, policy.json, four clients
     T->>T: compare against the checked-in copies
     alt bytes differ
         T-->>Dev: red, re-bless with COPAL_BLESS=1

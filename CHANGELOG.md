@@ -42,6 +42,16 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
   changed between the two was never checked; each fetch hop now
   connects only to the addresses the policy approved.
 
+### Fixed
+
+- **A subscription delivers each event once.** `eventChanged` relayed
+  every live-query notification on the outbox, and the webhook
+  dispatcher marks each event dispatched after fanning it out, even
+  for a tenant with no endpoints. That update reached subscribers as
+  the same event a second time. The outbox is append-only, so the feed
+  now relays row creation only; retention deletes no longer reach it
+  either.
+
 ### Lifecycle and tiering
 
 - **Recall ships, and archive classes unlock.** An archive-class

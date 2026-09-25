@@ -14,4 +14,4 @@ pub mod repo;
 pub mod schema;
 mod store;
 
-pub use store::{Store, StoreConfig};
+pub use store::{RowChange, Store, StoreConfig};

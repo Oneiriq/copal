@@ -61,6 +61,15 @@ impl StoreConfig {
     }
 }
 
+/// What a live notification reports about its row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RowChange {
+    Created,
+    Updated,
+    /// The row as it was before the delete.
+    Deleted,
+}
+
 /// Cloneable handle over the metadata plane.
 #[derive(Clone)]
 pub struct Store {
@@ -355,12 +364,17 @@ impl Store {
     /// notification the connection drops is a row the subscriber never
     /// learns about. Use this to serve subscriptions, never to drive
     /// durable work.
+    ///
+    /// Each item names what happened to its row, because which changes
+    /// are news depends on the table: an append-only table's rows are
+    /// news once, when created, and every later write to them is
+    /// bookkeeping.
     pub async fn watch_rows(
         &self,
         table: &str,
         conditions: Vec<surql::query::Condition>,
     ) -> copal_core::Result<
-        impl futures::Stream<Item = copal_core::Result<serde_json::Value>> + Send + Unpin,
+        impl futures::Stream<Item = copal_core::Result<(RowChange, serde_json::Value)>> + Send + Unpin,
     > {
         use futures::StreamExt as _;
         let live = surql::connection::LiveQuery::<serde_json::Value>::start_where(
@@ -371,11 +385,27 @@ impl Store {
         .await
         .map_err(|e| CopalError::Store(format!("live query: {e}")))?;
         // CREATE and UPDATE carry the row; DELETE carries it as it was.
-        // Every action is a fact worth relaying. A notification error
-        // travels as an item so the subscriber learns the feed broke.
-        Ok(live.map(|item| match item {
-            Ok(notification) => Ok(notification.data),
-            Err(error) => Err(CopalError::Store(format!("live query: {error}"))),
+        // A killed or failing live query travels as an error item, so
+        // the subscriber learns the feed broke rather than decoding an
+        // error message as a row.
+        Ok(live.map(|item| {
+            let notification =
+                item.map_err(|error| CopalError::Store(format!("live query: {error}")))?;
+            // The action type lives in the engine crate, which this one
+            // names only behind the `embedded` feature; its display
+            // names are the SurrealQL keywords.
+            let change = match notification.action.to_string().as_str() {
+                "CREATE" => RowChange::Created,
+                "UPDATE" => RowChange::Updated,
+                "DELETE" => RowChange::Deleted,
+                other => {
+                    return Err(CopalError::Store(format!(
+                        "live query {other}: {}",
+                        notification.data,
+                    )));
+                }
+            };
+            Ok((change, notification.data))
         }))
     }
 }

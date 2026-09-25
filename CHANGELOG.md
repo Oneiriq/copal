@@ -27,6 +27,21 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
   run was enqueued under before any step sees it, so no path that
   enqueues a run can hand an activity another tenant's scope.
 
+- **URL fetch checks every hop it connects to.** The outbound policy
+  checked the URL a caller submitted, and the HTTP client then followed
+  up to ten redirects on its own, so a public URL that redirected to a
+  loopback, private, or cloud metadata address was fetched and stored.
+  Redirects are now followed by hand, at most five, and each hop meets
+  the policy before it is requested.
+
+  Two gaps closed with it. The policy split URLs by hand while the
+  client parsed them with the WHATWG rules, and the two disagreed on
+  some inputs about which host a URL names; the policy now parses with
+  the client's own parser, which also covers webhook targets. And a
+  checked name was resolved again by the client, so a DNS answer that
+  changed between the two was never checked; each fetch hop now
+  connects only to the addresses the policy approved.
+
 ### Lifecycle and tiering
 
 - **Recall ships, and archive classes unlock.** An archive-class

@@ -46,6 +46,71 @@ impl Default for FetchPolicy {
     }
 }
 
+/// Redirects a fetch follows before it gives up on the source.
+const MAX_REDIRECTS: usize = 5;
+
+/// Where opening a source ended: its response, or a reason the record
+/// fails without a retry.
+enum Opened {
+    Response(reqwest::Response),
+    Refused(String),
+}
+
+/// Request `url`, following redirects by hand. The client never
+/// follows one itself: a redirect names a new destination the source
+/// chose, so every hop passes `vet` first and connects only to the
+/// addresses `vet` checked, never to a fresh DNS answer.
+async fn open_source<F>(url: &str, vet: F) -> copal_core::Result<Opened>
+where
+    F: Fn(&str) -> copal_core::Result<crate::netguard::Vetted> + Sync,
+{
+    let mut current = url.to_owned();
+    let mut redirects = 0;
+    loop {
+        let vetted = match vet(&current) {
+            Ok(vetted) => vetted,
+            Err(refusal) => return Ok(Opened::Refused(format!("outbound policy: {refusal}"))),
+        };
+        let mut builder = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(120))
+            .redirect(reqwest::redirect::Policy::none());
+        if let Some((host, addrs)) = &vetted.pin {
+            builder = builder.resolve_to_addrs(host, addrs);
+        }
+        let client = builder
+            .build()
+            .map_err(|e| CopalError::Blob(format!("fetch client: {e}")))?;
+        let response = crate::trace::inject(client.get(vetted.url.clone()))
+            .send()
+            .await
+            .map_err(|e| CopalError::Blob(format!("fetch {current}: {e}")))?;
+        if !response.status().is_redirection() {
+            return Ok(Opened::Response(response));
+        }
+        // A 3xx with nowhere to go (a 304, a bare 300) is the source's
+        // answer, and the status checks downstream judge it.
+        let Some(location) = response
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|v| v.to_str().ok())
+        else {
+            return Ok(Opened::Response(response));
+        };
+        let Ok(next) = vetted.url.join(location) else {
+            return Ok(Opened::Refused(format!(
+                "source redirected to an invalid location {location:?}",
+            )));
+        };
+        redirects += 1;
+        if redirects > MAX_REDIRECTS {
+            return Ok(Opened::Refused(format!(
+                "source redirected more than {MAX_REDIRECTS} times",
+            )));
+        }
+        current = next.into();
+    }
+}
+
 /// The URL-ingestion activity body. The primary record was created as
 /// a draft by the API; this pulls the remote bytes under the outbound
 /// policy and the upload ceiling, completes the upload into scanning,
@@ -76,20 +141,20 @@ pub(super) async fn fetch_source<B: BlobStore>(
 
     // The URL is tenant-supplied, so the outbound policy applies at
     // execution too: configuration may have tightened since enqueue.
-    if !policy.allow_private_targets {
-        if let Err(refusal) = crate::netguard::check_outbound_url(&url) {
-            let reason = format!("outbound policy: {refusal}");
-            return refuse_derived(store, &tenant, &file, reason).await;
+    // It applies to every redirect hop as well, since the source picks
+    // those.
+    let allow_private = policy.allow_private_targets;
+    let vet = move |candidate: &str| {
+        if allow_private {
+            crate::netguard::accept_outbound_url(candidate)
+        } else {
+            crate::netguard::vet_outbound_url(candidate)
         }
-    }
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(120))
-        .build()
-        .map_err(|e| CopalError::Blob(format!("fetch client: {e}")))?;
-    let response = crate::trace::inject(client.get(&url))
-        .send()
-        .await
-        .map_err(|e| CopalError::Blob(format!("fetch {url}: {e}")))?;
+    };
+    let response = match open_source(&url, vet).await? {
+        Opened::Response(response) => response,
+        Opened::Refused(reason) => return refuse_derived(store, &tenant, &file, reason).await,
+    };
     let status = response.status();
     if status.is_client_error() {
         let reason = format!("source answered {status}");
@@ -202,4 +267,118 @@ pub(super) async fn fetch_source<B: BlobStore>(
         "digest": stored.digest.as_str(),
         "bytes": stored.size_bytes,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    use axum::http::{header::LOCATION, StatusCode};
+    use axum::routing::get;
+
+    use super::*;
+    use crate::netguard::{accept_outbound_url, vet_outbound_url, Vetted};
+
+    /// A loopback origin: `/start` redirects to `/secret` on the same
+    /// listener, `/metadata` to the cloud metadata address, and `/loop`
+    /// to itself. `hits` counts requests that reach `/secret`.
+    async fn origin(hits: Arc<AtomicUsize>) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let secret = format!("{base}/secret");
+        let app = axum::Router::new()
+            .route(
+                "/start",
+                get(move || async move { (StatusCode::FOUND, [(LOCATION, secret)]) }),
+            )
+            .route(
+                "/metadata",
+                get(|| async {
+                    (
+                        StatusCode::FOUND,
+                        [(LOCATION, "http://169.254.169.254/latest/meta-data/")],
+                    )
+                }),
+            )
+            .route(
+                "/loop",
+                get(|| async { (StatusCode::FOUND, [(LOCATION, "/loop")]) }),
+            )
+            .route(
+                "/secret",
+                get(move || {
+                    hits.fetch_add(1, Ordering::SeqCst);
+                    async { "internal" }
+                }),
+            );
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        base
+    }
+
+    /// The outbound policy as a deployment runs it, except that the
+    /// test's own start URL stands in for a public origin.
+    fn policy_except(start: String) -> impl Fn(&str) -> copal_core::Result<Vetted> + Sync {
+        move |candidate| {
+            if candidate == start {
+                accept_outbound_url(candidate)
+            } else {
+                vet_outbound_url(candidate)
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn every_redirect_hop_meets_the_outbound_policy() {
+        let hits = Arc::new(AtomicUsize::new(0));
+        let base = origin(hits.clone()).await;
+        for path in ["/start", "/metadata"] {
+            let start = format!("{base}{path}");
+            match open_source(&start, policy_except(start.clone()))
+                .await
+                .unwrap()
+            {
+                Opened::Refused(reason) => {
+                    assert!(reason.contains("non-public"), "{path}: {reason}");
+                }
+                Opened::Response(response) => {
+                    panic!("{path} was followed to {}", response.url());
+                }
+            }
+        }
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            0,
+            "the private hop was requested"
+        );
+    }
+
+    #[tokio::test]
+    async fn redirects_are_followed_when_the_policy_allows_the_target() {
+        let hits = Arc::new(AtomicUsize::new(0));
+        let base = origin(hits.clone()).await;
+        let Opened::Response(response) = open_source(&format!("{base}/start"), accept_outbound_url)
+            .await
+            .unwrap()
+        else {
+            panic!("an allowed redirect was refused");
+        };
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.text().await.unwrap(), "internal");
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn a_redirect_loop_stops_at_the_hop_limit() {
+        let base = origin(Arc::new(AtomicUsize::new(0))).await;
+        match open_source(&format!("{base}/loop"), accept_outbound_url)
+            .await
+            .unwrap()
+        {
+            Opened::Refused(reason) => assert!(reason.contains("more than"), "{reason}"),
+            Opened::Response(response) => panic!("the loop ended at {}", response.status()),
+        }
+    }
 }

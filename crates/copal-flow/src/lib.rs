@@ -40,6 +40,11 @@ pub struct WorkflowDef {
     pub steps: Vec<String>,
     /// Per-step attempt ceiling before the run fails.
     pub max_attempts: i64,
+    /// Whether a caller may start this workflow through the runs API.
+    /// Server-only workflows trust their input (the file, the digest,
+    /// the residency), because the server built it after its own
+    /// checks; a caller-supplied input must never reach them.
+    pub caller_startable: bool,
 }
 
 /// The registry: activities by name, workflows by key. Built once at
@@ -72,14 +77,27 @@ impl FlowRegistry {
         self
     }
 
-    /// Register a workflow as a pipeline of activity names.
-    pub fn workflow(mut self, key: &str, steps: &[&str], max_attempts: i64) -> Self {
+    /// Register a server-only workflow as a pipeline of activity
+    /// names. Only server code starts it; the runs API refuses it.
+    pub fn workflow(self, key: &str, steps: &[&str], max_attempts: i64) -> Self {
+        self.register(key, steps, max_attempts, false)
+    }
+
+    /// Register a workflow callers may start through the runs API.
+    /// Its activities receive caller-supplied input and must treat
+    /// every field as untrusted.
+    pub fn caller_workflow(self, key: &str, steps: &[&str], max_attempts: i64) -> Self {
+        self.register(key, steps, max_attempts, true)
+    }
+
+    fn register(mut self, key: &str, steps: &[&str], max_attempts: i64, caller: bool) -> Self {
         self.workflows.insert(
             key.to_owned(),
             WorkflowDef {
                 key: key.to_owned(),
                 steps: steps.iter().map(|s| (*s).to_owned()).collect(),
                 max_attempts: max_attempts.max(1),
+                caller_startable: caller,
             },
         );
         self
@@ -127,6 +145,18 @@ impl FlowEngine {
     /// Whether a workflow key is registered.
     pub fn has_workflow(&self, key: &str) -> bool {
         self.registry.workflows.contains_key(key)
+    }
+
+    /// Refuse a caller-started run of anything but a caller workflow:
+    /// unknown keys are not found, server-only keys are forbidden.
+    pub fn ensure_caller_startable(&self, key: &str) -> copal_core::Result<()> {
+        if self.registry.workflow_def(key)?.caller_startable {
+            Ok(())
+        } else {
+            Err(CopalError::forbidden(format!(
+                "workflow {key} is started by the server, not through the runs API",
+            )))
+        }
     }
 
     /// Enqueue a run for a worker. Unknown workflows are refused at the
@@ -216,7 +246,7 @@ impl FlowEngine {
         };
 
         let journal = flow_repo::completed_steps(&self.store, &run_id).await?;
-        let mut carried = run.input.clone();
+        let mut carried = bind_tenant(run.input.clone(), &run.tenant_id);
         for step_key in &def.steps {
             if let Some(recorded) = journal.get(step_key) {
                 // Replay: the step already happened; its recorded
@@ -319,6 +349,18 @@ impl FlowEngine {
         let steps = flow_repo::list_steps(&self.store, run_id).await?;
         Ok(Some((run, steps)))
     }
+}
+
+/// The run's tenant is the authority over its input's. Activities read
+/// the tenant from their input, so an input that names one names the
+/// tenant the run was enqueued under, whatever its author wrote. A
+/// second wall behind the runs API's refusal: no path that enqueues a
+/// run can hand an activity another tenant's scope.
+fn bind_tenant(mut input: Value, tenant: &str) -> Value {
+    if let Some(named) = input.get_mut("tenant") {
+        *named = Value::from(tenant);
+    }
+    input
 }
 
 /// The worker loop the server spawns: tick until empty, then idle for

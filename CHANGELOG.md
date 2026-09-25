@@ -9,6 +9,24 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ## [Unreleased]
 
+### Security
+
+- **The runs API starts only caller workflows.** `POST /v1/runs`, and
+  `runStart` on the GraphQL, MCP, and `/v1c` faces that share its
+  core, accepted any registered workflow with a caller-written input.
+  The built-in workflows (upload processing, fetch, transform, derive,
+  recall) act on the tenant, file, and digest their input names,
+  because the endpoints that enqueue them check those first. Started
+  through the runs API, they skipped every one of those checks, and a
+  key for one tenant could run them against another tenant's file.
+
+  Workflows are now server-only unless registered with
+  `caller_workflow`, and the runs API answers 403 for the rest.
+  Retrying a failed run of your own is unchanged. Behind that
+  refusal, the engine binds a run input's `tenant` to the tenant the
+  run was enqueued under before any step sees it, so no path that
+  enqueues a run can hand an activity another tenant's scope.
+
 ### Lifecycle and tiering
 
 - **Recall ships, and archive classes unlock.** An archive-class

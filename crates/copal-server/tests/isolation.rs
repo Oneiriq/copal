@@ -344,3 +344,136 @@ async fn a_tenant_header_cannot_widen_a_key() {
         );
     }
 }
+
+/// The keyed stack with the built-in workflows registered, the way a
+/// deployment runs. Private fetch targets are allowed so the stub
+/// origin is reachable: the wall under test is the tenant, not the
+/// outbound policy.
+async fn keyed_router_with_pipeline() -> (axum::Router, copal_flow::FlowEngine, tempfile::TempDir) {
+    let store = Store::connect(StoreConfig::memory()).await.unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let blobs = ObjectStore::open(dir.path().to_str().unwrap()).unwrap();
+    let registry = copal_server::pipeline::standard_registry(
+        store.clone(),
+        copal_server::app::Residencies::local_only(blobs.clone()),
+        copal_core::ExtensionPolicy::standard(),
+        false,
+        None,
+        None,
+        None,
+        std::collections::HashMap::new(),
+        copal_server::pipeline::FetchPolicy {
+            allow_private_targets: true,
+            max_bytes: 1 << 20,
+        },
+        copal_server::tiering::Topology::default(),
+        Default::default(),
+    );
+    let mut state = AppState::new(store, blobs)
+        .with_auth(AuthConfig {
+            mode: AuthMode::ApiKeys,
+            admin_token: Some(ADMIN.into()),
+            admin_token_previous: None,
+            operator_header: None,
+        })
+        .with_flow(registry);
+    state.limits.allow_private_fetch_targets = true;
+    let engine = state.flow.clone();
+    (build_router(state), engine, dir)
+}
+
+/// A stub origin whose body would land in whichever file a fetch run
+/// names.
+async fn stub_origin() -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    let app = axum::Router::new().route(
+        "/doc",
+        axum::routing::get(|| async { ([("content-type", "text/plain")], "planted") }),
+    );
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    addr
+}
+
+/// No run a rival starts writes into the owner's file.
+///
+/// The built-in workflows act on the tenant, file, and digest their
+/// input names, because the endpoints that enqueue them checked those
+/// first. The runs API hands a caller the whole input, so it must not
+/// start them at all, on any face and in either mode.
+#[tokio::test]
+async fn no_caller_started_run_reaches_another_tenant_s_file() {
+    let (router, engine, _dir) = keyed_router_with_pipeline().await;
+    let owner = mint(&router, "owner").await;
+    let rival = mint(&router, "rival").await;
+    let draft = create_file(&router, &owner, "owner-draft.txt").await;
+    let origin = stub_origin().await;
+    let input = json!({
+        "tenant": "owner",
+        "file": draft,
+        "url": format!("http://{origin}/doc"),
+    });
+
+    let built_in = ["fetch", "post_upload", "derive", "transform", "tier.recall"];
+    for workflow in built_in {
+        assert!(engine.has_workflow(workflow), "{workflow} is registered");
+        for mode in ["sync", "async"] {
+            let response = router
+                .clone()
+                .oneshot(signed(
+                    "POST",
+                    "/v1/runs",
+                    &rival,
+                    Some(json!({ "workflow": workflow, "mode": mode, "input": input })),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::FORBIDDEN,
+                "POST /v1/runs started {workflow} ({mode}) for a caller",
+            );
+        }
+
+        let response = router
+            .clone()
+            .oneshot(signed(
+                "POST",
+                "/graphql",
+                &rival,
+                Some(json!({
+                    "query": "mutation($w: String!, $i: JSON) \
+                              { runStart(workflow: $w, input: $i, mode: \"sync\") }",
+                    "variables": { "w": workflow, "i": input },
+                })),
+            ))
+            .await
+            .unwrap();
+        let body = json_body(response).await;
+        assert_eq!(
+            body["errors"][0]["extensions"]["code"], "forbidden",
+            "runStart started {workflow} for a caller: {body}",
+        );
+    }
+
+    // The refusals queued nothing, and the owner's draft is still an
+    // empty draft.
+    while engine.tick("sweep").await.unwrap() {}
+    for token in [&owner, &rival] {
+        let response = router
+            .clone()
+            .oneshot(signed("GET", "/v1/runs", token, None))
+            .await
+            .unwrap();
+        assert_eq!(json_body(response).await["items"], json!([]));
+    }
+    let response = router
+        .clone()
+        .oneshot(signed("GET", &format!("/v1/files/{draft}"), &owner, None))
+        .await
+        .unwrap();
+    let record = json_body(response).await;
+    assert_eq!(record["state"], "draft", "{record}");
+}

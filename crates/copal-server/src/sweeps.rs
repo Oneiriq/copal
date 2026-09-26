@@ -1,17 +1,24 @@
-//! Background maintenance: one pass, three sweeps.
+//! Background maintenance: one pass of independent sweeps.
 //!
-//! 1. Reap expired upload claims to `failed` (retryable).
-//! 2. Clear staging entries past their TTL; aborted and oversize
-//!    uploads leave inert staging garbage by design; this is where it
-//!    leaves the disk.
-//! 3. Garbage-collect unreferenced content: mark blobs whose derived
+//! 1. Reap expired upload claims to `failed` (retryable), return
+//!    expired run claims to `pending`, and fail scans a crash left
+//!    behind.
+//! 2. Drop rate windows that no longer count.
+//! 3. Discard abandoned S3 multipart and tus sessions with their
+//!    staged bytes.
+//! 4. Clear staging entries past their TTL. Aborted and oversize
+//!    uploads leave inert staging garbage by design, and this is where
+//!    it leaves the disk.
+//! 5. Recount tenant usage, the cache the quota check reads.
+//! 6. Garbage-collect unreferenced content: mark blobs whose derived
 //!    link count is zero, then (a full grace period later, and only
 //!    after a FRESH recount) delete the row and then the object.
 //!    Referenced blobs get their advisory refcount cache refreshed on
 //!    the way past.
 //!
 //! Every step is independent and failure-isolated: a store hiccup in
-//! one sweep logs and leaves the others running.
+//! one sweep logs and leaves the others running. The loop then runs
+//! the tiering classifier and the mover under the same leader lease.
 
 use std::time::Duration;
 

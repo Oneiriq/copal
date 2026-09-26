@@ -1,6 +1,6 @@
 //! The standard post-upload pipeline.
 //!
-//! Three activities over the flow engine; this is the durable-journal
+//! Six activities over the flow engine; this is the durable-journal
 //! replacement for the predecessor's blob-created orchestration, using
 //! nothing but Copal's own planes:
 //!
@@ -8,7 +8,14 @@
 //!    content type; record declared vs sniffed.
 //! 2. `extension_policy`: check the path against the blocked-extension
 //!    denylist; record the verdict.
-//! 3. `finalize_upload`: one CAS moves `scanning -> ready` (clean) or
+//! 3. `scan_malware`: ask clamd for a verdict when one is configured,
+//!    and record that no scanner ran when none is. A blocked verdict
+//!    from an earlier step stands.
+//! 4. `extract_text`: pull searchable text and its passages from the
+//!    scanned content.
+//! 5. `embed_text`: embed the passages when an embedding service is
+//!    configured.
+//! 6. `finalize_upload`: one CAS moves `scanning -> ready` (clean) or
 //!    `scanning -> quarantined` (blocked), annotating
 //!    `metadata.processing` atomically with the transition. Quarantine
 //!    is terminal-until-delete: content and grants refuse via the
@@ -23,6 +30,9 @@
 //! finish the pre-created derived file through the standard claim and
 //! complete path. Refusals (not an image, too large) fail the derived
 //! record and complete the run; only infrastructure errors retry.
+//! Beside it sit `transform_external` for operator transformers,
+//! `fetch_source` for URL ingestion, and the tier recall activities
+//! from [`crate::recall`].
 
 use futures::StreamExt as _;
 use serde_json::{json, Value};

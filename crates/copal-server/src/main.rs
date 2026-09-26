@@ -132,10 +132,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             })
         };
     // Tiers validate at boot, whole-deployment, BEFORE any backend
-    // opens: names hold the residency alphabet, archive classes
-    // refuse until recall ships, and no tier carries its own key. A
-    // deployment cannot come up with a tier its policies could
-    // strand bytes behind.
+    // opens: names hold the residency alphabet, archive classes refuse
+    // on backends whose restore this build does not drive, and no
+    // tier carries its own key. A deployment cannot come up with a
+    // tier its policies could strand bytes behind.
     let tiering = {
         let mut topology = copal_server::tiering::Topology::default();
         let mut register =
@@ -158,7 +158,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let residencies = build_residencies()?;
     if !tiering.is_empty() {
-        tracing::info!("storage tiers configured; observe-only classifier active");
+        tracing::info!("storage tiers configured; classifier and mover active");
     }
     if !residencies.named.is_empty() {
         tracing::info!(
@@ -513,8 +513,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Durable execution worker: claims pending runs and executes them
-    // over the journal. The production registry starts empty until the
-    // processing activities land; the worker idles harmlessly.
+    // over the journal, with the standard registry built above.
     tokio::spawn(copal_flow::run_worker(
         copal_flow::FlowEngine::new(store.clone(), registry),
         format!(

@@ -41,7 +41,8 @@ const HTTP_TIMEOUT_SECS: u64 = 10;
 /// Rows per pass, both fan-out and delivery.
 const PASS_BATCH: i64 = 100;
 
-/// Webhook management state: the application plus the sealing cipher.
+/// Webhook management state: the application, whose cipher seals the
+/// signing secrets.
 #[derive(Clone)]
 pub struct WebhookState<B: BlobStore> {
     pub app: AppState<B>,

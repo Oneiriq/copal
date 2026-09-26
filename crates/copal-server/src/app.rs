@@ -3843,8 +3843,11 @@ pub(crate) async fn events_page(
 }
 
 /// The change feed on the REST face: replay forward from a cursor
-/// with `order=asc`, or page backward through history with the
-/// default newest-first order.
+/// with `sort=created_at`, or page backward through history with the
+/// default newest-first order. `sort` is the parameter the contract
+/// declares and every other listing takes. `order=asc|desc` is the
+/// feed's older spelling, still read so existing consumers keep their
+/// direction.
 async fn list_tenant_events<B: BlobStore>(
     State(state): State<AppState<B>>,
     headers: HeaderMap,
@@ -3855,15 +3858,30 @@ async fn list_tenant_events<B: BlobStore>(
         crate::auth::authorize_scoped(&state, &headers, crate::auth::Scope::Read, limit as u64)
             .await?;
     crate::metrics::incr("copal_feed_reads_total");
-    let ascending = match params.order.as_deref() {
-        None | Some("desc") => false,
-        Some("asc") => true,
+    let by_sort = match params.sort.as_deref() {
+        None => None,
+        Some("-created_at") => Some(false),
+        Some("created_at") => Some(true),
+        Some(other) => {
+            return Err(CopalError::validation(format!("unknown sort {other:?}")).into());
+        }
+    };
+    let by_order = match params.order.as_deref() {
+        None => None,
+        Some("desc") => Some(false),
+        Some("asc") => Some(true),
         Some(other) => {
             return Err(CopalError::validation(
                 format!("order must be asc or desc, got {other:?}",),
             )
             .into())
         }
+    };
+    let ascending = match (by_sort, by_order) {
+        (Some(sort), Some(order)) if sort != order => {
+            return Err(CopalError::validation("sort and order name opposite directions").into());
+        }
+        (sort, order) => sort.or(order).unwrap_or(false),
     };
     let (items, next_cursor) = events_page(
         &auth.store,
@@ -3885,6 +3903,8 @@ struct EventFeedQuery {
     cursor: Option<String>,
     #[serde(default)]
     action: Option<String>,
+    #[serde(default)]
+    sort: Option<String>,
     #[serde(default)]
     order: Option<String>,
 }

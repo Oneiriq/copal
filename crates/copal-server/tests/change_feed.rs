@@ -193,3 +193,35 @@ async fn filters_compose_and_faces_agree() {
         .collect();
     assert_eq!(graphql_ids, ready_only, "one core, two faces");
 }
+
+/// `sort` is the parameter the contract declares for the feed, as for
+/// every listing. It sets the direction, the older `order` spelling
+/// still agrees with it, and the two naming opposite directions
+/// refuse.
+#[tokio::test]
+async fn sort_names_the_direction_the_contract_declares() {
+    let (router, _store, _dir) = stack().await;
+    for i in 0..3 {
+        upload(&router, &format!("sorted-{i}.txt"), b"content").await;
+    }
+    let (oldest_first, _) = page(&router, "sort=created_at&limit=50").await;
+    let (newest_first, _) = page(&router, "sort=-created_at&limit=50").await;
+    assert!(oldest_first.len() >= 3);
+    let mut reversed = newest_first.clone();
+    reversed.reverse();
+    assert_eq!(oldest_first, reversed);
+
+    let (legacy, _) = page(&router, "order=asc&limit=50").await;
+    assert_eq!(legacy, oldest_first);
+    let (agreeing, _) = page(&router, "order=asc&sort=created_at&limit=50").await;
+    assert_eq!(agreeing, oldest_first);
+
+    for query in ["sort=created_at&order=desc", "sort=updated_at"] {
+        let response = router
+            .clone()
+            .oneshot(req("GET", &format!("/v1/events?{query}"), Body::empty()))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{query}");
+    }
+}

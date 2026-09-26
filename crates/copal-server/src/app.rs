@@ -2471,16 +2471,14 @@ async fn get_rendition<B: BlobStore>(
     )
     .await?;
     file_repo::claim_upload(&state.store, &tenant, &derived.id, "derive-inline", 900).await?;
-    let finished = completion_repo::complete_upload(
+    let finished = crate::pipeline::complete_rendition(
         &state.store,
         &tenant,
         &derived.id,
         &residency,
-        &stored.digest,
-        stored.size_bytes,
-        "derive",
-        copal_core::FileState::Ready,
-        None,
+        &stored,
+        &source_digest,
+        crate::pipeline::content_cleared(&source),
     )
     .await?;
     crate::metrics::incr("copal_renditions_inline_total");
@@ -2821,6 +2819,11 @@ pub(crate) async fn request_rendition_core<B: BlobStore>(
         .ok_or_else(|| CopalError::not_found(format!("file {id}")))?;
     if !source.servable_content() {
         return Err(CopalError::conflict("source has no served content").into());
+    }
+    // A rendition inherits its source's clearance, so a source still
+    // awaiting its scan has none to pass on.
+    if state.withholds_pending_scan(&source) {
+        return Err(CopalError::conflict("content is awaiting a malware scan").into());
     }
     if !source.content_type.starts_with("image/") {
         return Err(CopalError::validation("renditions require an image source").into());

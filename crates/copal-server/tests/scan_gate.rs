@@ -1,7 +1,8 @@
 //! The scan gate on every face that serves bytes: with a scanner
 //! configured, content no scan has cleared is withheld on the S3
 //! gateway, on edge and grant redemption, and on version downloads,
-//! exactly as it is on `/content`.
+//! exactly as it is on `/content`. Renditions of cleared sources
+//! serve, and sources still awaiting a scan derive nothing.
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -144,10 +145,14 @@ fn anonymous(uri: &str) -> Request<Body> {
 }
 
 async fn create(router: &axum::Router, path: &str) -> String {
+    create_typed(router, path, "text/plain").await
+}
+
+async fn create_typed(router: &axum::Router, path: &str, content_type: &str) -> String {
     let request = req(
         "POST",
         "/v1/files",
-        Body::from(json!({ "path": path, "content_type": "text/plain" }).to_string()),
+        Body::from(json!({ "path": path, "content_type": content_type }).to_string()),
     );
     let response = router.clone().oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::CREATED);
@@ -396,4 +401,86 @@ async fn the_s3_gateway_withholds_unscanned_objects() {
     let response = stack.gateway.clone().oneshot(get()).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(bytes_of(response).await, b"object bytes");
+}
+
+/// A 64x64 png generated in-process, so the test carries no fixture.
+fn source_png() -> Vec<u8> {
+    let img = image::RgbImage::from_fn(64, 64, |x, y| {
+        image::Rgb([(x * 4) as u8, (y * 4) as u8, 96])
+    });
+    let mut out = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgb8(img)
+        .write_to(&mut out, image::ImageFormat::Png)
+        .unwrap();
+    out.into_inner()
+}
+
+#[tokio::test]
+async fn renditions_of_cleared_sources_serve_under_the_gate() {
+    let stack = stack().await;
+    let id = create_typed(&stack.router, "gate/photo.png", "image/png").await;
+    put_content(&stack.router, &id, &source_png()).await;
+
+    // A source still awaiting its scan has no clearance to pass on.
+    let request_rendition = |spec: Value| {
+        req(
+            "POST",
+            &format!("/v1/files/{id}/renditions"),
+            Body::from(spec.to_string()),
+        )
+    };
+    let thumb = json!({ "kind": "thumb", "width": 16, "height": 16, "format": "png" });
+    let response = stack
+        .router
+        .clone()
+        .oneshot(request_rendition(thumb.clone()))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let inline = || {
+        req(
+            "GET",
+            &format!("/v1/files/{id}/renditions/thumb-24x24.png"),
+            Body::empty(),
+        )
+    };
+    let response = stack.router.clone().oneshot(inline()).await.unwrap();
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+
+    drain(&stack.engine).await;
+
+    // Derived inline, the rendition serves at once, and again on the
+    // next request from the stored record.
+    for _ in 0..2 {
+        let response = stack.router.clone().oneshot(inline()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let decoded = image::load_from_memory(&bytes_of(response).await).unwrap();
+        assert!(decoded.width() <= 24 && decoded.height() <= 24);
+    }
+
+    // Derived by a worker, the rendition serves as a file of its own.
+    let response = stack
+        .router
+        .clone()
+        .oneshot(request_rendition(thumb))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let derived = json_body(response).await["id"].as_str().unwrap().to_owned();
+    drain(&stack.engine).await;
+    let meta = req("GET", &format!("/v1/files/{derived}"), Body::empty());
+    let record = json_body(stack.router.clone().oneshot(meta).await.unwrap()).await;
+    assert_eq!(record["state"], "ready");
+    assert_eq!(record["metadata"]["processing"]["scanned"], false);
+    assert_eq!(
+        record["metadata"]["processing"]["scanned_digest"],
+        record["digest"],
+    );
+    let download = req(
+        "GET",
+        &format!("/v1/files/{derived}/content"),
+        Body::empty(),
+    );
+    let response = stack.router.clone().oneshot(download).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
 }

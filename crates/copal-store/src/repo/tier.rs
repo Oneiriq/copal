@@ -65,7 +65,7 @@ pub async fn set_policy(
         return Err(CopalError::validation("basis must be created or accessed"));
     }
     clear_policy(store, tenant).await?;
-    let id = ulid::Ulid::new().to_string().to_ascii_lowercase();
+    let id = ulid::Ulid::generate().to_string().to_ascii_lowercase();
     let rid =
         RecordID::<()>::new(TABLE, id.as_str()).map_err(|e| map_store_err("tiering_policy", e))?;
     let payload = json!({

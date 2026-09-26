@@ -104,7 +104,7 @@ pub async fn put_text(
         return Ok(());
     }
 
-    let id = ulid::Ulid::new().to_string().to_ascii_lowercase();
+    let id = ulid::Ulid::generate().to_string().to_ascii_lowercase();
     let rid = RecordID::<()>::new(TABLE, id.as_str()).map_err(|e| map_store_err("put_text", e))?;
     let payload = json!({
         "tenant_id": tenant.as_str(),
@@ -221,7 +221,7 @@ pub async fn put_chunks(
         RecordID::<()>::new("file", file.as_str()).map_err(|e| map_store_err("put_chunks", e))?;
     delete_chunks(store, file).await?;
     for (ordinal, chunk) in passages.iter().enumerate() {
-        let id = ulid::Ulid::new().to_string().to_ascii_lowercase();
+        let id = ulid::Ulid::generate().to_string().to_ascii_lowercase();
         let rid = RecordID::<()>::new(CHUNK_TABLE, id.as_str())
             .map_err(|e| map_store_err("put_chunks", e))?;
         let mut payload = json!({

@@ -60,7 +60,7 @@ pub async fn create_upload(
     object_key: &str,
     content_type: &str,
 ) -> copal_core::Result<MultipartRow> {
-    let upload_id = ulid::Ulid::new().to_string().to_ascii_lowercase();
+    let upload_id = ulid::Ulid::generate().to_string().to_ascii_lowercase();
     let payload = json!({
         "tenant_id": tenant.as_str(),
         "object_key": object_key,
@@ -130,7 +130,7 @@ pub async fn put_part(
         return Ok(());
     }
 
-    let part_id = ulid::Ulid::new().to_string().to_ascii_lowercase();
+    let part_id = ulid::Ulid::generate().to_string().to_ascii_lowercase();
     let payload = json!({
         "part_number": part_number,
         "size_bytes": size_bytes,

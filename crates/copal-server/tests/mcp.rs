@@ -38,7 +38,8 @@ async fn mint(admin: &axum::Router, scopes: &[&str]) -> String {
         .header("x-copal-admin-token", "root")
         .header("content-type", "application/json")
         .body(Body::from(
-            json!({ "name": format!("k-{}", ulid::Ulid::new()), "scopes": scopes }).to_string(),
+            json!({ "name": format!("k-{}", ulid::Ulid::generate()), "scopes": scopes })
+                .to_string(),
         ))
         .unwrap();
     json_body(admin.clone().oneshot(request).await.unwrap()).await["token"]

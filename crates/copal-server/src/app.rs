@@ -263,7 +263,7 @@ impl<B: BlobStore> AppState<B> {
             residencies: Residencies::local_only(blobs.clone()),
             blobs,
             limits: Limits::default(),
-            instance_id: ulid::Ulid::new().to_string().to_ascii_lowercase(),
+            instance_id: ulid::Ulid::generate().to_string().to_ascii_lowercase(),
             auth: crate::auth::AuthConfig::default(),
             scan_gates_serving: false,
             embedding: None,

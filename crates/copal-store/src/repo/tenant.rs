@@ -78,7 +78,7 @@ pub async fn set_residency(
     if update_in_place().await? {
         return Ok(());
     }
-    let id = ulid::Ulid::new().to_string().to_ascii_lowercase();
+    let id = ulid::Ulid::generate().to_string().to_ascii_lowercase();
     let rid =
         RecordID::<()>::new(TABLE, id.as_str()).map_err(|e| map_store_err("set_residency", e))?;
     let payload = json!({
@@ -189,7 +189,7 @@ pub async fn set_quota(store: &Store, tenant: &TenantId, max_bytes: i64) -> copa
     if update_in_place().await? {
         return Ok(());
     }
-    let id = ulid::Ulid::new().to_string().to_ascii_lowercase();
+    let id = ulid::Ulid::generate().to_string().to_ascii_lowercase();
     let rid =
         RecordID::<()>::new(QUOTA_TABLE, id.as_str()).map_err(|e| map_store_err("set_quota", e))?;
     let payload = json!({
@@ -289,7 +289,7 @@ pub async fn set_usage(
     if !rows.is_empty() {
         return Ok(());
     }
-    let id = ulid::Ulid::new().to_string().to_ascii_lowercase();
+    let id = ulid::Ulid::generate().to_string().to_ascii_lowercase();
     let rid =
         RecordID::<()>::new(USAGE_TABLE, id.as_str()).map_err(|e| map_store_err("set_usage", e))?;
     let payload = json!({
@@ -431,7 +431,7 @@ pub async fn set_retention_policy(
     policy: &RetentionPolicy,
 ) -> copal_core::Result<()> {
     clear_retention_policy(store, tenant).await?;
-    let id = ulid::Ulid::new().to_string().to_ascii_lowercase();
+    let id = ulid::Ulid::generate().to_string().to_ascii_lowercase();
     let rid = RecordID::<()>::new("tenant_retention", id.as_str())
         .map_err(|e| map_store_err("retention_policy", e))?;
     // Absent keys rather than JSON nulls: the engine's option<T>

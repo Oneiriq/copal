@@ -282,7 +282,7 @@ async fn staging_sweep_removes_only_aged_entries() {
     )
     .to_string()
     .to_lowercase();
-    let fresh = ulid::Ulid::new().to_string().to_lowercase();
+    let fresh = ulid::Ulid::generate().to_string().to_lowercase();
     std::fs::write(staging.join(&old), b"orphaned partial upload").unwrap();
     std::fs::write(staging.join(&fresh), b"in-flight upload").unwrap();
 

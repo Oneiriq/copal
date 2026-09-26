@@ -66,7 +66,7 @@ id_newtype! {
 impl FileId {
     /// Mint a new ULID-backed id.
     pub fn generate() -> Self {
-        Self(ulid::Ulid::new().to_string().to_ascii_lowercase())
+        Self(ulid::Ulid::generate().to_string().to_ascii_lowercase())
     }
 }
 

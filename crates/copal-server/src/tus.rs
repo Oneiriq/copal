@@ -183,7 +183,10 @@ async fn create_session<B: BlobStore>(
     )
     .await?;
 
-    let staging_key = format!("tus/{}", ulid::Ulid::new().to_string().to_ascii_lowercase());
+    let staging_key = format!(
+        "tus/{}",
+        ulid::Ulid::generate().to_string().to_ascii_lowercase()
+    );
     let session_id = tus_repo::create_session(
         &auth.store,
         tenant,

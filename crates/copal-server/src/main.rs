@@ -514,7 +514,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         copal_flow::FlowEngine::new(store.clone(), registry),
         format!(
             "worker-{}",
-            ulid::Ulid::new().to_string().to_ascii_lowercase()
+            ulid::Ulid::generate().to_string().to_ascii_lowercase()
         ),
         2,
     ));

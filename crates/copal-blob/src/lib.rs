@@ -649,7 +649,10 @@ impl BlobStore for ObjectStore {
         S: Stream<Item = Result<bytes::Bytes, E>> + Send + Unpin,
         E: std::fmt::Display + Send,
     {
-        let staging = format!("staging/{}", ulid::Ulid::new().to_string().to_lowercase());
+        let staging = format!(
+            "staging/{}",
+            ulid::Ulid::generate().to_string().to_lowercase()
+        );
         let mut writer = self
             .op
             .writer(&staging)
@@ -942,7 +945,10 @@ impl BlobStore for ObjectStore {
         S: Stream<Item = Result<bytes::Bytes, E>> + Send + Unpin,
         E: std::fmt::Display + Send,
     {
-        let staging = format!("staging/{}", ulid::Ulid::new().to_string().to_lowercase());
+        let staging = format!(
+            "staging/{}",
+            ulid::Ulid::generate().to_string().to_lowercase()
+        );
         let mut writer = self
             .op
             .writer(&staging)

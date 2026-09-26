@@ -72,7 +72,7 @@ async fn create_principal(admin: &axum::Router, handle: &str, scopes: &[&str]) {
 }
 
 async fn mint_under(admin: &axum::Router, principal: Option<&str>, scopes: &[&str]) -> Value {
-    let mut body = json!({ "name": format!("key-{}", ulid::Ulid::new()), "scopes": scopes });
+    let mut body = json!({ "name": format!("key-{}", ulid::Ulid::generate()), "scopes": scopes });
     if let Some(handle) = principal {
         body["principal"] = json!(handle);
     }

@@ -32,7 +32,7 @@ impl GrantToken {
     pub fn mint() -> Self {
         let raw: [u8; SECRET_BYTES] = rand::rng().random();
         Self {
-            grant_id: ulid::Ulid::new().to_string().to_ascii_lowercase(),
+            grant_id: ulid::Ulid::generate().to_string().to_ascii_lowercase(),
             secret: hex::encode(raw),
         }
     }
@@ -73,7 +73,7 @@ impl ApiKeyToken {
     pub fn mint() -> Self {
         let raw: [u8; SECRET_BYTES] = rand::rng().random();
         Self {
-            key_id: ulid::Ulid::new().to_string().to_ascii_lowercase(),
+            key_id: ulid::Ulid::generate().to_string().to_ascii_lowercase(),
             secret: hex::encode(raw),
         }
     }

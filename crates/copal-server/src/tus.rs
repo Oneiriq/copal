@@ -14,7 +14,6 @@
 //! client resumes; abandoned sessions are swept with their staged
 //! bytes after the session TTL, and the claimed file fails retryably.
 
-use axum::body::Body;
 use axum::extract::{Path, Request, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -455,7 +454,3 @@ pub async fn sweep_expired<B: BlobStore>(
     }
     Ok(swept)
 }
-
-// Body type appears in the router signature through axum's generics.
-#[allow(dead_code)]
-fn _assert_body(_: Body) {}

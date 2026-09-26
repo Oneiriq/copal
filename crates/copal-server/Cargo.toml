@@ -44,7 +44,7 @@ maud = "0.27"
 serde_urlencoded = "0.7"
 
 async-graphql = { version = "7", features = ["dynamic-schema"] }
-tower-http = { version = "0.6", features = ["timeout", "cors"] }
+tower-http = { version = "0.7", features = ["timeout", "cors"] }
 base64 = "0.23"
 # SigV4 verification for the S3 gateway.
 hmac = "0.13"

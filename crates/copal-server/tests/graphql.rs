@@ -224,7 +224,7 @@ async fn graphql_remove_tombstones_for_both_faces() {
 }
 
 #[tokio::test]
-async fn tenancy_is_enforced_by_janus_middleware() {
+async fn tenancy_is_enforced_by_kayak_middleware() {
     let (router, _dir) = test_router().await;
     seed_file(&router, "guarded.txt", b"secret").await;
 

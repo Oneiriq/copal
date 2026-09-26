@@ -83,7 +83,7 @@ fn tenant_of(ctx: &KayakContext) -> Result<TenantId, KayakError> {
 
 /// Domain errors in runtime vocabulary; infrastructure detail stays in
 /// the log, mirroring the REST error mapper.
-fn to_janus_error(err: CopalError) -> KayakError {
+fn to_kayak_error(err: CopalError) -> KayakError {
     match err {
         CopalError::Validation(m) => KayakError::BadRequest(m),
         CopalError::Unauthorized(m) => KayakError::Unauthorized(m),
@@ -172,7 +172,7 @@ pub(crate) fn dispatcher<B: BlobStore + 'static>(
                     state_filter,
                 )
                 .await
-                .map_err(to_janus_error)?;
+                .map_err(to_kayak_error)?;
                 let next_cursor = if records.len() as i64 == limit {
                     records.last().map(|last| {
                         encode_cursor(
@@ -200,7 +200,7 @@ pub(crate) fn dispatcher<B: BlobStore + 'static>(
                 let id = parse_file_id(&args.id)?;
                 let record = file_repo::get_file(&store, &tenant, &id)
                     .await
-                    .map_err(to_janus_error)?;
+                    .map_err(to_kayak_error)?;
                 Ok(record.as_ref().map(wire_file))
             }
         })
@@ -219,7 +219,7 @@ pub(crate) fn dispatcher<B: BlobStore + 'static>(
                     .unwrap_or_else(|| "api".to_owned());
                 let created = copal_store::repo::file::create_file(&store, &tenant, &spec, &actor)
                     .await
-                    .map_err(to_janus_error)?;
+                    .map_err(to_kayak_error)?;
                 Ok(Some(crate::wire::wire_file(&created.record)))
             }
         })
@@ -252,7 +252,7 @@ pub(crate) fn dispatcher<B: BlobStore + 'static>(
                 )
                 .await
                 .map(Some)
-                .map_err(|e| to_janus_error(e.0))
+                .map_err(|e| to_kayak_error(e.0))
             }
         })
         .action("files", "issue_upload_url", move |ctx, args| {
@@ -277,7 +277,7 @@ pub(crate) fn dispatcher<B: BlobStore + 'static>(
                 )
                 .await
                 .map(Some)
-                .map_err(|e| to_janus_error(e.0))
+                .map_err(|e| to_kayak_error(e.0))
             }
         })
         .action("files", "issue_edge_url", move |ctx, args| {
@@ -302,7 +302,7 @@ pub(crate) fn dispatcher<B: BlobStore + 'static>(
                 )
                 .await
                 .map(Some)
-                .map_err(|e| to_janus_error(e.0))
+                .map_err(|e| to_kayak_error(e.0))
             }
         })
         .action("files", "request_rendition", move |ctx, args| {
@@ -339,7 +339,7 @@ pub(crate) fn dispatcher<B: BlobStore + 'static>(
                 crate::app::request_rendition_core(&state, &tenant, &id, &spec)
                     .await
                     .map(|(_, body)| Some(body))
-                    .map_err(|e| to_janus_error(e.0))
+                    .map_err(|e| to_kayak_error(e.0))
             }
         })
         .action("files", "fetch", move |ctx, args| {
@@ -353,7 +353,7 @@ pub(crate) fn dispatcher<B: BlobStore + 'static>(
                     .map(|raw| {
                         serde_json::from_value::<copal_core::AccessLevel>(serde_json::json!(raw))
                             .map_err(|_| {
-                                to_janus_error(CopalError::validation("unknown access level"))
+                                to_kayak_error(CopalError::validation("unknown access level"))
                             })
                     })
                     .transpose()?;
@@ -391,7 +391,7 @@ pub(crate) fn dispatcher<B: BlobStore + 'static>(
                 crate::app::fetch_core(&state, &tenant, &spec)
                     .await
                     .map(|(_, body)| Some(body))
-                    .map_err(|e| to_janus_error(e.0))
+                    .map_err(|e| to_kayak_error(e.0))
             }
         })
         .action("files", "transform", move |ctx, args| {
@@ -421,7 +421,7 @@ pub(crate) fn dispatcher<B: BlobStore + 'static>(
                 crate::app::request_transform_core(&state, &tenant, &id, &spec)
                     .await
                     .map(|(_, body)| Some(body))
-                    .map_err(|e| to_janus_error(e.0))
+                    .map_err(|e| to_kayak_error(e.0))
             }
         })
         .action("files", "remove", move |ctx, args| {
@@ -433,7 +433,7 @@ pub(crate) fn dispatcher<B: BlobStore + 'static>(
                 let origin = ctx.get::<RequestOrigin>().map(|o| o.0.clone());
                 crate::app::remove_file_core(&store, &tenant, &id, origin.as_deref())
                     .await
-                    .map_err(|e| to_janus_error(e.0))?;
+                    .map_err(|e| to_kayak_error(e.0))?;
                 Ok(None)
             }
         })
@@ -444,7 +444,7 @@ pub(crate) fn dispatcher<B: BlobStore + 'static>(
                 let store = store_of(&ctx, &state.store);
                 let items = copal_store::repo::eventing::list_endpoints(&store, &tenant)
                     .await
-                    .map_err(to_janus_error)?;
+                    .map_err(to_kayak_error)?;
                 Ok(ListOutput {
                     items,
                     // Endpoints are few by nature; the page is the set.
@@ -459,7 +459,7 @@ pub(crate) fn dispatcher<B: BlobStore + 'static>(
                 let store = store_of(&ctx, &state.store);
                 let found = copal_store::repo::eventing::list_endpoints(&store, &tenant)
                     .await
-                    .map_err(to_janus_error)?
+                    .map_err(to_kayak_error)?
                     .into_iter()
                     .find(|row| row.get("id").and_then(|v| v.as_str()) == Some(args.id.as_str()));
                 Ok(found)
@@ -497,7 +497,7 @@ pub(crate) fn dispatcher<B: BlobStore + 'static>(
                 )
                 .await
                 .map(Some)
-                .map_err(|e| to_janus_error(e.0))
+                .map_err(|e| to_kayak_error(e.0))
             }
         })
         .action("webhooks", "remove", move |ctx, args| {
@@ -509,7 +509,7 @@ pub(crate) fn dispatcher<B: BlobStore + 'static>(
                 let origin = ctx.get::<RequestOrigin>().map(|o| o.0.clone());
                 crate::webhooks::remove_core(&store, &tenant, &id, origin.as_deref())
                     .await
-                    .map_err(|e| to_janus_error(e.0))?;
+                    .map_err(|e| to_kayak_error(e.0))?;
                 Ok(None)
             }
         })
@@ -523,8 +523,8 @@ pub(crate) fn dispatcher<B: BlobStore + 'static>(
                 // exactly as the REST handler does it.
                 file_repo::get_file(&store, &tenant, &id)
                     .await
-                    .map_err(to_janus_error)?
-                    .ok_or_else(|| to_janus_error(CopalError::not_found(format!("file {id}"))))?;
+                    .map_err(to_kayak_error)?
+                    .ok_or_else(|| to_kayak_error(CopalError::not_found(format!("file {id}"))))?;
                 let (items, next_cursor) = crate::app::list_versions_page(
                     &store,
                     &tenant,
@@ -533,7 +533,7 @@ pub(crate) fn dispatcher<B: BlobStore + 'static>(
                     args.cursor.as_deref(),
                 )
                 .await
-                .map_err(|e| to_janus_error(e.0))?;
+                .map_err(|e| to_kayak_error(e.0))?;
                 Ok(ListOutput { items, next_cursor })
             }
         })
@@ -555,7 +555,7 @@ pub(crate) fn dispatcher<B: BlobStore + 'static>(
                     i64::from(args.limit),
                 )
                 .await
-                .map_err(|e| to_janus_error(e.0))?;
+                .map_err(|e| to_kayak_error(e.0))?;
                 Ok(ListOutput {
                     items,
                     next_cursor: None,
@@ -589,7 +589,7 @@ pub(crate) fn dispatcher<B: BlobStore + 'static>(
                     ascending,
                 )
                 .await
-                .map_err(|e| to_janus_error(e.0))?;
+                .map_err(|e| to_kayak_error(e.0))?;
                 Ok(ListOutput { items, next_cursor })
             }
         })
@@ -606,12 +606,12 @@ pub(crate) fn dispatcher<B: BlobStore + 'static>(
                 let rows =
                     copal_store::repo::eventing::watch_events(&store, &tenant, action.as_deref())
                         .await
-                        .map_err(to_janus_error)?;
+                        .map_err(to_kayak_error)?;
                 // The same mapper the list face uses, so a row looks
                 // identical whether it was polled or pushed.
                 Ok(
                     Box::pin(
-                        rows.map(|row| row.map(|row| wire_event(&row)).map_err(to_janus_error)),
+                        rows.map(|row| row.map(|row| wire_event(&row)).map_err(to_kayak_error)),
                     ) as RowStream,
                 )
             }
@@ -623,7 +623,7 @@ pub(crate) fn dispatcher<B: BlobStore + 'static>(
                 let store = store_of(&ctx, &state.store);
                 let row = copal_store::repo::eventing::fetch_event(&store, &args.id)
                     .await
-                    .map_err(to_janus_error)?
+                    .map_err(to_kayak_error)?
                     .filter(|row| row.tenant_id == tenant.as_str());
                 Ok(row.as_ref().map(wire_event))
             }
@@ -655,7 +655,7 @@ pub(crate) fn dispatcher<B: BlobStore + 'static>(
                     status.as_deref(),
                 )
                 .await
-                .map_err(to_janus_error)?;
+                .map_err(to_kayak_error)?;
                 let next_cursor = if runs.len() as i64 == limit {
                     runs.last().map(|last| {
                         encode_run_cursor(
@@ -682,7 +682,7 @@ pub(crate) fn dispatcher<B: BlobStore + 'static>(
                 let store = store_of(&ctx, &state.store);
                 let run = flow_repo::get_run(&store, &tenant, &args.id)
                     .await
-                    .map_err(to_janus_error)?;
+                    .map_err(to_kayak_error)?;
                 Ok(run.as_ref().map(wire_run))
             }
         })
@@ -717,7 +717,7 @@ pub(crate) fn dispatcher<B: BlobStore + 'static>(
                 start_run_core(&state, &tenant, request)
                     .await
                     .map(|(_, body)| Some(body))
-                    .map_err(|e| to_janus_error(e.0))
+                    .map_err(|e| to_kayak_error(e.0))
             }
         })
         .action("runs", "retry", move |ctx, args| {
@@ -728,7 +728,7 @@ pub(crate) fn dispatcher<B: BlobStore + 'static>(
                 retry_run_core(&state, &tenant, run_id)
                     .await
                     .map(Some)
-                    .map_err(|e| to_janus_error(e.0))
+                    .map_err(|e| to_kayak_error(e.0))
             }
         })
         // Retrieval on the GraphQL face, through the same cores the
@@ -790,7 +790,7 @@ pub(crate) fn dispatcher<B: BlobStore + 'static>(
                     facets.as_deref(),
                 )
                 .await
-                .map_err(|e| to_janus_error(e.0))
+                .map_err(|e| to_kayak_error(e.0))
             }
         })
         .query("file_text", move |ctx, args| {
@@ -806,7 +806,7 @@ pub(crate) fn dispatcher<B: BlobStore + 'static>(
                 )?;
                 crate::app::file_text_core(&store, &tenant, &id)
                     .await
-                    .map_err(|e| to_janus_error(e.0))
+                    .map_err(|e| to_kayak_error(e.0))
             }
         });
 

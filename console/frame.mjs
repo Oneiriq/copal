@@ -34,7 +34,7 @@ for (const theme of ['dark', 'light']) {
       for (const selector of ['header', '.frame', '.rail', 'main', 'footer']) {
         if (!document.querySelector(selector)) seen.push(`missing ${selector}`);
       }
-      if (!document.querySelector('button.icon[onclick*="janusTheme"]')) {
+      if (!document.querySelector('button.icon[onclick*="kayakTheme"]')) {
         seen.push('missing the appearance control');
       }
 

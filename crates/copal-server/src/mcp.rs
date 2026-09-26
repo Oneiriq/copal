@@ -41,7 +41,7 @@ fn routes() -> &'static BTreeMap<String, Route> {
         let contract = crate::contract::contract();
         let mut map = BTreeMap::new();
         for resource in &contract.resources {
-            let singular = janus_singular(&resource.name);
+            let singular = kayak_singular(&resource.name);
             map.insert(
                 format!("{}_list", resource.name),
                 Route::List {
@@ -76,7 +76,7 @@ fn routes() -> &'static BTreeMap<String, Route> {
     })
 }
 
-fn janus_singular(name: &str) -> String {
+fn kayak_singular(name: &str) -> String {
     // The manifest generator uses kayak::naming::singular; the
     // contract's resource names are regular plurals, and the tool
     // router must agree with the manifest byte for byte, which the
@@ -216,7 +216,7 @@ async fn call_tool<B: BlobStore>(
                     },
                 )
                 .await
-                .map_err(janus_to_rpc)?;
+                .map_err(kayak_to_rpc)?;
             json!({ "items": output.items, "next_cursor": output.next_cursor })
         }
         Route::Get { resource } => {
@@ -227,7 +227,7 @@ async fn call_tool<B: BlobStore>(
             let row = dispatcher
                 .get(&resource, ctx, GetArgs { id })
                 .await
-                .map_err(janus_to_rpc)?;
+                .map_err(kayak_to_rpc)?;
             row.unwrap_or(Value::Null)
         }
         Route::Action { resource, action } => {
@@ -241,7 +241,7 @@ async fn call_tool<B: BlobStore>(
             let value = dispatcher
                 .action(&resource, &action, ctx, args)
                 .await
-                .map_err(janus_to_rpc)?;
+                .map_err(kayak_to_rpc)?;
             value.unwrap_or(json!({ "ok": true }))
         }
         Route::Query { name } => {
@@ -251,7 +251,7 @@ async fn call_tool<B: BlobStore>(
             dispatcher
                 .query(&name, ctx, args)
                 .await
-                .map_err(janus_to_rpc)?
+                .map_err(kayak_to_rpc)?
         }
     };
 
@@ -285,7 +285,7 @@ pub(crate) async fn seeded_context<B: BlobStore>(
     Ok(ctx)
 }
 
-fn janus_to_rpc(err: kayak::runtime::KayakError) -> (i64, String) {
+fn kayak_to_rpc(err: kayak::runtime::KayakError) -> (i64, String) {
     (-32000, err.to_string())
 }
 

@@ -30,10 +30,15 @@ Point Copal at it and restart:
 ```sh
 COPAL_TRANSFORMERS='{
   "thumbnail": {"url":"http://127.0.0.1:9000/thumbnail","secret":"shared-with-copal","timeout_secs":120},
-  "audio":     {"url":"http://127.0.0.1:9000/audio","secret":"shared-with-copal"},
-  "probe":     {"url":"http://127.0.0.1:9000/probe","secret":"shared-with-copal"}
+  "audio":     {"url":"http://127.0.0.1:9000/audio","secret":"shared-with-copal","timeout_secs":120},
+  "probe":     {"url":"http://127.0.0.1:9000/probe","secret":"shared-with-copal","timeout_secs":120}
 }'
 ```
+
+Copal waits 60 seconds for a transformer unless `timeout_secs` says
+otherwise. The service gives ffmpeg up to `TRANSFORM_TIMEOUT_SECS`
+(default 120), so each entry matches that. A shorter Copal timeout
+would cut long media off and retry it as an infrastructure failure.
 
 Then derive:
 
@@ -104,4 +109,6 @@ pass makes that text findable the same way, with no second upload.
 Large sources are read into a temporary file before ffmpeg sees them,
 because ffmpeg seeks and a pipe cannot. Size the transformer's disk
 for the largest source you expect, and raise `TRANSFORM_MAX_BYTES`
-(default 512 MiB) to match.
+(default 512 MiB) to match. Copal refuses a source first when it is
+larger than the entry's `max_source_bytes` (default 64 MiB), so raise
+that in `COPAL_TRANSFORMERS` too.

@@ -123,7 +123,7 @@ impl Store {
     /// - Non-unique index builds run `CONCURRENTLY`, so a new or
     ///   changed index over a big table (the HNSW vector index above
     ///   all) populates behind a boot instead of blocking it. See
-    ///   [`index_add_statement`].
+    ///   `index_add_statement`.
     /// - The blob table's computed reverse-reference fields apply
     ///   LAST, behind the reference backfill. Their absence from the
     ///   database is the durable sign that pre-existing blob links

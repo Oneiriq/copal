@@ -7,7 +7,7 @@
 //! protocols cannot diverge. Tenancy is a Kayak middleware: the HTTP
 //! layer seeds the per-request context through the SAME authenticator
 //! REST uses (trusted header or `ck1` bearer key, per configuration),
-//! and [`RequireTenant`] fails closed when identity is missing.
+//! and `RequireTenant` fails closed when identity is missing.
 
 use std::sync::Arc;
 

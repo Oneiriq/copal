@@ -290,7 +290,7 @@ pub(crate) fn dispatcher<B: BlobStore + 'static>(
                     .input
                     .get("ttl_secs")
                     .and_then(|v| v.as_i64())
-                    .unwrap_or(900);
+                    .unwrap_or(crate::edge::DEFAULT_TTL_SECS);
                 let origin = ctx.get::<RequestOrigin>().map(|o| o.0.clone());
                 crate::edge::issue_edge_url_core(
                     &store,

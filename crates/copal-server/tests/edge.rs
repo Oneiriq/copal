@@ -192,3 +192,52 @@ async fn edge_tokens_issue_redeem_and_refuse_uniformly() {
     let response = router.clone().oneshot(redeem).await.unwrap();
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
+
+/// A request that names no TTL gets the one the contract declares, on
+/// the REST face and through the contract dispatcher alike.
+#[tokio::test]
+async fn every_face_defaults_to_the_declared_ttl() {
+    let (router, _dir) = stack().await;
+    let id = upload(&router, "cdn/default-ttl.txt", b"default ttl").await;
+    mint_key(&router).await;
+    let now = || {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
+    };
+
+    let issue = req(
+        "POST",
+        &format!("/v1/files/{id}/edge-url"),
+        Body::from(json!({}).to_string()),
+    );
+    let response = router.clone().oneshot(issue).await.unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let rest_ttl = json_body(response).await["expires_at"].as_i64().unwrap() - now();
+
+    let call = req(
+        "POST",
+        "/mcp",
+        Body::from(
+            json!({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": { "name": "file_issue_edge_url", "arguments": { "id": id } },
+            })
+            .to_string(),
+        ),
+    );
+    let body = json_body(router.clone().oneshot(call).await.unwrap()).await;
+    let text = body["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_else(|| panic!("{body:#?}"));
+    let issued: Value = serde_json::from_str(text).unwrap();
+    let mcp_ttl = issued["expires_at"].as_i64().unwrap() - now();
+
+    for ttl in [rest_ttl, mcp_ttl] {
+        assert!(
+            (895..=900).contains(&ttl),
+            "declared default is 900, got {ttl}"
+        );
+    }
+}

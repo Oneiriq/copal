@@ -35,7 +35,9 @@ use crate::error::ApiError;
 /// individually, so the ceiling stays low; `cg1` covers long-lived
 /// needs.
 const MAX_TTL_SECS: i64 = 86_400;
-const DEFAULT_TTL_SECS: i64 = 300;
+/// The TTL a request that names none gets, on every face. The contract
+/// declares it, and it matches the grant family's default.
+pub(crate) const DEFAULT_TTL_SECS: i64 = 900;
 
 /// Edge state: the application plus the sealing cipher.
 #[derive(Clone)]

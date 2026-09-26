@@ -324,6 +324,26 @@ pub async fn claim_next_pending(
     Ok(None)
 }
 
+/// Push a running run's lease out to `lease_secs` from now, computed
+/// server-side like every other lease. Returns false when the run is
+/// no longer running: its lease was reaped or the run already ended.
+pub async fn renew_lease(store: &Store, run_id: &str, lease_secs: u32) -> copal_core::Result<bool> {
+    let query = Query::new()
+        .update_set(run_rid(run_id)?.to_string())
+        .map_err(|e| map_store_err("renew_lease", e))?
+        .set_expr(
+            "lease_expires_at",
+            raw(format!("time::now() + {lease_secs}s")),
+        )
+        .map_err(|e| map_store_err("renew_lease", e))?
+        .where_(eq("status", "running"))
+        .return_after();
+    let rows: Vec<Value> = query_records(store.client(), &query)
+        .await
+        .map_err(|e| map_store_err("renew_lease", e))?;
+    Ok(!rows.is_empty())
+}
+
 /// Finish a run with a terminal status, clearing the lease atomically.
 pub async fn finish_run(
     store: &Store,

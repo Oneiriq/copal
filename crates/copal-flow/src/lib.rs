@@ -274,8 +274,21 @@ impl FlowEngine {
     }
 
     /// Execute one step with journaled attempts and in-process retry up
-    /// to the workflow's ceiling.
+    /// to the workflow's ceiling, renewing the run's lease across
+    /// every attempt.
     async fn execute_step(
+        &self,
+        def: &WorkflowDef,
+        run_id: &str,
+        step_key: &str,
+        input: Value,
+    ) -> copal_core::Result<Value> {
+        self.renewing_lease(run_id, self.attempt_step(def, run_id, step_key, input))
+            .await
+    }
+
+    /// The journaled attempts of one step.
+    async fn attempt_step(
         &self,
         def: &WorkflowDef,
         run_id: &str,
@@ -302,6 +315,32 @@ impl FlowEngine {
                         )));
                     }
                     attempt += 1;
+                }
+            }
+        }
+    }
+
+    /// Drive a step while renewing its run's lease. A step can outlive
+    /// the lease (a tier recall retries for hours while an archive
+    /// restore completes), and an expired lease is reaped back to
+    /// pending, where a second worker would start the same step again.
+    /// Renewal comes every third of the lease, so one missed renewal
+    /// leaves it live.
+    async fn renewing_lease<T>(&self, run_id: &str, work: impl Future<Output = T>) -> T {
+        let lease = self.lease_secs.max(1);
+        let period = std::time::Duration::from_millis(u64::from(lease) * 1000 / 3);
+        let mut beat = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
+        beat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        tokio::pin!(work);
+        loop {
+            tokio::select! {
+                output = &mut work => return output,
+                _ = beat.tick() => {
+                    match flow_repo::renew_lease(&self.store, run_id, lease).await {
+                        Ok(true) => {}
+                        Ok(false) => tracing::warn!(run = run_id, "run lease lost while a step ran"),
+                        Err(err) => tracing::warn!(run = run_id, error = %err, "run lease renewal failed"),
+                    }
                 }
             }
         }

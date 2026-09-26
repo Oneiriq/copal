@@ -1121,7 +1121,7 @@ version = "0.1.0"
 dependencies = [
  "async-graphql",
  "axum",
- "base64 0.22.1",
+ "base64 0.23.0",
  "bytes",
  "copal-blob",
  "copal-core",
@@ -1160,7 +1160,7 @@ dependencies = [
 name = "copal-sign"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.0",
  "copal-core",
  "hex",
  "hmac 0.13.0",
@@ -1175,7 +1175,7 @@ dependencies = [
 name = "copal-store"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.0",
  "copal-core",
  "futures",
  "hmac 0.13.0",

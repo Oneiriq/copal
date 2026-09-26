@@ -45,7 +45,7 @@ serde_urlencoded = "0.7"
 
 async-graphql = { version = "7", features = ["dynamic-schema"] }
 tower-http = { version = "0.6", features = ["timeout", "cors"] }
-base64 = "0.22"
+base64 = "0.23"
 # SigV4 verification for the S3 gateway.
 hmac = "0.13"
 sha2 = { workspace = true }
@@ -70,7 +70,7 @@ opentelemetry-otlp = { version = "0.32", default-features = false, features = ["
 opentelemetry = "0.32"
 
 [dev-dependencies]
-base64 = "0.22"
+base64 = "0.23"
 # The planner gate (`tests/planner.rs`) rides kayak's `verify`
 # feature: the one part of kayak that needs a database client, which
 # kayak deliberately does not carry by default. Declared here so the

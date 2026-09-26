@@ -482,7 +482,7 @@ async fn staging_sweep_covers_every_backend() {
     )
     .to_string()
     .to_lowercase();
-    let fresh = ulid::Ulid::new().to_string().to_lowercase();
+    let fresh = ulid::Ulid::generate().to_string().to_lowercase();
     let mut planted = Vec::new();
     for dir in [&named_dir, &tier_dir] {
         let staging = dir.path().join("staging");

@@ -256,7 +256,7 @@ async fn an_agent_ingests_end_to_end() {
 async fn a_missing_row_is_an_error_not_a_null_success() {
     let (router, admin, _dir) = stack().await;
     let token = mint(&admin, &["read"]).await;
-    let absent = ulid::Ulid::new().to_string().to_ascii_lowercase();
+    let absent = ulid::Ulid::generate().to_string().to_ascii_lowercase();
 
     let body = rpc(
         &router,

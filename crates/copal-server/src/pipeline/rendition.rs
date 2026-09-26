@@ -12,7 +12,7 @@ use copal_store::Store;
 use super::{content_cleared, refuse_derived, MAX_DECODE_BYTES, MAX_DERIVE_SOURCE_BYTES};
 
 /// The derivatives activity body. The derived record was created (and
-/// linked) by the API before the run; this renders the bytes and
+/// linked) by the API before the run. This renders the bytes and
 /// finishes it through claim and complete, so a rendition is a real
 /// file with a digest, versions, and every serving rule intact.
 pub(super) async fn render_rendition<B: BlobStore>(
@@ -208,7 +208,7 @@ async fn mark_rendition_ready(
 
 /// Decode, resize, and encode one rendition. `Err` carries a refusal
 /// reason (the source is not a workable image), never infrastructure
-/// trouble; both faces of the derivatives surface share this body.
+/// trouble. Both faces of the derivatives surface share this body.
 pub(crate) fn render_image(
     source: &[u8],
     width: u32,
@@ -223,7 +223,7 @@ pub(crate) fn render_image(
         "png" => image::ImageFormat::Png,
         _ => image::ImageFormat::Jpeg,
     };
-    // JPEG has no alpha; flatten before encoding.
+    // JPEG has no alpha, so flatten before encoding.
     let writable = if target == image::ImageFormat::Jpeg {
         image::DynamicImage::ImageRgb8(resized.to_rgb8())
     } else {

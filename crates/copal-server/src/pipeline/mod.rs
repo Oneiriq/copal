@@ -1,6 +1,6 @@
 //! The standard post-upload pipeline.
 //!
-//! Six activities over the flow engine; this is the durable-journal
+//! Six activities over the flow engine. This is the durable-journal
 //! replacement for the predecessor's blob-created orchestration, using
 //! nothing but Copal's own planes:
 //!

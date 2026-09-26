@@ -240,7 +240,7 @@ async fn abandoned_sessions_sweep_with_their_bytes() {
     assert_eq!(leftovers, 0, "staged bytes swept");
 }
 
-/// Mint a key for tenant `acme` on a key-mode router; returns the
+/// Mint a key for tenant `acme` on a key-mode router and return its
 /// bearer token.
 async fn mint(router: &axum::Router, admin: &str, name: &str, scopes: &[&str]) -> String {
     let request = Request::builder()

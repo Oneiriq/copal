@@ -53,7 +53,7 @@ pub(crate) async fn list_objects<B: BlobStore>(
     }
     // GetBucketVersioning has a true answer, so it gets one. The S3
     // face exposes no versionIds, which is what an empty configuration
-    // states; copal's own version history lives on the REST face. Some
+    // states. Copal's own version history lives on the REST face. Some
     // clients probe this before their first transfer and treat a
     // failure as a reason to stop.
     if params.contains_key("versioning") {
@@ -119,7 +119,7 @@ pub(crate) async fn list_objects<B: BlobStore>(
     };
 
     // With a delimiter, keys sharing a segment collapse into
-    // CommonPrefixes; rows arrive in path order, so a last-seen check
+    // CommonPrefixes. Rows arrive in path order, so a last-seen check
     // dedupes the group.
     let mut contents = String::new();
     let mut common = String::new();

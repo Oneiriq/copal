@@ -63,7 +63,7 @@ pub fn webhook_router<B: BlobStore + 'static>(app: AppState<B>) -> Router {
         )
         .route(
             "/v1/webhooks/{id}",
-            axum::routing::delete(remove_endpoint::<B>),
+            get(get_endpoint::<B>).delete(remove_endpoint::<B>),
         )
         .with_state(state)
 }
@@ -146,6 +146,24 @@ async fn list_endpoints<B: BlobStore>(
     let tenant = &auth.tenant;
     let items = eventing::list_endpoints(&auth.store, tenant).await?;
     Ok(Json(json!({ "items": items })))
+}
+
+/// One endpoint by id (never its secret). Deactivated endpoints still
+/// read, as they do in the listing.
+async fn get_endpoint<B: BlobStore>(
+    State(state): State<WebhookState<B>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let auth =
+        crate::auth::authorize_scoped(&state.app, &headers, crate::auth::Scope::Read, 1).await?;
+    // The same lookup the GraphQL get resolver makes.
+    let found = eventing::list_endpoints(&auth.store, &auth.tenant)
+        .await?
+        .into_iter()
+        .find(|row| row.get("id").and_then(|v| v.as_str()) == Some(id.as_str()))
+        .ok_or_else(|| CopalError::not_found(format!("webhook {id}")))?;
+    Ok(Json(found))
 }
 
 /// Deactivate an endpoint; unknown and already-inactive both read 404.

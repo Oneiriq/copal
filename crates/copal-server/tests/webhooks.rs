@@ -318,3 +318,40 @@ async fn failures_back_off_and_filters_hold() {
         assert_eq!(response.status(), expected);
     }
 }
+
+/// The one-endpoint read the contract declares, and the generated
+/// clients call, answers on the REST face. Another tenant's id and an
+/// unknown id both read 404.
+#[tokio::test]
+async fn one_endpoint_reads_by_id() {
+    let (_api, hooks, _store, _cipher, _dir) = stack().await;
+    let url = "http://127.0.0.1:9/hook";
+    let response = hooks
+        .clone()
+        .oneshot(register_req(url, &["file.ready"]))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let id = json_body(response).await["id"].as_str().unwrap().to_owned();
+
+    let get = |tenant: &str, id: &str| {
+        Request::builder()
+            .method("GET")
+            .uri(format!("/v1/webhooks/{id}"))
+            .header("x-copal-tenant", tenant)
+            .body(Body::empty())
+            .unwrap()
+    };
+    let response = hooks.clone().oneshot(get("acme", &id)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_body(response).await;
+    assert_eq!(body["id"], id.as_str());
+    assert_eq!(body["target_url"], url);
+    assert_eq!(body["active"], true);
+    assert!(body.get("secret").is_none(), "the secret never reads back");
+
+    for (tenant, id) in [("globex", id.as_str()), ("acme", "missing")] {
+        let response = hooks.clone().oneshot(get(tenant, id)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{tenant}/{id}");
+    }
+}

@@ -225,10 +225,12 @@ async fn call_tool<B: BlobStore>(
                 .and_then(|v| v.as_str().map(str::to_owned))
                 .ok_or((-32602, "id is required".to_owned()))?;
             let row = dispatcher
-                .get(&resource, ctx, GetArgs { id })
+                .get(&resource, ctx, GetArgs { id: id.clone() })
                 .await
                 .map_err(kayak_to_rpc)?;
-            row.unwrap_or(Value::Null)
+            // A missing row is an error, as it is on REST, rather than a
+            // successful call whose text reads null.
+            row.ok_or_else(|| (-32000, format!("not found: {resource} {id}")))?
         }
         Route::Action { resource, action } => {
             let id = arguments

@@ -171,13 +171,13 @@ mod tests {
 
     #[test]
     fn keys_read_both_info_shapes() {
-        let modern = json!([{ "namespaces": { "antumbra": "DEFINE ...", "copal": "DEFINE ..." } }]);
+        let modern = json!([{ "namespaces": { "alpha": "DEFINE ...", "copal": "DEFINE ..." } }]);
         assert_eq!(
             keys_at(&modern, &["/namespaces", "/ns"]),
-            ["antumbra", "copal"]
+            ["alpha", "copal"]
         );
-        let terse = json!([null, { "ns": { "driftnet": "DEFINE ..." } }]);
-        assert_eq!(keys_at(&terse, &["/namespaces", "/ns"]), ["driftnet"]);
+        let terse = json!([null, { "ns": { "beta": "DEFINE ..." } }]);
+        assert_eq!(keys_at(&terse, &["/namespaces", "/ns"]), ["beta"]);
         assert!(keys_at(&json!([]), &["/namespaces"]).is_empty());
     }
 

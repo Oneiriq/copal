@@ -7,6 +7,6 @@
     "check": "node frame.mjs && node clipping.mjs"
   },
   "dependencies": {
-    "playwright-core": "^1.49.0"
+    "playwright-core": "^1.63.0"
   }
 }

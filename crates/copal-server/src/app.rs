@@ -468,10 +468,7 @@ impl<B: BlobStore> AppState<B> {
         let quota = tenant_repo::get_quota(&self.store, tenant).await?;
         // The counter is the cheap read; the aggregate initializes it
         // once per tenant and the sweep keeps it honest thereafter.
-        let (used, _) = match tenant_repo::cached_usage(&self.store, tenant).await? {
-            Some(cached) => cached,
-            None => tenant_repo::reconcile_usage(&self.store, tenant).await?,
-        };
+        let (used, _) = tenant_repo::usage_counter(&self.store, tenant).await?;
         let Some(quota) = quota else {
             // No ceiling: still account the bytes so the counter stays
             // usable the moment a quota is set.
@@ -1141,10 +1138,7 @@ async fn tenant_usage<B: BlobStore>(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let auth = crate::auth::authorize_scoped(&state, &headers, crate::auth::Scope::Read, 1).await?;
     let tenant = &auth.tenant;
-    let (bytes, files) = match copal_store::repo::tenant::cached_usage(&auth.store, tenant).await? {
-        Some(cached) => cached,
-        None => copal_store::repo::tenant::reconcile_usage(&auth.store, tenant).await?,
-    };
+    let (bytes, files) = copal_store::repo::tenant::usage_counter(&auth.store, tenant).await?;
     let quota = copal_store::repo::tenant::get_quota(&auth.store, tenant).await?;
     // Retained bytes ride beside the total so a tenant can tell
     // "full" apart from "full of things I may not remove".

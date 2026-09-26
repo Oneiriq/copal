@@ -266,8 +266,35 @@ pub async fn cached_usage(
     }))
 }
 
+/// The usage counter, created from the file rows on first use.
+pub async fn usage_counter(store: &Store, tenant: &TenantId) -> copal_core::Result<(i64, i64)> {
+    match cached_usage(store, tenant).await? {
+        Some(cached) => Ok(cached),
+        None => init_usage(store, tenant).await,
+    }
+}
+
+/// Create the counter from the file rows, unless a row exists by now.
+///
+/// First use lands here, and it never overwrites. A request that found
+/// no counter can get here after a concurrent request created the row
+/// and reserved bytes against it. The file rows do not show that
+/// reservation yet, so writing their figure over the row would hand
+/// the bytes back and let every upload in the race fit under the
+/// ceiling. When the create loses, the row that won is the counter,
+/// and its figure is returned.
+pub async fn init_usage(store: &Store, tenant: &TenantId) -> copal_core::Result<(i64, i64)> {
+    let (bytes, files) = usage(store, tenant).await?;
+    match create_usage(store, tenant, bytes, files).await {
+        Ok(()) => Ok((bytes, files)),
+        // The unique index refused the second row, or the engine
+        // refused a write that raced the winner's.
+        Err(err) => cached_usage(store, tenant).await?.ok_or(err),
+    }
+}
+
 /// Write the counter to a known figure, creating the row if needed.
-/// Reconciliation and lazy initialization both land here.
+/// Reconciliation lands here. First use goes through [`init_usage`].
 pub async fn set_usage(
     store: &Store,
     tenant: &TenantId,
@@ -289,26 +316,33 @@ pub async fn set_usage(
     if !rows.is_empty() {
         return Ok(());
     }
+    match create_usage(store, tenant, bytes, files).await {
+        // A racing initializer won. Its figure is as good as ours.
+        Err(CopalError::Conflict(_)) => Ok(()),
+        other => other,
+    }
+}
+
+/// Create the counter row. The unique index on `tenant_id` refuses a
+/// second one.
+async fn create_usage(
+    store: &Store,
+    tenant: &TenantId,
+    bytes: i64,
+    files: i64,
+) -> copal_core::Result<()> {
     let id = ulid::Ulid::generate().to_string().to_ascii_lowercase();
-    let rid =
-        RecordID::<()>::new(USAGE_TABLE, id.as_str()).map_err(|e| map_store_err("set_usage", e))?;
+    let rid = RecordID::<()>::new(USAGE_TABLE, id.as_str())
+        .map_err(|e| map_store_err("create_usage", e))?;
     let payload = json!({
         "tenant_id": tenant.as_str(),
         "bytes": bytes,
         "files": files,
     });
-    match create_record(store.client(), &rid.to_string(), payload).await {
-        Ok(_) => Ok(()),
-        Err(err) => {
-            let mapped = map_store_err("set_usage", err);
-            // A racing initializer won; its figure is as good as ours.
-            if matches!(mapped, CopalError::Conflict(_)) {
-                Ok(())
-            } else {
-                Err(mapped)
-            }
-        }
-    }
+    create_record(store.client(), &rid.to_string(), payload)
+        .await
+        .map(|_| ())
+        .map_err(|e| map_store_err("create_usage", e))
 }
 
 /// Reserve bytes against the ceiling, atomically.

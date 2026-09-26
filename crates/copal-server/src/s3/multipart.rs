@@ -86,7 +86,6 @@ pub async fn upload_part<B: BlobStore>(
     }
     let max = gateway.app.limits.max_upload_bytes as u64;
     let mut running = 0u64;
-    let mut hasher = copal_core::DigestBuilder::new();
     let raw = body.into_data_stream().map(|chunk| match chunk {
         Ok(bytes) => Ok(bytes),
         Err(err) => Err(format!("body: {err}")),
@@ -112,21 +111,13 @@ pub async fn upload_part<B: BlobStore>(
         }
         Err(err) => Err(err),
     });
-    // Hash while staging so the part ETag is its content digest.
-    let hashing = stream.map(move |chunk: Result<Bytes, String>| {
-        if let Ok(bytes) = &chunk {
-            hasher.update(bytes);
-        }
-        chunk
-    });
-    let size = match blobs.append_staged(&key, hashing).await {
+    let size = match blobs.append_staged(&key, stream).await {
         Ok(size) => size,
         Err(err) => return copal_to_s3(err),
     };
-    // The digest comes from a second pass over the staged bytes: the
-    // hashing closure above owns its builder inside the stream, and a
-    // staged part is small enough that one re-read is cheaper than
-    // threading state out of the writer.
+    // The part ETag is its content digest, read back from the staged
+    // bytes. A staged part is small enough that one re-read is cheaper
+    // than threading a hasher out of the writer.
     let digest = match hash_staged(blobs, &key).await {
         Ok(digest) => digest,
         Err(err) => return copal_to_s3(err),

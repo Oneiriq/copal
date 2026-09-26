@@ -272,6 +272,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     depth: config.rerank_depth,
                 }),
         );
+    // Tier backends serve reads as well as moves. Once the mover
+    // demotes a blob and erases its hot copy, the request path finds
+    // the bytes through these, and an archive-cold placement answers
+    // with a recall.
+    state.residencies.tiers = residencies.tiers.clone();
     state.limits = copal_server::app::Limits {
         max_upload_bytes: config.max_upload_bytes,
         upload_lease_secs: config.upload_lease_secs,

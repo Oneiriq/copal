@@ -289,16 +289,9 @@ fn kayak_to_rpc(err: kayak::runtime::KayakError) -> (i64, String) {
     (-32000, err.to_string())
 }
 
-/// The router-facing registration.
-pub fn routes_state<B: BlobStore + 'static>(state: AppState<B>) -> axum::Router {
-    axum::Router::new()
-        .route("/mcp", axum::routing::post(mcp_endpoint::<B>))
-        .with_state(state)
-}
-
 /// The tool router and the generated manifest must agree byte for
 /// byte on names; this is the parity the module doc promises.
-#[allow(dead_code)]
+#[cfg(test)]
 fn assert_route_parity() {
     let manifest = manifest();
     let names: Vec<&str> = manifest["tools"]

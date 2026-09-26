@@ -437,19 +437,24 @@ pub(crate) fn dispatcher<B: BlobStore + 'static>(
                 Ok(None)
             }
         })
-        .list("webhooks", move |ctx, _args| {
+        .list("webhooks", move |ctx, args| {
             let state = hooks_list_state.clone();
             async move {
                 let tenant = tenant_of(&ctx)?;
                 let store = store_of(&ctx, &state.store);
-                let items = copal_store::repo::eventing::list_endpoints(&store, &tenant)
-                    .await
-                    .map_err(to_kayak_error)?;
-                Ok(ListOutput {
-                    items,
-                    // Endpoints are few by nature; the page is the set.
-                    next_cursor: None,
-                })
+                // Oldest first unless the caller sorts descending, as
+                // on REST.
+                let ascending = !matches!(&args.sort, Some((_, SortDirection::Desc)));
+                let (items, next_cursor) = crate::webhooks::endpoints_page(
+                    &store,
+                    &tenant,
+                    args.limit as usize,
+                    args.cursor.as_deref(),
+                    ascending,
+                )
+                .await
+                .map_err(|e| to_kayak_error(e.0))?;
+                Ok(ListOutput { items, next_cursor })
             }
         })
         .get("webhooks", move |ctx, args| {

@@ -3789,7 +3789,7 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 [[package]]
 name = "oneiriq-kayak"
 version = "0.1.0"
-source = "git+ssh://git@github.com/Oneiriq/kayak.git?branch=main#9eff4c02a70bd9a05523186af83cf2f9c28922ad"
+source = "git+ssh://git@github.com/Oneiriq/kayak.git?branch=main#29f24b0a9df5ec243dd057162005482a0525ff40"
 dependencies = [
  "async-graphql",
  "futures-core",

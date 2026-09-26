@@ -1396,7 +1396,7 @@ async fn mint_credential<B: BlobStore>(
     Path(tenant): Path<String>,
     body: Option<axum::Json<MintCredentialRequest>>,
 ) -> Result<(StatusCode, axum::Json<serde_json::Value>), crate::error::ApiError> {
-    crate::auth::require_admin(&gateway.app, &headers)?;
+    let operator = crate::auth::require_admin(&gateway.app, &headers)?;
     let tenant = TenantId::parse(&tenant)?;
     let request = body.map(|b| b.0).unwrap_or_default();
     // A credential under a principal answers to it: the gateway
@@ -1446,7 +1446,7 @@ async fn mint_credential<B: BlobStore>(
     copal_store::repo::auth::record_audit(
         &gateway.app.store,
         &tenant,
-        "admin",
+        operator.as_str(),
         "s3credential.minted",
         &row.access_key_id(),
         forwarded_origin(&headers).as_deref(),
@@ -1482,7 +1482,7 @@ async fn revoke_credential<B: BlobStore>(
     headers: HeaderMap,
     Path((tenant, access_key_id)): Path<(String, String)>,
 ) -> Result<StatusCode, crate::error::ApiError> {
-    crate::auth::require_admin(&gateway.app, &headers)?;
+    let operator = crate::auth::require_admin(&gateway.app, &headers)?;
     let tenant = TenantId::parse(&tenant)?;
     if !s3_repo::revoke_credential(&gateway.app.store, &tenant, &access_key_id).await? {
         return Err(CopalError::not_found(format!("credential {access_key_id}")).into());
@@ -1490,7 +1490,7 @@ async fn revoke_credential<B: BlobStore>(
     copal_store::repo::auth::record_audit(
         &gateway.app.store,
         &tenant,
-        "admin",
+        operator.as_str(),
         "s3credential.revoked",
         &access_key_id,
         forwarded_origin(&headers).as_deref(),

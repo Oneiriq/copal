@@ -26,13 +26,52 @@ use copal_blob::BlobStore;
 use crate::app::AppState;
 
 /// What one tool name means, resolved once from the contract with
-/// exactly the naming the manifest generator uses.
+/// exactly the naming the manifest generator uses. Actions and queries
+/// carry the names of their multi-valued inputs; see [`join_lists`].
 #[derive(Debug, Clone)]
 enum Route {
-    List { resource: String },
-    Get { resource: String },
-    Action { resource: String, action: String },
-    Query { name: String },
+    List {
+        resource: String,
+    },
+    Get {
+        resource: String,
+    },
+    Action {
+        resource: String,
+        action: String,
+        lists: Vec<String>,
+    },
+    Query {
+        name: String,
+        lists: Vec<String>,
+    },
+}
+
+/// The names of a declaration's multi-valued inputs.
+fn list_inputs(input: &[kayak::ActionField]) -> Vec<String> {
+    input
+        .iter()
+        .filter(|field| field.multiple)
+        .map(|field| field.name.clone())
+        .collect()
+}
+
+/// The manifest declares a multi-valued input as an array of names,
+/// while the dispatcher reads it as one comma-separated string. An
+/// array of strings in such an input joins into that string, so a
+/// tool call shaped the way the manifest says is accepted. Anything
+/// else passes through for the dispatcher to judge.
+fn join_lists(lists: &[String], arguments: &mut Map<String, Value>) {
+    for name in lists {
+        let Some(Value::Array(items)) = arguments.get(name) else {
+            continue;
+        };
+        let Some(parts) = items.iter().map(Value::as_str).collect::<Option<Vec<_>>>() else {
+            continue;
+        };
+        let joined = parts.join(",");
+        arguments.insert(name.clone(), Value::from(joined));
+    }
 }
 
 fn routes() -> &'static BTreeMap<String, Route> {
@@ -60,6 +99,7 @@ fn routes() -> &'static BTreeMap<String, Route> {
                     Route::Action {
                         resource: resource.name.clone(),
                         action: action.name.clone(),
+                        lists: list_inputs(&action.input),
                     },
                 );
             }
@@ -69,6 +109,7 @@ fn routes() -> &'static BTreeMap<String, Route> {
                 query.name.clone(),
                 Route::Query {
                     name: query.name.clone(),
+                    lists: list_inputs(&query.input),
                 },
             );
         }
@@ -232,7 +273,12 @@ async fn call_tool<B: BlobStore>(
             // successful call whose text reads null.
             row.ok_or_else(|| (-32000, format!("not found: {resource} {id}")))?
         }
-        Route::Action { resource, action } => {
+        Route::Action {
+            resource,
+            action,
+            lists,
+        } => {
+            join_lists(&lists, &mut arguments);
             let id = arguments
                 .remove("id")
                 .and_then(|v| v.as_str().map(str::to_owned));
@@ -246,7 +292,8 @@ async fn call_tool<B: BlobStore>(
                 .map_err(kayak_to_rpc)?;
             value.unwrap_or(json!({ "ok": true }))
         }
-        Route::Query { name } => {
+        Route::Query { name, lists } => {
+            join_lists(&lists, &mut arguments);
             let args = QueryArgs {
                 input: arguments.into_iter().collect(),
             };

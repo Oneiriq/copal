@@ -816,9 +816,9 @@ struct SearchQuery {
     content_type: Option<String>,
     #[serde(default)]
     cursor: Option<String>,
-    /// Fields to count the match set by, comma separated.
-    #[serde(default)]
-    facets: Option<String>,
+    // `facets` is read from the raw pairs instead: the contract
+    // declares a list, which arrives as the key repeated, and a
+    // repeated key would refuse this whole struct.
 }
 
 /// Search a tenant's extracted text.
@@ -1043,8 +1043,17 @@ async fn search_text<B: BlobStore>(
     State(state): State<AppState<B>>,
     headers: HeaderMap,
     axum::extract::Query(params): axum::extract::Query<SearchQuery>,
+    axum::extract::Query(pairs): axum::extract::Query<Vec<(String, String)>>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let limit = params.limit.unwrap_or(20).clamp(1, 100);
+    // Fields to count the match set by: the key repeated, each value
+    // one name or several comma separated.
+    let facets: Vec<&str> = pairs
+        .iter()
+        .filter(|(key, _)| key == "facets")
+        .map(|(_, value)| value.as_str())
+        .collect();
+    let facets = (!facets.is_empty()).then(|| facets.join(","));
     let auth =
         crate::auth::authorize_scoped(&state, &headers, crate::auth::Scope::Read, limit as u64)
             .await?;
@@ -1061,7 +1070,7 @@ async fn search_text<B: BlobStore>(
         limit,
         &filters,
         params.cursor.as_deref(),
-        params.facets.as_deref(),
+        facets.as_deref(),
     )
     .await?;
     Ok(Json(answer))

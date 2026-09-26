@@ -181,7 +181,7 @@ fn b64(data: &[u8]) -> String {
 }
 
 fn hmac_sign(secret: &str, data: &[u8]) -> Vec<u8> {
-    use hmac::Mac as _;
+    use hmac::{KeyInit as _, Mac as _};
     let mut mac = hmac::Hmac::<Sha256>::new_from_slice(secret.as_bytes())
         .expect("hmac accepts any key length");
     mac.update(data);

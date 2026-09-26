@@ -18,7 +18,7 @@ use axum::routing::get;
 use axum::{Json, Router};
 use base64::Engine as _;
 use futures::StreamExt as _;
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use serde::Deserialize;
 use serde_json::json;
 use sha2::Sha256;

@@ -226,7 +226,7 @@ fn seal_frame(
     let nonce = nonce_bytes(index, last);
     cipher
         .encrypt(
-            Nonce::from_slice(&nonce),
+            &Nonce::from(nonce),
             Payload {
                 msg: plaintext,
                 aad: &[],
@@ -244,7 +244,7 @@ fn open_frame(
     let nonce = nonce_bytes(index, last);
     cipher
         .decrypt(
-            Nonce::from_slice(&nonce),
+            &Nonce::from(nonce),
             Payload {
                 msg: sealed,
                 aad: &[],

@@ -3,7 +3,7 @@
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use http_body_util::BodyExt as _;
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};

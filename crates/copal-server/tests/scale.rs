@@ -26,7 +26,7 @@
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use futures::StreamExt as _;
-use hmac::{Hmac, Mac as _};
+use hmac::{Hmac, KeyInit as _, Mac as _};
 use http_body_util::BodyExt as _;
 use serde_json::json;
 use sha2::{Digest as _, Sha256};

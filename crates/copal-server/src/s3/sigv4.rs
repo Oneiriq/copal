@@ -8,7 +8,7 @@
 //! the clock-skew window on `x-amz-date` is fifteen minutes.
 
 use axum::http::{HeaderMap, Method};
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use sha2::{Digest as _, Sha256};
 
 use copal_core::CopalError;

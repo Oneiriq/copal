@@ -137,6 +137,29 @@ fn env_parse<T: std::str::FromStr>(key: &str, default: T) -> T {
         .unwrap_or(default)
 }
 
+/// A boolean switch. The operations guide writes switches as `=1`,
+/// which `bool::from_str` refuses, so the common spellings are read
+/// here. Anything else keeps the default and says so.
+fn env_flag(key: &str, default: bool) -> bool {
+    match std::env::var(key) {
+        Ok(raw) => parse_flag(&raw).unwrap_or_else(|| {
+            tracing::warn!(key, value = %raw, default, "not a boolean; using the default");
+            default
+        }),
+        Err(_) => default,
+    }
+}
+
+/// `true`, `1`, `yes`, and `on` turn a switch on. `false`, `0`, `no`,
+/// and `off` turn it off. Case and surrounding space do not matter.
+fn parse_flag(raw: &str) -> Option<bool> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "true" | "1" | "yes" | "on" => Some(true),
+        "false" | "0" | "no" | "off" => Some(false),
+        _ => None,
+    }
+}
+
 impl Config {
     /// Read configuration from `COPAL_*` environment variables.
     pub fn from_env() -> Self {
@@ -184,7 +207,7 @@ impl Config {
             max_upload_bytes: env_parse("COPAL_MAX_UPLOAD_BYTES", 1 << 30),
             upload_lease_secs: env_parse("COPAL_UPLOAD_LEASE_SECS", 900),
             blocked_extensions: std::env::var("COPAL_BLOCKED_EXTENSIONS").ok(),
-            enforce_type_match: env_parse("COPAL_ENFORCE_TYPE_MATCH", false),
+            enforce_type_match: env_flag("COPAL_ENFORCE_TYPE_MATCH", false),
             auth: crate::auth::AuthConfig {
                 // "header" (development default until 1.0) or "keys".
                 mode: std::env::var("COPAL_AUTH_MODE")
@@ -220,9 +243,9 @@ impl Config {
             session_cache_secs: env_parse("COPAL_SESSION_CACHE_SECS", 60),
             session_cache_size: env_parse("COPAL_SESSION_CACHE_SIZE", 256),
             persisted_operations: std::env::var("COPAL_PERSISTED_OPERATIONS").ok(),
-            allow_private_webhook_targets: env_parse("COPAL_WEBHOOK_ALLOW_PRIVATE_TARGETS", false),
-            allow_private_fetch_targets: env_parse("COPAL_FETCH_ALLOW_PRIVATE_TARGETS", false),
-            console_fleet: env_parse("COPAL_CONSOLE_FLEET", false),
+            allow_private_webhook_targets: env_flag("COPAL_WEBHOOK_ALLOW_PRIVATE_TARGETS", false),
+            allow_private_fetch_targets: env_flag("COPAL_FETCH_ALLOW_PRIVATE_TARGETS", false),
+            console_fleet: env_flag("COPAL_CONSOLE_FLEET", false),
             residencies: std::env::var("COPAL_RESIDENCIES")
                 .ok()
                 .and_then(|raw| match serde_json::from_str(&raw) {
@@ -276,4 +299,22 @@ pub struct TransformerConfig {
     /// Source size ceiling in bytes (default 64 MiB).
     #[serde(default)]
     pub max_source_bytes: Option<u64>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_flag;
+
+    #[test]
+    fn switches_read_the_spellings_operators_write() {
+        for on in ["1", "true", "TRUE", "yes", "on", " On "] {
+            assert_eq!(parse_flag(on), Some(true), "{on:?}");
+        }
+        for off in ["0", "false", "False", "no", "off"] {
+            assert_eq!(parse_flag(off), Some(false), "{off:?}");
+        }
+        for neither in ["", "2", "enabled", "y"] {
+            assert_eq!(parse_flag(neither), None, "{neither:?}");
+        }
+    }
 }

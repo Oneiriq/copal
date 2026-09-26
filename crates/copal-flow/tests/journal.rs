@@ -261,3 +261,57 @@ async fn sync_replay_of_an_unfinished_run_reads_pending_not_null_output() {
         .unwrap();
     assert!(second.is_none());
 }
+
+#[tokio::test]
+async fn a_run_acts_for_its_own_tenant_whatever_its_input_names() {
+    let store = fresh_store().await;
+    let registry = FlowRegistry::new()
+        .activity("echo", |input: Value| async move { Ok(input) })
+        .workflow("echo", &["echo"], 1);
+    let engine = FlowEngine::new(store, registry);
+
+    let (_, output) = engine
+        .run_sync(
+            &tenant(),
+            "echo",
+            RunSpec {
+                input: json!({"tenant": "someone-else", "n": 1}),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(output, Some(json!({"tenant": "acme", "n": 1})));
+
+    // An input that names no tenant is left as written.
+    let (_, output) = engine
+        .run_sync(
+            &tenant(),
+            "echo",
+            RunSpec {
+                input: json!({"n": 2}),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(output, Some(json!({"n": 2})));
+}
+
+#[tokio::test]
+async fn only_caller_workflows_start_through_the_runs_api() {
+    let registry = FlowRegistry::new()
+        .activity("noop", |input: Value| async move { Ok(input) })
+        .workflow("internal", &["noop"], 1)
+        .caller_workflow("open", &["noop"], 1);
+    let engine = FlowEngine::new(fresh_store().await, registry);
+    assert!(engine.ensure_caller_startable("open").is_ok());
+    assert!(matches!(
+        engine.ensure_caller_startable("internal"),
+        Err(copal_core::CopalError::Forbidden(_))
+    ));
+    assert!(matches!(
+        engine.ensure_caller_startable("missing"),
+        Err(copal_core::CopalError::NotFound(_))
+    ));
+}

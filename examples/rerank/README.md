@@ -11,14 +11,18 @@ why Copal hands it a shortlist rather than a corpus.
 POST {COPAL_RERANK_ADDR}
 Authorization: Bearer {COPAL_RERANK_TOKEN}      (only when set)
 {"query": "...", "documents": ["passage", ...], "model": "..."}
+```
 
--> 200 {"results": [{"index": 0, "relevance_score": 0.91}, ...]}
+The answer:
+
+```
+200 {"results": [{"index": 0, "relevance_score": 0.91}, ...]}
 ```
 
 Copal also accepts the bare array text-embeddings-inference returns:
 
 ```
--> 200 [{"index": 0, "score": 0.91}, ...]
+200 [{"index": 0, "score": 0.91}, ...]
 ```
 
 so an existing TEI deployment needs no adapter. `model` is sent only
@@ -53,10 +57,10 @@ documents matched, since there is no order to change and the service
 is not called.
 
 The reference scores by term overlap and how tightly the matched words
-sit together. That is not what a reranker is for and is deliberately
-not pretending to be; it exists so the seam can be run and tested
-before anyone provisions a GPU. `score()` is the whole of what a real
-deployment replaces.
+sit together. It is not a real reranker. It exists so the seam can be
+run and tested before anyone provisions a GPU, and `score()` is the
+only part a real deployment replaces. It listens on `RERANK_PORT`,
+default 9300.
 
 ## Real implementations
 

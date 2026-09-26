@@ -20,25 +20,29 @@ four recipes:
 ## Running it
 
 The service needs `ffmpeg` and `ffprobe` on its path and nothing else.
+It listens on `PORT`, which defaults to 9000. Copal's S3 gateway is
+commonly bound to 9000 too (the migration guide and the conformance
+stack both use it), so these examples run the transformer on 9100:
 
 ```sh
-TRANSFORM_SECRET=shared-with-copal python transform.py
+PORT=9100 TRANSFORM_SECRET=shared-with-copal python transform.py
 ```
 
 Point Copal at it and restart:
 
 ```sh
 COPAL_TRANSFORMERS='{
-  "thumbnail": {"url":"http://127.0.0.1:9000/thumbnail","secret":"shared-with-copal","timeout_secs":120},
-  "audio":     {"url":"http://127.0.0.1:9000/audio","secret":"shared-with-copal","timeout_secs":120},
-  "probe":     {"url":"http://127.0.0.1:9000/probe","secret":"shared-with-copal","timeout_secs":120}
+  "thumbnail": {"url":"http://127.0.0.1:9100/thumbnail","secret":"shared-with-copal","timeout_secs":120},
+  "audio":     {"url":"http://127.0.0.1:9100/audio","secret":"shared-with-copal","timeout_secs":120},
+  "probe":     {"url":"http://127.0.0.1:9100/probe","secret":"shared-with-copal"}
 }'
 ```
 
 Copal waits 60 seconds for a transformer unless `timeout_secs` says
-otherwise. The service gives ffmpeg up to `TRANSFORM_TIMEOUT_SECS`
-(default 120), so each entry matches that. A shorter Copal timeout
-would cut long media off and retry it as an infrastructure failure.
+otherwise (up to 600), and sends sources up to 64 MiB unless
+`max_source_bytes` says otherwise. The service gives ffmpeg 120
+seconds (`TRANSFORM_TIMEOUT_SECS`), so the long-running recipes above
+set `timeout_secs` to match.
 
 Then derive:
 
@@ -61,10 +65,14 @@ services:
     command: python /app/transform.py
     volumes: [./examples/transformers/ffmpeg:/app:ro]
     environment:
+      PORT: "9100"
       TRANSFORM_SECRET: shared-with-copal
     # python:3.12-slim carries no ffmpeg; install it or start from an
     # image that has one.
 ```
+
+Inside a compose network, point the transformer URLs at
+`http://transformer:9100/...` instead of `127.0.0.1`.
 
 An image with ffmpeg already in it (`linuxserver/ffmpeg`,
 `jrottenberg/ffmpeg`) saves the install step, though most of those
@@ -106,9 +114,10 @@ pass makes that text findable the same way, with no second upload.
 
 ## Sizing
 
-Large sources are read into a temporary file before ffmpeg sees them,
+Large sources are written to a temporary file before ffmpeg sees them,
 because ffmpeg seeks and a pipe cannot. Size the transformer's disk
-for the largest source you expect, and raise `TRANSFORM_MAX_BYTES`
-(default 512 MiB) to match. Copal refuses a source first when it is
-larger than the entry's `max_source_bytes` (default 64 MiB), so raise
-that in `COPAL_TRANSFORMERS` too.
+for the largest source you expect. Two ceilings apply: Copal refuses
+sources above the transformer's `max_source_bytes` (default 64 MiB)
+before calling, and the service refuses sources above
+`TRANSFORM_MAX_BYTES` (default 512 MiB) with a 413. Raise both to
+match your largest source.

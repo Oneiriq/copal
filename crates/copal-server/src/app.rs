@@ -4083,12 +4083,19 @@ pub(crate) struct StartRunRequest {
 }
 
 /// Start a workflow run, the shared core behind the REST handler and
-/// the GraphQL action resolver.
+/// the contract dispatcher's action (GraphQL, MCP, `/v1c`).
+///
+/// Only caller workflows start here. The built-in workflows (upload
+/// processing, fetch, transform, derive, recall) trust the file, digest,
+/// and residency in their input because the endpoint that enqueues
+/// them checked those first; a caller-written input would skip every
+/// one of those checks.
 pub(crate) async fn start_run_core<B: BlobStore>(
     state: &AppState<B>,
     tenant: &TenantId,
     request: StartRunRequest,
 ) -> Result<(StatusCode, serde_json::Value), ApiError> {
+    state.flow.ensure_caller_startable(&request.workflow)?;
     let subject = match &request.file {
         Some(raw) => Some(FileId::parse(raw)?),
         None => None,

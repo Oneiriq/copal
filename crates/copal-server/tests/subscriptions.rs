@@ -259,3 +259,39 @@ async fn a_subscription_ends_at_its_lifetime_and_reopens_fresh() {
     let text = String::from_utf8_lossy(&collected);
     assert!(text.contains("event: complete"), "{text}");
 }
+
+/// An outbox row is one event however often it is written. The
+/// webhook dispatcher marks every row it fans out as dispatched, an
+/// UPDATE the live query sees too; relaying it handed subscribers the
+/// same event a second time.
+#[tokio::test]
+async fn an_event_arrives_once_however_often_its_row_is_written() {
+    let (api, store, _dir) = stack().await;
+    let acme = TenantId::parse("acme").unwrap();
+
+    let mut feed = copal_store::repo::eventing::watch_events(&store, &acme, Some("file.ready"))
+        .await
+        .unwrap();
+    upload(&api, "acme", "once.txt").await;
+    let row = tokio::time::timeout(Duration::from_secs(10), feed.next())
+        .await
+        .expect("a file.ready event arrives")
+        .expect("the stream is open")
+        .expect("the row decodes");
+
+    // What the dispatcher does after fanning the event out.
+    assert!(
+        copal_store::repo::eventing::mark_dispatched(&store, &row.event_id())
+            .await
+            .unwrap()
+    );
+
+    let again = tokio::time::timeout(Duration::from_secs(2), feed.next()).await;
+    if let Ok(Some(item)) = again {
+        panic!(
+            "event {} arrived again after it was marked dispatched: {:?}",
+            row.id,
+            item.map(|r| (r.id, r.dispatched)),
+        );
+    }
+}

@@ -575,7 +575,7 @@ async fn runs_api_executes_workflows() {
             out["stamped"] = serde_json::Value::Bool(true);
             Ok(out)
         })
-        .workflow("stamping", &["stamp"], 1);
+        .caller_workflow("stamping", &["stamp"], 1);
     let state = AppState::new(store, blobs).with_flow(registry);
     let engine = state.flow.clone();
     let router = build_router(state);

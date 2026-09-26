@@ -14,8 +14,8 @@ A second command, one scale story:
 
 The bench reuses the conformance stack, stands it up twice (engine
 sessions off, then on), and takes the same measurements through the
-S3 gateway both times. Measuring through the gateway is deliberate:
-it is the path a migrating deployment uses, and it exercises
+S3 gateway both times. It measures through the gateway because that
+is the path a migrating deployment uses, and because it exercises
 authorization, the session layer, the metadata plane, and the blob
 store in one line of the table.
 
@@ -43,15 +43,15 @@ images carry no millisecond date.
 
 ## The scale bench
 
-`scale.sh` answers a different question: not "what does a
-configuration cost" but "what happens above 256 MiB". It runs the
-ignored tests in `crates/copal-server/tests/scale.rs` and
+`scale.sh` answers a different question: "what happens above
+256 MiB". It runs the ignored tests in
+`crates/copal-server/tests/scale.rs` and
 `crates/copal-store/tests/scale.rs` one per process in release mode,
 because the peak-working-set figure those tests report only ratchets
-upward, and a process that runs one scenario is the only honest way
+upward, and a process that runs one scenario is the only reliable way
 to attribute a peak to it. The measurements are in-process on
 purpose: peak memory during a streamed upload and the
-embedded-versus-remote wire cost are not observable through a
+embedded-versus-remote connection cost are not observable through a
 container boundary.
 
 Scenarios: streamed single PUT with ranged and sequential reads at

@@ -6,7 +6,7 @@ One command, one table:
 ./conformance/run.sh
 ```
 
-The stack in `docker-compose.yml` builds Copal from this repository,
+The stack in `conformance/docker-compose.yml` builds Copal from this repository,
 pins the engine to the version the code is developed against, seeds
 MinIO as the migration source, and runs one scripted scenario per S3
 client: MinIO's `mc`, the aws CLI, and rclone. Every check is named,
@@ -24,10 +24,10 @@ surfaced, so none of them can quietly return:
   phantom key.
 - `second_pass_noop` / `sync_noop` / `diff_empty`: mirrors converge.
 
-A fourth runner proves the agent face with nothing but curl: the
-MCP handshake, the generated manifest, a listing that sees the
-mirrored objects, and a search that finds extracted text, with an
-honest timeout failing the check if extraction never settles.
+A fourth runner tests the agent face with nothing but curl: the MCP
+handshake, the generated manifest, a listing that sees the mirrored
+objects, and a search that finds extracted text. A timeout fails the
+check if extraction never settles.
 
 Results land in `results/<version>.md` and are committed per
 release, which is what the migration guide links. The claim the
@@ -43,6 +43,6 @@ blob inventory, and logs into `results/`, because client output
 alone cannot say whether a failure belongs to the product or to the
 harness.
 
-The harness tests what it names, nothing more. Its credibility is
-that the choices are visible, the suite is runnable by anyone, and
-extending it is one script edit.
+The harness tests what it names and nothing more. The checks are
+visible, anyone can run the suite, and extending it is one script
+edit.

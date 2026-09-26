@@ -36,31 +36,34 @@ use serde_json::Value;
 /// Constant-time Basic check against the admin token (previous
 /// honored), answering with whoever got through. `Err` is the
 /// challenge or refusal to return.
-#[allow(clippy::result_large_err)]
 fn gate<B: BlobStore>(
     state: &AppState<B>,
     headers: &HeaderMap,
-) -> Result<crate::auth::Operator, Response> {
+) -> Result<crate::auth::Operator, Box<Response>> {
     // The realm reaches a browser's credential dialog, and the
     // username never does anything, so it says so where it will be
     // read.
     let challenge = || {
-        Err((
-            StatusCode::UNAUTHORIZED,
-            [(
-                "www-authenticate",
-                "Basic realm=\"copal console: any username, admin token as password\"",
-            )],
-            "the console takes the admin token as the Basic password",
-        )
-            .into_response())
+        Err(Box::new(
+            (
+                StatusCode::UNAUTHORIZED,
+                [(
+                    "www-authenticate",
+                    "Basic realm=\"copal console: any username, admin token as password\"",
+                )],
+                "the console takes the admin token as the Basic password",
+            )
+                .into_response(),
+        ))
     };
     let Some(configured) = state.auth.admin_token.as_deref() else {
-        return Err((
-            StatusCode::NOT_FOUND,
-            "the console exists only when an admin token is configured",
-        )
-            .into_response());
+        return Err(Box::new(
+            (
+                StatusCode::NOT_FOUND,
+                "the console exists only when an admin token is configured",
+            )
+                .into_response(),
+        ));
     };
     let presented = headers
         .get("authorization")
@@ -83,7 +86,7 @@ fn gate<B: BlobStore>(
     if !(current || previous) {
         return challenge();
     }
-    crate::auth::operator(state, headers).map_err(IntoResponse::into_response)
+    crate::auth::operator(state, headers).map_err(|refused| Box::new(refused.into_response()))
 }
 
 /// The operator acts as the tenant with every scope and the root
@@ -127,7 +130,7 @@ fn console_router<B: BlobStore>(
 pub async fn home<B: BlobStore>(State(state): State<AppState<B>>, headers: HeaderMap) -> Response {
     let operator = match gate(&state, &headers) {
         Ok(operator) => operator,
-        Err(refused) => return refused,
+        Err(refused) => return *refused,
     };
     let tenants = copal_store::repo::tenant::known_tenants(&state.store)
         .await
@@ -226,7 +229,7 @@ pub async fn tenant_pages<B: BlobStore>(
 ) -> Response {
     let operator = match gate(&state, &headers) {
         Ok(operator) => operator,
-        Err(refused) => return refused,
+        Err(refused) => return *refused,
     };
     let tenant = match TenantId::parse(&tenant) {
         Ok(tenant) => tenant,

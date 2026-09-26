@@ -183,16 +183,16 @@ async fn restore_object<B: BlobStore>(
 ) -> Response {
     let caller = match authorize_bucket(&gateway, &method, &uri, &headers, &bucket).await {
         Ok(caller) => caller,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let tenant = &caller.tenant;
     let store = match caller.store(&gateway.app).await {
         Ok(store) => store,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let record = match lookup_servable(&store, tenant, &key).await {
         Ok(record) => record,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     match gateway.app.resolve_record(&record).await {
         // Already readable: nothing to restore.
@@ -472,25 +472,25 @@ async fn authenticate<B: BlobStore>(
     method: &Method,
     uri: &Uri,
     headers: &HeaderMap,
-) -> Result<(TenantId, String, Option<String>), Response> {
+) -> Result<(TenantId, String, Option<String>), Box<Response>> {
     let auth = sigv4::parse_authorization(headers)
         .map_err(|e| xml_error(StatusCode::FORBIDDEN, "AccessDenied", &e.to_string()))?;
     let row = s3_repo::fetch_credential(&gateway.app.store, &auth.access_key_id)
         .await
         .map_err(copal_to_s3)?;
     let Some(row) = row else {
-        return Err(xml_error(
+        return Err(Box::new(xml_error(
             StatusCode::FORBIDDEN,
             "InvalidAccessKeyId",
             "unknown access key",
-        ));
+        )));
     };
     if row.revoked_at.is_some() {
-        return Err(xml_error(
+        return Err(Box::new(xml_error(
             StatusCode::FORBIDDEN,
             "InvalidAccessKeyId",
             "credential revoked",
-        ));
+        )));
     }
     let sealed = base64::engine::general_purpose::STANDARD
         .decode(&row.secret_sealed)
@@ -503,7 +503,7 @@ async fn authenticate<B: BlobStore>(
         })?;
     let cipher = match gateway.app.require_cipher() {
         Ok(cipher) => cipher,
-        Err(err) => return Err(copal_to_s3(err.0)),
+        Err(err) => return Err(Box::new(copal_to_s3(err.0))),
     };
     let secret_bytes = cipher.open(&sealed).map_err(|_| {
         xml_error(
@@ -549,11 +549,11 @@ async fn authenticate<B: BlobStore>(
                     xml_error(StatusCode::FORBIDDEN, "AccessDenied", "credentials refused")
                 })?;
         if principal.disabled_at.is_some() {
-            return Err(xml_error(
+            return Err(Box::new(xml_error(
                 StatusCode::FORBIDDEN,
                 "AccessDenied",
                 "credentials refused",
-            ));
+            )));
         }
         principal_handle = Some(principal.handle);
     }
@@ -583,16 +583,16 @@ impl S3Caller {
     pub(crate) async fn store<B: BlobStore>(
         &self,
         state: &AppState<B>,
-    ) -> Result<copal_store::Store, Response> {
+    ) -> Result<copal_store::Store, Box<Response>> {
         if !state.engine_sessions {
             return Ok(state.store.clone());
         }
         let Some(access) = state.engine_access.as_ref() else {
-            return Err(xml_error(
+            return Err(Box::new(xml_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "InternalError",
                 "engine sessions are on without an access key",
-            ));
+            )));
         };
         let scopes = ["read".to_owned(), "write".to_owned()];
         let cache_key = crate::session_cache::SessionCache::key(
@@ -624,14 +624,14 @@ pub(crate) async fn authorize_bucket<B: BlobStore>(
     uri: &Uri,
     headers: &HeaderMap,
     bucket: &str,
-) -> Result<S3Caller, Response> {
+) -> Result<S3Caller, Box<Response>> {
     let (tenant, key_id, principal) = authenticate(gateway, method, uri, headers).await?;
     if tenant.as_str() != bucket {
-        return Err(xml_error(
+        return Err(Box::new(xml_error(
             StatusCode::FORBIDDEN,
             "AccessDenied",
             "bucket does not belong to this credential",
-        ));
+        )));
     }
     Ok(S3Caller {
         tenant,
@@ -650,7 +650,7 @@ async fn list_buckets<B: BlobStore>(
     let (tenant, _key_id, _principal) = match authenticate(&gateway, &method, &uri, &headers).await
     {
         Ok(identified) => identified,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let body = format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<ListAllMyBucketsResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"><Owner><ID>{id}</ID><DisplayName>{id}</DisplayName></Owner><Buckets><Bucket><Name>{id}</Name><CreationDate>1970-01-01T00:00:00.000Z</CreationDate></Bucket></Buckets></ListAllMyBucketsResult>",
@@ -669,7 +669,7 @@ async fn head_bucket<B: BlobStore>(
 ) -> Response {
     match authorize_bucket(&gateway, &method, &uri, &headers, &bucket).await {
         Ok(_) => StatusCode::OK.into_response(),
-        Err(response) => response,
+        Err(response) => *response,
     }
 }
 
@@ -691,7 +691,7 @@ async fn put_object<B: BlobStore>(
     .await
     {
         Ok(caller) => caller,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let tenant = &caller.tenant;
     let state = &gateway.app;
@@ -882,16 +882,16 @@ async fn get_object<B: BlobStore>(
 ) -> Response {
     let caller = match authorize_bucket(&gateway, &method, &uri, &headers, &bucket).await {
         Ok(caller) => caller,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let tenant = &caller.tenant;
     let store = match caller.store(&gateway.app).await {
         Ok(store) => store,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let record = match lookup_servable(&store, tenant, &key).await {
         Ok(record) => record,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     // The same gate the REST face applies: bytes no scanner has
     // cleared do not serve.
@@ -962,16 +962,16 @@ async fn head_object<B: BlobStore>(
 ) -> Response {
     let caller = match authorize_bucket(&gateway, &method, &uri, &headers, &bucket).await {
         Ok(caller) => caller,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let tenant = &caller.tenant;
     let store = match caller.store(&gateway.app).await {
         Ok(store) => store,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let record = match lookup_servable(&store, tenant, &key).await {
         Ok(record) => record,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let digest = record.digest.as_ref().expect("servable implies digest");
     let mut response = (
@@ -1016,24 +1016,24 @@ pub(crate) async fn lookup_servable(
     store: &copal_store::Store,
     tenant: &TenantId,
     key: &str,
-) -> Result<copal_core::FileRecord, Response> {
+) -> Result<copal_core::FileRecord, Box<Response>> {
     let record = file_repo::find_by_path(store, tenant, key)
         .await
         .map_err(copal_to_s3)?
         .ok_or_else(|| xml_error(StatusCode::NOT_FOUND, "NoSuchKey", "no such key"))?;
     if !record.servable_content() {
-        return Err(xml_error(
+        return Err(Box::new(xml_error(
             StatusCode::NOT_FOUND,
             "NoSuchKey",
             "no served content at this key",
-        ));
+        )));
     }
     if record.access == AccessLevel::Grant {
-        return Err(xml_error(
+        return Err(Box::new(xml_error(
             StatusCode::FORBIDDEN,
             "AccessDenied",
             "grant-access content is served through grants only",
-        ));
+        )));
     }
     Ok(record)
 }
@@ -1049,12 +1049,12 @@ async fn delete_object<B: BlobStore>(
 ) -> Response {
     let caller = match authorize_bucket(&gateway, &method, &uri, &headers, &bucket).await {
         Ok(caller) => caller,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let tenant = &caller.tenant;
     let store = match caller.store(&gateway.app).await {
         Ok(store) => store,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     match file_repo::find_by_path(&store, tenant, &key).await {
         Ok(Some(record)) => {

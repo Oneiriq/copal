@@ -31,7 +31,7 @@ pub(crate) async fn list_objects<B: BlobStore>(
 ) -> Response {
     let caller = match authorize_bucket(&gateway, &method, &uri, &headers, &bucket).await {
         Ok(caller) => caller,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let tenant = &caller.tenant;
     let params = parse_query(uri.query().unwrap_or_default());
@@ -102,7 +102,7 @@ pub(crate) async fn list_objects<B: BlobStore>(
 
     let store = match caller.store(&gateway.app).await {
         Ok(store) => store,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let rows =
         match file_repo::list_by_path_prefix(&store, tenant, &prefix, after.as_deref(), max_keys)

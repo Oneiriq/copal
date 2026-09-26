@@ -491,7 +491,7 @@ pub async fn dispatch<B: BlobStore>(
     .await
     {
         Ok(caller) => caller,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let tenant = &caller.tenant;
 

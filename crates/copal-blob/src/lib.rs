@@ -675,7 +675,7 @@ impl BlobStore for ObjectStore {
                 // so the final frame (sealed after the stream ends) is
                 // the only one carrying the final flag.
                 let mut salt = [0u8; 16];
-                rand::RngCore::fill_bytes(&mut rand::rng(), &mut salt);
+                rand::Rng::fill_bytes(&mut rand::rng(), &mut salt);
                 let object = master.object_cipher(&salt)?;
                 let mut header = Vec::with_capacity(crypto::HEADER);
                 header.extend_from_slice(crypto::MAGIC);

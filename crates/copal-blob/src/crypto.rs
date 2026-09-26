@@ -27,7 +27,7 @@ use aes_gcm::aead::{Aead, KeyInit, Payload};
 pub use aes_gcm::Aes256Gcm;
 use aes_gcm::Nonce;
 use hkdf::Hkdf;
-use rand::RngCore as _;
+use rand::Rng as _;
 use sha2::Sha256;
 
 use copal_core::CopalError;

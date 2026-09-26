@@ -44,7 +44,7 @@ axum = "0.8"
 tempfile = "3"
 futures = "0.3"
 bytes = "1"
-rand = "0.9"
+rand = "0.10"
 
 # Full debug info costs more than it returns here. The workspace links
 # surrealdb into every one of its test binaries, and on Windows each

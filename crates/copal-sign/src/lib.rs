@@ -12,7 +12,7 @@
 //! beside it, with `cg1` staying.
 
 use copal_core::CopalError;
-use rand::Rng as _;
+use rand::RngExt as _;
 use sha2::{Digest as _, Sha256};
 
 const PREFIX: &str = "cg1";

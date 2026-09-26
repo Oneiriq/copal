@@ -348,10 +348,21 @@ pub async fn watch_events(
         conditions.push(surql::query::Condition::from(eq("action", action)));
     }
     let rows = store.watch_rows(EVENT_TABLE, conditions).await?;
-    Ok(rows.map(|item| {
-        let row = item?;
-        serde_json::from_value::<EventRow>(row).map_err(|e| {
-            copal_core::CopalError::Store(format!("watch_events: outbox row did not decode: {e}"))
+    // The outbox is append-only, so a row's creation IS the event. Later
+    // writes to it are bookkeeping (the webhook dispatcher marks it
+    // dispatched, retention deletes it), and relaying them handed the
+    // subscriber the same event again.
+    Ok(rows.filter_map(|item| {
+        futures::future::ready(match item {
+            Ok((crate::RowChange::Created, row)) => {
+                Some(serde_json::from_value::<EventRow>(row).map_err(|e| {
+                    copal_core::CopalError::Store(format!(
+                        "watch_events: outbox row did not decode: {e}"
+                    ))
+                }))
+            }
+            Ok(_) => None,
+            Err(error) => Some(Err(error)),
         })
     }))
 }

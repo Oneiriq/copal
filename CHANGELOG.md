@@ -9,6 +9,49 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ## [Unreleased]
 
+### Security
+
+- **The runs API starts only caller workflows.** `POST /v1/runs`, and
+  `runStart` on the GraphQL, MCP, and `/v1c` faces that share its
+  core, accepted any registered workflow with a caller-written input.
+  The built-in workflows (upload processing, fetch, transform, derive,
+  recall) act on the tenant, file, and digest their input names,
+  because the endpoints that enqueue them check those first. Started
+  through the runs API, they skipped every one of those checks, and a
+  key for one tenant could run them against another tenant's file.
+
+  Workflows are now server-only unless registered with
+  `caller_workflow`, and the runs API answers 403 for the rest.
+  Retrying a failed run of your own is unchanged. Behind that
+  refusal, the engine binds a run input's `tenant` to the tenant the
+  run was enqueued under before any step sees it, so no path that
+  enqueues a run can hand an activity another tenant's scope.
+
+- **URL fetch checks every hop it connects to.** The outbound policy
+  checked the URL a caller submitted, and the HTTP client then followed
+  up to ten redirects on its own, so a public URL that redirected to a
+  loopback, private, or cloud metadata address was fetched and stored.
+  Redirects are now followed by hand, at most five, and each hop meets
+  the policy before it is requested.
+
+  Two gaps closed with it. The policy split URLs by hand while the
+  client parsed them with the WHATWG rules, and the two disagreed on
+  some inputs about which host a URL names; the policy now parses with
+  the client's own parser, which also covers webhook targets. And a
+  checked name was resolved again by the client, so a DNS answer that
+  changed between the two was never checked; each fetch hop now
+  connects only to the addresses the policy approved.
+
+### Fixed
+
+- **A subscription delivers each event once.** `eventChanged` relayed
+  every live-query notification on the outbox, and the webhook
+  dispatcher marks each event dispatched after fanning it out, even
+  for a tenant with no endpoints. That update reached subscribers as
+  the same event a second time. The outbox is append-only, so the feed
+  now relays row creation only; retention deletes no longer reach it
+  either.
+
 ### Lifecycle and tiering
 
 - **Recall ships, and archive classes unlock.** An archive-class

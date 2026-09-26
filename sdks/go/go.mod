@@ -4,4 +4,4 @@
 // file names the tag to cut rather than editing anything here.
 module github.com/Oneiriq/copal-go
 
-go 1.22
+go 1.26

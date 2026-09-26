@@ -14,6 +14,7 @@
 //! and pipeline path as every other face, so scanning, dedupe, and
 //! versioning apply to S3 writes unchanged.
 
+mod listing;
 pub mod multipart;
 pub mod objects;
 pub mod sigv4;
@@ -33,6 +34,8 @@ use copal_store::repo::{file as file_repo, s3 as s3_repo};
 
 use crate::app::{finalize_new_content, forwarded_origin, remove_file_core, AppState};
 use crate::serve::{serve_blob, CacheClass, ServeSpec};
+
+use listing::list_objects;
 
 /// Gateway state: the application plus the master cipher that seals
 /// and opens credential secrets.
@@ -668,163 +671,6 @@ async fn head_bucket<B: BlobStore>(
         Ok(_) => StatusCode::OK.into_response(),
         Err(response) => response,
     }
-}
-
-/// ListObjectsV2 over the live-path index: lexicographic by key,
-/// prefix-filtered, keyset continuation on the last key returned.
-async fn list_objects<B: BlobStore>(
-    State(gateway): State<S3Gateway<B>>,
-    method: Method,
-    uri: Uri,
-    headers: HeaderMap,
-    Path(bucket): Path<String>,
-) -> Response {
-    let caller = match authorize_bucket(&gateway, &method, &uri, &headers, &bucket).await {
-        Ok(caller) => caller,
-        Err(response) => return response,
-    };
-    let tenant = &caller.tenant;
-    let params = parse_query(uri.query().unwrap_or_default());
-    // GetBucketLocation: minio-go asks before its first operation and
-    // treats a missing answer as a missing bucket. Signing accepts
-    // any region, so one region is as true as another.
-    if params.contains_key("location") {
-        return xml_response(
-            StatusCode::OK,
-            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>
-<LocationConstraint              xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">us-east-1</LocationConstraint>"
-                .to_owned(),
-        );
-    }
-    // `?uploads` on the bucket asks for open multipart sessions, not
-    // for objects.
-    if params.contains_key("uploads") {
-        return multipart::list_uploads(&gateway, tenant, &bucket).await;
-    }
-    // GetBucketVersioning has a true answer, so it gets one. The S3
-    // face exposes no versionIds, which is what an empty configuration
-    // states; copal's own version history lives on the REST face. Some
-    // clients probe this before their first transfer and treat a
-    // failure as a reason to stop.
-    if params.contains_key("versioning") {
-        return xml_response(
-            StatusCode::OK,
-            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
-             <VersioningConfiguration xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\" />"
-                .to_owned(),
-        );
-    }
-    if let Some(subresource) = unsupported_subresource(uri.query()) {
-        return not_implemented(subresource);
-    }
-    let prefix = params.get("prefix").cloned().unwrap_or_default();
-    let delimiter = params.get("delimiter").cloned().unwrap_or_default();
-    let max_keys = params
-        .get("max-keys")
-        .and_then(|raw| raw.parse::<i64>().ok())
-        .unwrap_or(1_000)
-        .clamp(1, 1_000);
-    let after = match params.get("continuation-token") {
-        Some(token) => match base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .decode(token)
-            .ok()
-            .and_then(|raw| String::from_utf8(raw).ok())
-        {
-            Some(path) => Some(path),
-            None => {
-                return xml_error(
-                    StatusCode::BAD_REQUEST,
-                    "InvalidArgument",
-                    "malformed continuation-token",
-                )
-            }
-        },
-        None => None,
-    };
-
-    let store = match caller.store(&gateway.app).await {
-        Ok(store) => store,
-        Err(response) => return response,
-    };
-    let rows =
-        match file_repo::list_by_path_prefix(&store, tenant, &prefix, after.as_deref(), max_keys)
-            .await
-        {
-            Ok(rows) => rows,
-            Err(err) => return copal_to_s3(err),
-        };
-    let truncated = rows.len() as i64 == max_keys;
-    let next_token = if truncated {
-        rows.last().map(|record| {
-            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(record.path.as_bytes())
-        })
-    } else {
-        None
-    };
-
-    // With a delimiter, keys sharing a segment collapse into
-    // CommonPrefixes; rows arrive in path order, so a last-seen check
-    // dedupes the group.
-    let mut contents = String::new();
-    let mut common = String::new();
-    let mut last_common: Option<String> = None;
-    let mut key_count = 0usize;
-    for record in &rows {
-        // An upload that died before finalize leaves a claim row with
-        // no content. GetObject answers NoSuchKey for it, so the
-        // listing must not name it either: a mirror that sees a
-        // zero-byte entry treats the key as present and wrong, and
-        // refuses to resume over it.
-        if !record.servable_content() {
-            continue;
-        }
-        let Some(remainder) = record.path.strip_prefix(prefix.as_str()) else {
-            continue;
-        };
-        if !delimiter.is_empty() {
-            if let Some(idx) = remainder.find(delimiter.as_str()) {
-                let group = format!("{}{}", prefix, &remainder[..idx + delimiter.len()]);
-                if last_common.as_deref() != Some(group.as_str()) {
-                    common.push_str(&format!(
-                        "<CommonPrefixes><Prefix>{}</Prefix></CommonPrefixes>",
-                        xml_escape(&group),
-                    ));
-                    last_common = Some(group);
-                    key_count += 1;
-                }
-                continue;
-            }
-        }
-        let etag = record
-            .digest
-            .as_ref()
-            .map(|digest| format!("&quot;{digest}&quot;"))
-            .unwrap_or_default();
-        contents.push_str(&format!(
-            "<Contents><Key>{}</Key><LastModified>{}</LastModified><ETag>{}</ETag><Size>{}</Size><StorageClass>STANDARD</StorageClass></Contents>",
-            xml_escape(&record.path),
-            xml_escape(&record.updated_at),
-            etag,
-            record.size_bytes.unwrap_or_default(),
-        ));
-        key_count += 1;
-    }
-
-    let continuation = next_token
-        .map(|token| format!("<NextContinuationToken>{token}</NextContinuationToken>"))
-        .unwrap_or_default();
-    let body = format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<ListBucketResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"><Name>{}</Name><Prefix>{}</Prefix><MaxKeys>{}</MaxKeys><KeyCount>{}</KeyCount><IsTruncated>{}</IsTruncated>{}{}{}</ListBucketResult>",
-        xml_escape(&bucket),
-        xml_escape(&prefix),
-        max_keys,
-        key_count,
-        truncated,
-        continuation,
-        contents,
-        common,
-    );
-    xml_response(StatusCode::OK, body)
 }
 
 /// PutObject: create or re-upload the file at the key, stream the

@@ -243,7 +243,11 @@ async fn append<B: BlobStore>(
     request: Request,
 ) -> Result<Response, ApiError> {
     require_version(request.headers())?;
-    let tenant = crate::auth::authenticate(&state, request.headers()).await?;
+    // Appending is a write, charged and scoped like the other tus
+    // routes.
+    let tenant =
+        crate::auth::authenticate_scoped(&state, request.headers(), crate::auth::Scope::Write, 1)
+            .await?;
 
     let content_type_ok = request
         .headers()

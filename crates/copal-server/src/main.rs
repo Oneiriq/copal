@@ -8,7 +8,7 @@ use copal_store::Store;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     init_tracing(std::env::var("COPAL_OTLP_ENDPOINT").ok().as_deref());
 
-    let mut config = Config::from_env();
+    let mut config = Config::from_env()?;
     // Custody answers before any store opens, because every backend
     // below takes its key from the resolved configuration.
     if let Some(addr) = config.kms_addr.clone() {

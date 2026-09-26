@@ -160,9 +160,22 @@ fn parse_flag(raw: &str) -> Option<bool> {
     }
 }
 
+/// Read `COPAL_AUTH_MODE`. Unset means the development default. A value
+/// that names no mode refuses, because falling back would put a
+/// deployment that asked for keys on trusted headers, where every
+/// caller names its own tenant.
+fn parse_auth_mode(raw: Option<&str>) -> Result<crate::auth::AuthMode, String> {
+    match raw {
+        None => Ok(crate::auth::AuthMode::default()),
+        Some(raw) => crate::auth::AuthMode::parse(raw)
+            .ok_or_else(|| format!("COPAL_AUTH_MODE must be header or keys, not {raw:?}")),
+    }
+}
+
 impl Config {
-    /// Read configuration from `COPAL_*` environment variables.
-    pub fn from_env() -> Self {
+    /// Read configuration from `COPAL_*` environment variables. A value
+    /// that would silently weaken authentication refuses instead.
+    pub fn from_env() -> Result<Self, String> {
         let username = std::env::var("COPAL_DB_USER").ok();
         let password = std::env::var("COPAL_DB_PASS").ok();
         // Development default: the compose SurrealDB with root/root.
@@ -170,7 +183,7 @@ impl Config {
             (None, None) => (Some("root".to_owned()), Some("root".to_owned())),
             pair => pair,
         };
-        Self {
+        Ok(Self {
             bind: env_or("COPAL_BIND", "127.0.0.1:8080"),
             admin_bind: std::env::var("COPAL_ADMIN_BIND").ok(),
             s3_bind: std::env::var("COPAL_S3_BIND").ok(),
@@ -210,10 +223,7 @@ impl Config {
             enforce_type_match: env_flag("COPAL_ENFORCE_TYPE_MATCH", false),
             auth: crate::auth::AuthConfig {
                 // "header" (development default until 1.0) or "keys".
-                mode: std::env::var("COPAL_AUTH_MODE")
-                    .ok()
-                    .and_then(|raw| crate::auth::AuthMode::parse(&raw))
-                    .unwrap_or_default(),
+                mode: parse_auth_mode(std::env::var("COPAL_AUTH_MODE").ok().as_deref())?,
                 admin_token: std::env::var("COPAL_ADMIN_TOKEN").ok(),
                 admin_token_previous: std::env::var("COPAL_ADMIN_TOKEN_PREVIOUS").ok(),
                 operator_header: std::env::var("COPAL_OPERATOR_HEADER").ok(),
@@ -276,7 +286,7 @@ impl Config {
                 tier_move_batch: env_parse("COPAL_TIER_MOVE_BATCH", 100),
                 tier_erase_grace_secs: env_parse("COPAL_TIER_ERASE_GRACE_SECS", 86_400),
             },
-        }
+        })
     }
 }
 
@@ -303,7 +313,28 @@ pub struct TransformerConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_flag;
+    use super::{parse_auth_mode, parse_flag};
+    use crate::auth::AuthMode;
+
+    #[test]
+    fn an_unknown_auth_mode_refuses_instead_of_trusting_headers() {
+        assert_eq!(parse_auth_mode(None), Ok(AuthMode::TrustedHeader));
+        assert_eq!(parse_auth_mode(Some("header")), Ok(AuthMode::TrustedHeader));
+        assert_eq!(parse_auth_mode(Some("keys")), Ok(AuthMode::ApiKeys));
+        for typo in ["Keys", "key", "api-keys", "", " keys"] {
+            let refusal = parse_auth_mode(Some(typo)).unwrap_err();
+            assert!(refusal.contains("COPAL_AUTH_MODE"), "{typo:?}: {refusal}");
+        }
+    }
+
+    #[test]
+    fn startup_configuration_refuses_an_unknown_auth_mode() {
+        // The only test in this binary that reads COPAL_AUTH_MODE.
+        std::env::set_var("COPAL_AUTH_MODE", "kyes");
+        let refusal = super::Config::from_env().unwrap_err();
+        std::env::remove_var("COPAL_AUTH_MODE");
+        assert!(refusal.contains("\"kyes\""), "{refusal}");
+    }
 
     #[test]
     fn switches_read_the_spellings_operators_write() {

@@ -456,3 +456,50 @@ async fn the_sweep_lease_elects_one_holder_at_a_time() {
         .await
         .unwrap());
 }
+
+/// Named residencies and tiers stage their writes too, so the sweep
+/// collects aged staging on every backend, not only the local one.
+#[tokio::test]
+async fn staging_sweep_covers_every_backend() {
+    let (_router, store, blobs, _local_dir) = stack().await;
+    let named_dir = tempfile::tempdir().unwrap();
+    let tier_dir = tempfile::tempdir().unwrap();
+    let mut residencies = copal_server::app::Residencies::local_only(blobs);
+    residencies.named.insert(
+        "eu".to_owned(),
+        ObjectStore::open(named_dir.path().to_str().unwrap()).unwrap(),
+    );
+    residencies.tiers.insert(
+        "eu".to_owned(),
+        std::collections::HashMap::from([(
+            "cold".to_owned(),
+            ObjectStore::open(tier_dir.path().to_str().unwrap()).unwrap(),
+        )]),
+    );
+
+    let old = ulid::Ulid::from_datetime(
+        std::time::SystemTime::now() - std::time::Duration::from_secs(7_200),
+    )
+    .to_string()
+    .to_lowercase();
+    let fresh = ulid::Ulid::new().to_string().to_lowercase();
+    let mut planted = Vec::new();
+    for dir in [&named_dir, &tier_dir] {
+        let staging = dir.path().join("staging");
+        std::fs::create_dir_all(&staging).unwrap();
+        std::fs::write(staging.join(&old), b"orphaned partial write").unwrap();
+        std::fs::write(staging.join(&fresh), b"in-flight write").unwrap();
+        planted.push(staging);
+    }
+
+    let config = SweepConfig {
+        staging_ttl_secs: 3_600,
+        ..SweepConfig::default()
+    };
+    let report = run_pass(&store, &residencies, &config).await;
+    assert_eq!(report.staging_removed, 2, "one aged entry per backend");
+    for staging in planted {
+        assert!(!staging.join(&old).exists(), "{}", staging.display());
+        assert!(staging.join(&fresh).exists(), "fresh staging must survive");
+    }
+}

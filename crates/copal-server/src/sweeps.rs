@@ -6,7 +6,8 @@
 //! 2. Drop rate windows that no longer count.
 //! 3. Discard abandoned S3 multipart and tus sessions with their
 //!    staged bytes.
-//! 4. Clear staging entries past their TTL. Aborted and oversize
+//! 4. Clear staging entries past their TTL on every backend: local,
+//!    each named residency, and each tier. Aborted and oversize
 //!    uploads leave inert staging garbage by design, and this is where
 //!    it leaves the disk.
 //! 5. Recount tenant usage, the cache the quota check reads.
@@ -137,12 +138,30 @@ pub async fn run_pass<B: BlobStore>(
         Err(err) => tracing::warn!(error = %err, "tus session sweep failed"),
     }
 
-    match blobs
-        .sweep_staging(Duration::from_secs(config.staging_ttl_secs))
-        .await
-    {
-        Ok(removed) => report.staging_removed = removed,
-        Err(err) => tracing::warn!(error = %err, "staging sweep failed"),
+    // Every backend stages its writes before landing them: uploads into
+    // a named residency, and the mover's copies into a tier. So every
+    // backend collects its own staging garbage, each on its own.
+    let staging_ttl = Duration::from_secs(config.staging_ttl_secs);
+    // Collected before the loop: a lazy chain of borrowing closures
+    // held across the awaits would keep this future from being Send.
+    let backends: Vec<(String, &B)> = std::iter::once(("local".to_owned(), blobs))
+        .chain(
+            residencies
+                .named
+                .iter()
+                .map(|(name, backend)| (name.clone(), backend)),
+        )
+        .chain(residencies.tiers.iter().flat_map(|(residency, tiers)| {
+            tiers
+                .iter()
+                .map(move |(tier, backend)| (format!("{residency}/{tier}"), backend))
+        }))
+        .collect();
+    for (name, backend) in backends {
+        match backend.sweep_staging(staging_ttl).await {
+            Ok(removed) => report.staging_removed += removed,
+            Err(err) => tracing::warn!(backend = %name, error = %err, "staging sweep failed"),
+        }
     }
 
     // The usage counter is a cache; this recount is what keeps a

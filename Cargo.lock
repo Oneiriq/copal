@@ -1064,12 +1064,10 @@ version = "0.1.0"
 dependencies = [
  "copal-core",
  "copal-store",
- "futures",
  "serde_json",
  "surrealdb",
  "tokio",
  "tracing",
- "ulid 3.0.0",
 ]
 
 [[package]]

@@ -68,7 +68,7 @@ pub async fn create_endpoint(
     if !target_url.starts_with("http://") && !target_url.starts_with("https://") {
         return Err(CopalError::validation("target_url must be http(s)"));
     }
-    let id = ulid::Ulid::new().to_string().to_ascii_lowercase();
+    let id = ulid::Ulid::generate().to_string().to_ascii_lowercase();
     let payload = json!({
         "tenant_id": tenant.as_str(),
         "target_url": target_url,
@@ -391,7 +391,7 @@ pub async fn create_delivery(
     event_id: &str,
     endpoint_id: &str,
 ) -> copal_core::Result<bool> {
-    let id = ulid::Ulid::new().to_string().to_ascii_lowercase();
+    let id = ulid::Ulid::generate().to_string().to_ascii_lowercase();
     let event_rid = rid(EVENT_TABLE, event_id)?;
     let endpoint_rid = rid(ENDPOINT_TABLE, endpoint_id)?;
     let payload = json!({ "tenant_id": tenant });
@@ -641,7 +641,7 @@ pub async fn emit_event(
     action: &str,
     payload: Value,
 ) -> copal_core::Result<()> {
-    let id = ulid::Ulid::new().to_string().to_ascii_lowercase();
+    let id = ulid::Ulid::generate().to_string().to_ascii_lowercase();
     let event_rid = rid(EVENT_TABLE, &id)?;
     let body = serde_json::json!({
         "tenant_id": tenant.as_str(),

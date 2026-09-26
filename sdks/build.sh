@@ -44,7 +44,7 @@ PYTHONDONTWRITEBYTECODE=1 python -m py_compile "$dist/python/copal.py"
 (cd "$dist/python" && python -c "import copal")
 
 echo "validating typescript"
-(cd "$dist/typescript" && npx -y -p typescript@5 tsc --noEmit)
+(cd "$dist/typescript" && npx -y -p typescript@7 tsc --noEmit)
 
 echo "validating go"
 (cd "$dist/go" && go build ./... && go vet ./...)

@@ -23,9 +23,10 @@ pub enum TierClass {
     /// Azure Cool). No face changes; no recall machinery exists.
     Online,
     /// A GET cannot answer until a restore (Glacier Flexible and Deep
-    /// Archive, Azure Archive). Refused at configuration until recall
-    /// ships: no deployment may strand bytes behind a GET nothing
-    /// answers.
+    /// Archive, Azure Archive). A recall drives the restore. Backends
+    /// whose rehydration this build does not drive refuse the class
+    /// at configuration, so no deployment strands bytes behind a GET
+    /// nothing answers.
     Archive,
 }
 

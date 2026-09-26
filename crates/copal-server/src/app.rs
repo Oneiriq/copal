@@ -263,7 +263,7 @@ impl<B: BlobStore> AppState<B> {
             residencies: Residencies::local_only(blobs.clone()),
             blobs,
             limits: Limits::default(),
-            instance_id: ulid::Ulid::new().to_string().to_ascii_lowercase(),
+            instance_id: ulid::Ulid::generate().to_string().to_ascii_lowercase(),
             auth: crate::auth::AuthConfig::default(),
             scan_gates_serving: false,
             embedding: None,
@@ -323,13 +323,13 @@ impl<B: BlobStore> AppState<B> {
         })
     }
 
-    /// Install the embedding service semantic search asks.
     /// Point search at a reranking service.
     pub fn with_reranker(mut self, reranker: Option<crate::rerank::Reranker>) -> Self {
         self.reranker = reranker;
         self
     }
 
+    /// Install the embedding service semantic search asks.
     pub fn with_embedding(mut self, embedding: Option<(String, String)>) -> Self {
         self.embedding = embedding;
         self
@@ -358,26 +358,16 @@ impl<B: BlobStore> AppState<B> {
     /// rule would withhold even though that content was scanned.
     /// Comparing digests answers both.
     pub(crate) fn withholds_pending_scan(&self, record: &copal_core::FileRecord) -> bool {
-        if !self.scan_gates_serving {
-            return false;
-        }
-        let Some(digest) = record.digest.as_ref() else {
-            return true;
-        };
-        record
-            .metadata
-            .get("processing")
-            .and_then(|p| p.get("scanned_digest"))
-            .and_then(|v| v.as_str())
-            != Some(digest.as_str())
+        self.scan_gates_serving && !crate::pipeline::content_cleared(record)
     }
 
-    /// Install a populated activity/workflow registry.
+    /// Install the store configuration the console's fleet view walks.
     pub fn with_fleet(mut self, fleet: Option<copal_store::StoreConfig>) -> Self {
         self.fleet = fleet;
         self
     }
 
+    /// Install the named external transformers.
     pub fn with_transformers(
         mut self,
         transformers: std::collections::HashMap<String, crate::config::TransformerConfig>,
@@ -386,6 +376,7 @@ impl<B: BlobStore> AppState<B> {
         self
     }
 
+    /// Install a populated activity/workflow registry.
     pub fn with_flow(mut self, registry: FlowRegistry) -> Self {
         self.flow = FlowEngine::new(self.store.clone(), registry);
         self
@@ -468,10 +459,7 @@ impl<B: BlobStore> AppState<B> {
         let quota = tenant_repo::get_quota(&self.store, tenant).await?;
         // The counter is the cheap read; the aggregate initializes it
         // once per tenant and the sweep keeps it honest thereafter.
-        let (used, _) = match tenant_repo::cached_usage(&self.store, tenant).await? {
-            Some(cached) => cached,
-            None => tenant_repo::reconcile_usage(&self.store, tenant).await?,
-        };
+        let (used, _) = tenant_repo::usage_counter(&self.store, tenant).await?;
         let Some(quota) = quota else {
             // No ceiling: still account the bytes so the counter stays
             // usable the moment a quota is set.
@@ -830,9 +818,9 @@ struct SearchQuery {
     content_type: Option<String>,
     #[serde(default)]
     cursor: Option<String>,
-    /// Fields to count the match set by, comma separated.
-    #[serde(default)]
-    facets: Option<String>,
+    // `facets` is read from the raw pairs instead: the contract
+    // declares a list, which arrives as the key repeated, and a
+    // repeated key would refuse this whole struct.
 }
 
 /// Search a tenant's extracted text.
@@ -1057,8 +1045,17 @@ async fn search_text<B: BlobStore>(
     State(state): State<AppState<B>>,
     headers: HeaderMap,
     axum::extract::Query(params): axum::extract::Query<SearchQuery>,
+    axum::extract::Query(pairs): axum::extract::Query<Vec<(String, String)>>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let limit = params.limit.unwrap_or(20).clamp(1, 100);
+    // Fields to count the match set by: the key repeated, each value
+    // one name or several comma separated.
+    let facets: Vec<&str> = pairs
+        .iter()
+        .filter(|(key, _)| key == "facets")
+        .map(|(_, value)| value.as_str())
+        .collect();
+    let facets = (!facets.is_empty()).then(|| facets.join(","));
     let auth =
         crate::auth::authorize_scoped(&state, &headers, crate::auth::Scope::Read, limit as u64)
             .await?;
@@ -1075,7 +1072,7 @@ async fn search_text<B: BlobStore>(
         limit,
         &filters,
         params.cursor.as_deref(),
-        params.facets.as_deref(),
+        facets.as_deref(),
     )
     .await?;
     Ok(Json(answer))
@@ -1141,10 +1138,7 @@ async fn tenant_usage<B: BlobStore>(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let auth = crate::auth::authorize_scoped(&state, &headers, crate::auth::Scope::Read, 1).await?;
     let tenant = &auth.tenant;
-    let (bytes, files) = match copal_store::repo::tenant::cached_usage(&auth.store, tenant).await? {
-        Some(cached) => cached,
-        None => copal_store::repo::tenant::reconcile_usage(&auth.store, tenant).await?,
-    };
+    let (bytes, files) = copal_store::repo::tenant::usage_counter(&auth.store, tenant).await?;
     let quota = copal_store::repo::tenant::get_quota(&auth.store, tenant).await?;
     // Retained bytes ride beside the total so a tenant can tell
     // "full" apart from "full of things I may not remove".
@@ -2488,16 +2482,14 @@ async fn get_rendition<B: BlobStore>(
     )
     .await?;
     file_repo::claim_upload(&state.store, &tenant, &derived.id, "derive-inline", 900).await?;
-    let finished = completion_repo::complete_upload(
+    let finished = crate::pipeline::complete_rendition(
         &state.store,
         &tenant,
         &derived.id,
         &residency,
-        &stored.digest,
-        stored.size_bytes,
-        "derive",
-        copal_core::FileState::Ready,
-        None,
+        &stored,
+        &source_digest,
+        crate::pipeline::content_cleared(&source),
     )
     .await?;
     crate::metrics::incr("copal_renditions_inline_total");
@@ -2838,6 +2830,11 @@ pub(crate) async fn request_rendition_core<B: BlobStore>(
         .ok_or_else(|| CopalError::not_found(format!("file {id}")))?;
     if !source.servable_content() {
         return Err(CopalError::conflict("source has no served content").into());
+    }
+    // A rendition inherits its source's clearance, so a source still
+    // awaiting its scan has none to pass on.
+    if state.withholds_pending_scan(&source) {
+        return Err(CopalError::conflict("content is awaiting a malware scan").into());
     }
     if !source.content_type.starts_with("image/") {
         return Err(CopalError::validation("renditions require an image source").into());
@@ -3696,7 +3693,9 @@ async fn redeem_grant<B: BlobStore>(
     let record = file_repo::get_file(&state.store, &tenant, &file_id)
         .await?
         .ok_or_else(refused)?;
-    if !record.servable_content() {
+    // Content that replaced the file after issuance waits for its own
+    // scan, like every other read, and the wait burns no use.
+    if !record.servable_content() || state.withholds_pending_scan(&record) {
         return Err(refused().into());
     }
     let digest = record.digest.as_ref().ok_or_else(refused)?;
@@ -3855,8 +3854,11 @@ pub(crate) async fn events_page(
 }
 
 /// The change feed on the REST face: replay forward from a cursor
-/// with `order=asc`, or page backward through history with the
-/// default newest-first order.
+/// with `sort=created_at`, or page backward through history with the
+/// default newest-first order. `sort` is the parameter the contract
+/// declares and every other listing takes. `order=asc|desc` is the
+/// feed's older spelling, still read so existing consumers keep their
+/// direction.
 async fn list_tenant_events<B: BlobStore>(
     State(state): State<AppState<B>>,
     headers: HeaderMap,
@@ -3867,15 +3869,30 @@ async fn list_tenant_events<B: BlobStore>(
         crate::auth::authorize_scoped(&state, &headers, crate::auth::Scope::Read, limit as u64)
             .await?;
     crate::metrics::incr("copal_feed_reads_total");
-    let ascending = match params.order.as_deref() {
-        None | Some("desc") => false,
-        Some("asc") => true,
+    let by_sort = match params.sort.as_deref() {
+        None => None,
+        Some("-created_at") => Some(false),
+        Some("created_at") => Some(true),
+        Some(other) => {
+            return Err(CopalError::validation(format!("unknown sort {other:?}")).into());
+        }
+    };
+    let by_order = match params.order.as_deref() {
+        None => None,
+        Some("desc") => Some(false),
+        Some("asc") => Some(true),
         Some(other) => {
             return Err(CopalError::validation(
                 format!("order must be asc or desc, got {other:?}",),
             )
             .into())
         }
+    };
+    let ascending = match (by_sort, by_order) {
+        (Some(sort), Some(order)) if sort != order => {
+            return Err(CopalError::validation("sort and order name opposite directions").into());
+        }
+        (sort, order) => sort.or(order).unwrap_or(false),
     };
     let (items, next_cursor) = events_page(
         &auth.store,
@@ -3897,6 +3914,8 @@ struct EventFeedQuery {
     cursor: Option<String>,
     #[serde(default)]
     action: Option<String>,
+    #[serde(default)]
+    sort: Option<String>,
     #[serde(default)]
     order: Option<String>,
 }
@@ -3945,6 +3964,33 @@ pub(crate) async fn list_versions_page(
     ))
 }
 
+/// Whether a version's bytes were cleared by a scan. The current
+/// content answers through the record. An older version answers
+/// through the snapshot its successor took at completion: that
+/// snapshot is the metadata the older bytes left behind, processing
+/// verdict included, and a version replaced before its scan finished
+/// left no verdict naming its digest.
+async fn version_cleared<B: BlobStore>(
+    state: &AppState<B>,
+    store: &Store,
+    tenant: &TenantId,
+    record: &copal_core::FileRecord,
+    version: &copal_core::FileVersion,
+) -> Result<bool, ApiError> {
+    if record.digest.as_ref() == Some(&version.digest) {
+        return Ok(!state.withholds_pending_scan(record));
+    }
+    let successor =
+        version_repo::get_version(store, tenant, &record.id, version.number + 1).await?;
+    Ok(successor.is_some_and(|next| {
+        next.metadata_snapshot
+            .get("processing")
+            .and_then(|p| p.get("scanned_digest"))
+            .and_then(|v| v.as_str())
+            == Some(version.digest.as_str())
+    }))
+}
+
 /// Serve one historical version's bytes.
 async fn download_version<B: BlobStore>(
     State(state): State<AppState<B>>,
@@ -3977,6 +4023,11 @@ async fn download_version<B: BlobStore>(
             "this version's content failed processing and is not servable",
         )
         .into());
+    }
+    if state.scan_gates_serving
+        && !version_cleared(&state, &auth.store, tenant, &record, &version).await?
+    {
+        return Err(CopalError::conflict("content is awaiting a malware scan").into());
     }
     let backend = match state
         .residencies

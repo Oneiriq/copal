@@ -934,7 +934,7 @@ async fn the_engine_second_layer_withholds_chunks_on_its_own() {
     let token = copal_server::engine::mint_caller_token(
         &access,
         &tenant,
-        &ulid::Ulid::new().to_string().to_ascii_lowercase(),
+        &ulid::Ulid::generate().to_string().to_ascii_lowercase(),
         &["read".to_owned()],
         None,
     );

@@ -192,7 +192,7 @@ pub async fn record_audit(
     origin: Option<&str>,
     detail: Option<Value>,
 ) -> copal_core::Result<()> {
-    let id = ulid::Ulid::new().to_string().to_ascii_lowercase();
+    let id = ulid::Ulid::generate().to_string().to_ascii_lowercase();
     let rid =
         RecordID::<()>::new("audit_event", id.as_str()).map_err(|e| map_store_err("audit", e))?;
     let mut payload = serde_json::Map::new();

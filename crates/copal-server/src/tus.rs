@@ -14,7 +14,6 @@
 //! client resumes; abandoned sessions are swept with their staged
 //! bytes after the session TTL, and the claimed file fails retryably.
 
-use axum::body::Body;
 use axum::extract::{Path, Request, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -183,7 +182,10 @@ async fn create_session<B: BlobStore>(
     )
     .await?;
 
-    let staging_key = format!("tus/{}", ulid::Ulid::new().to_string().to_ascii_lowercase());
+    let staging_key = format!(
+        "tus/{}",
+        ulid::Ulid::generate().to_string().to_ascii_lowercase()
+    );
     let session_id = tus_repo::create_session(
         &auth.store,
         tenant,
@@ -241,7 +243,11 @@ async fn append<B: BlobStore>(
     request: Request,
 ) -> Result<Response, ApiError> {
     require_version(request.headers())?;
-    let tenant = crate::auth::authenticate(&state, request.headers()).await?;
+    // Appending is a write, charged and scoped like the other tus
+    // routes.
+    let tenant =
+        crate::auth::authenticate_scoped(&state, request.headers(), crate::auth::Scope::Write, 1)
+            .await?;
 
     let content_type_ok = request
         .headers()
@@ -452,7 +458,3 @@ pub async fn sweep_expired<B: BlobStore>(
     }
     Ok(swept)
 }
-
-// Body type appears in the router signature through axum's generics.
-#[allow(dead_code)]
-fn _assert_body(_: Body) {}

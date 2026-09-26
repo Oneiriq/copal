@@ -14,6 +14,7 @@
 //! and pipeline path as every other face, so scanning, dedupe, and
 //! versioning apply to S3 writes unchanged.
 
+mod listing;
 pub mod multipart;
 pub mod objects;
 pub mod sigv4;
@@ -33,6 +34,8 @@ use copal_store::repo::{file as file_repo, s3 as s3_repo};
 
 use crate::app::{finalize_new_content, forwarded_origin, remove_file_core, AppState};
 use crate::serve::{serve_blob, CacheClass, ServeSpec};
+
+use listing::list_objects;
 
 /// Gateway state: the application plus the master cipher that seals
 /// and opens credential secrets.
@@ -180,16 +183,16 @@ async fn restore_object<B: BlobStore>(
 ) -> Response {
     let caller = match authorize_bucket(&gateway, &method, &uri, &headers, &bucket).await {
         Ok(caller) => caller,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let tenant = &caller.tenant;
     let store = match caller.store(&gateway.app).await {
         Ok(store) => store,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let record = match lookup_servable(&store, tenant, &key).await {
         Ok(record) => record,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     match gateway.app.resolve_record(&record).await {
         // Already readable: nothing to restore.
@@ -309,7 +312,6 @@ pub(crate) fn xml_response(status: StatusCode, body: String) -> Response {
     (status, [(header::CONTENT_TYPE, "application/xml")], body).into_response()
 }
 
-/// Map an internal error onto the S3 error envelope.
 /// A claim refused because the previous upload to this key is still
 /// finishing (uploading, or being scanned and indexed).
 ///
@@ -426,6 +428,7 @@ pub(crate) async fn conditional_refusal<B: BlobStore>(
     claim_refusal(state, tenant, id, err).await
 }
 
+/// Map an internal error onto the S3 error envelope.
 pub(crate) fn copal_to_s3(err: CopalError) -> Response {
     match err {
         CopalError::NotFound(msg) => xml_error(StatusCode::NOT_FOUND, "NoSuchKey", &msg),
@@ -469,25 +472,25 @@ async fn authenticate<B: BlobStore>(
     method: &Method,
     uri: &Uri,
     headers: &HeaderMap,
-) -> Result<(TenantId, String, Option<String>), Response> {
+) -> Result<(TenantId, String, Option<String>), Box<Response>> {
     let auth = sigv4::parse_authorization(headers)
         .map_err(|e| xml_error(StatusCode::FORBIDDEN, "AccessDenied", &e.to_string()))?;
     let row = s3_repo::fetch_credential(&gateway.app.store, &auth.access_key_id)
         .await
         .map_err(copal_to_s3)?;
     let Some(row) = row else {
-        return Err(xml_error(
+        return Err(Box::new(xml_error(
             StatusCode::FORBIDDEN,
             "InvalidAccessKeyId",
             "unknown access key",
-        ));
+        )));
     };
     if row.revoked_at.is_some() {
-        return Err(xml_error(
+        return Err(Box::new(xml_error(
             StatusCode::FORBIDDEN,
             "InvalidAccessKeyId",
             "credential revoked",
-        ));
+        )));
     }
     let sealed = base64::engine::general_purpose::STANDARD
         .decode(&row.secret_sealed)
@@ -500,7 +503,7 @@ async fn authenticate<B: BlobStore>(
         })?;
     let cipher = match gateway.app.require_cipher() {
         Ok(cipher) => cipher,
-        Err(err) => return Err(copal_to_s3(err.0)),
+        Err(err) => return Err(Box::new(copal_to_s3(err.0))),
     };
     let secret_bytes = cipher.open(&sealed).map_err(|_| {
         xml_error(
@@ -546,11 +549,11 @@ async fn authenticate<B: BlobStore>(
                     xml_error(StatusCode::FORBIDDEN, "AccessDenied", "credentials refused")
                 })?;
         if principal.disabled_at.is_some() {
-            return Err(xml_error(
+            return Err(Box::new(xml_error(
                 StatusCode::FORBIDDEN,
                 "AccessDenied",
                 "credentials refused",
-            ));
+            )));
         }
         principal_handle = Some(principal.handle);
     }
@@ -580,16 +583,16 @@ impl S3Caller {
     pub(crate) async fn store<B: BlobStore>(
         &self,
         state: &AppState<B>,
-    ) -> Result<copal_store::Store, Response> {
+    ) -> Result<copal_store::Store, Box<Response>> {
         if !state.engine_sessions {
             return Ok(state.store.clone());
         }
         let Some(access) = state.engine_access.as_ref() else {
-            return Err(xml_error(
+            return Err(Box::new(xml_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "InternalError",
                 "engine sessions are on without an access key",
-            ));
+            )));
         };
         let scopes = ["read".to_owned(), "write".to_owned()];
         let cache_key = crate::session_cache::SessionCache::key(
@@ -621,14 +624,14 @@ pub(crate) async fn authorize_bucket<B: BlobStore>(
     uri: &Uri,
     headers: &HeaderMap,
     bucket: &str,
-) -> Result<S3Caller, Response> {
+) -> Result<S3Caller, Box<Response>> {
     let (tenant, key_id, principal) = authenticate(gateway, method, uri, headers).await?;
     if tenant.as_str() != bucket {
-        return Err(xml_error(
+        return Err(Box::new(xml_error(
             StatusCode::FORBIDDEN,
             "AccessDenied",
             "bucket does not belong to this credential",
-        ));
+        )));
     }
     Ok(S3Caller {
         tenant,
@@ -647,7 +650,7 @@ async fn list_buckets<B: BlobStore>(
     let (tenant, _key_id, _principal) = match authenticate(&gateway, &method, &uri, &headers).await
     {
         Ok(identified) => identified,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let body = format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<ListAllMyBucketsResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"><Owner><ID>{id}</ID><DisplayName>{id}</DisplayName></Owner><Buckets><Bucket><Name>{id}</Name><CreationDate>1970-01-01T00:00:00.000Z</CreationDate></Bucket></Buckets></ListAllMyBucketsResult>",
@@ -666,165 +669,8 @@ async fn head_bucket<B: BlobStore>(
 ) -> Response {
     match authorize_bucket(&gateway, &method, &uri, &headers, &bucket).await {
         Ok(_) => StatusCode::OK.into_response(),
-        Err(response) => response,
+        Err(response) => *response,
     }
-}
-
-/// ListObjectsV2 over the live-path index: lexicographic by key,
-/// prefix-filtered, keyset continuation on the last key returned.
-async fn list_objects<B: BlobStore>(
-    State(gateway): State<S3Gateway<B>>,
-    method: Method,
-    uri: Uri,
-    headers: HeaderMap,
-    Path(bucket): Path<String>,
-) -> Response {
-    let caller = match authorize_bucket(&gateway, &method, &uri, &headers, &bucket).await {
-        Ok(caller) => caller,
-        Err(response) => return response,
-    };
-    let tenant = &caller.tenant;
-    let params = parse_query(uri.query().unwrap_or_default());
-    // GetBucketLocation: minio-go asks before its first operation and
-    // treats a missing answer as a missing bucket. Signing accepts
-    // any region, so one region is as true as another.
-    if params.contains_key("location") {
-        return xml_response(
-            StatusCode::OK,
-            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>
-<LocationConstraint              xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">us-east-1</LocationConstraint>"
-                .to_owned(),
-        );
-    }
-    // `?uploads` on the bucket asks for open multipart sessions, not
-    // for objects.
-    if params.contains_key("uploads") {
-        return multipart::list_uploads(&gateway, tenant, &bucket).await;
-    }
-    // GetBucketVersioning has a true answer, so it gets one. The S3
-    // face exposes no versionIds, which is what an empty configuration
-    // states; copal's own version history lives on the REST face. Some
-    // clients probe this before their first transfer and treat a
-    // failure as a reason to stop.
-    if params.contains_key("versioning") {
-        return xml_response(
-            StatusCode::OK,
-            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
-             <VersioningConfiguration xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\" />"
-                .to_owned(),
-        );
-    }
-    if let Some(subresource) = unsupported_subresource(uri.query()) {
-        return not_implemented(subresource);
-    }
-    let prefix = params.get("prefix").cloned().unwrap_or_default();
-    let delimiter = params.get("delimiter").cloned().unwrap_or_default();
-    let max_keys = params
-        .get("max-keys")
-        .and_then(|raw| raw.parse::<i64>().ok())
-        .unwrap_or(1_000)
-        .clamp(1, 1_000);
-    let after = match params.get("continuation-token") {
-        Some(token) => match base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .decode(token)
-            .ok()
-            .and_then(|raw| String::from_utf8(raw).ok())
-        {
-            Some(path) => Some(path),
-            None => {
-                return xml_error(
-                    StatusCode::BAD_REQUEST,
-                    "InvalidArgument",
-                    "malformed continuation-token",
-                )
-            }
-        },
-        None => None,
-    };
-
-    let store = match caller.store(&gateway.app).await {
-        Ok(store) => store,
-        Err(response) => return response,
-    };
-    let rows =
-        match file_repo::list_by_path_prefix(&store, tenant, &prefix, after.as_deref(), max_keys)
-            .await
-        {
-            Ok(rows) => rows,
-            Err(err) => return copal_to_s3(err),
-        };
-    let truncated = rows.len() as i64 == max_keys;
-    let next_token = if truncated {
-        rows.last().map(|record| {
-            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(record.path.as_bytes())
-        })
-    } else {
-        None
-    };
-
-    // With a delimiter, keys sharing a segment collapse into
-    // CommonPrefixes; rows arrive in path order, so a last-seen check
-    // dedupes the group.
-    let mut contents = String::new();
-    let mut common = String::new();
-    let mut last_common: Option<String> = None;
-    let mut key_count = 0usize;
-    for record in &rows {
-        // An upload that died before finalize leaves a claim row with
-        // no content. GetObject answers NoSuchKey for it, so the
-        // listing must not name it either: a mirror that sees a
-        // zero-byte entry treats the key as present and wrong, and
-        // refuses to resume over it.
-        if !record.servable_content() {
-            continue;
-        }
-        let Some(remainder) = record.path.strip_prefix(prefix.as_str()) else {
-            continue;
-        };
-        if !delimiter.is_empty() {
-            if let Some(idx) = remainder.find(delimiter.as_str()) {
-                let group = format!("{}{}", prefix, &remainder[..idx + delimiter.len()]);
-                if last_common.as_deref() != Some(group.as_str()) {
-                    common.push_str(&format!(
-                        "<CommonPrefixes><Prefix>{}</Prefix></CommonPrefixes>",
-                        xml_escape(&group),
-                    ));
-                    last_common = Some(group);
-                    key_count += 1;
-                }
-                continue;
-            }
-        }
-        let etag = record
-            .digest
-            .as_ref()
-            .map(|digest| format!("&quot;{digest}&quot;"))
-            .unwrap_or_default();
-        contents.push_str(&format!(
-            "<Contents><Key>{}</Key><LastModified>{}</LastModified><ETag>{}</ETag><Size>{}</Size><StorageClass>STANDARD</StorageClass></Contents>",
-            xml_escape(&record.path),
-            xml_escape(&record.updated_at),
-            etag,
-            record.size_bytes.unwrap_or_default(),
-        ));
-        key_count += 1;
-    }
-
-    let continuation = next_token
-        .map(|token| format!("<NextContinuationToken>{token}</NextContinuationToken>"))
-        .unwrap_or_default();
-    let body = format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<ListBucketResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\"><Name>{}</Name><Prefix>{}</Prefix><MaxKeys>{}</MaxKeys><KeyCount>{}</KeyCount><IsTruncated>{}</IsTruncated>{}{}{}</ListBucketResult>",
-        xml_escape(&bucket),
-        xml_escape(&prefix),
-        max_keys,
-        key_count,
-        truncated,
-        continuation,
-        contents,
-        common,
-    );
-    xml_response(StatusCode::OK, body)
 }
 
 /// PutObject: create or re-upload the file at the key, stream the
@@ -845,7 +691,7 @@ async fn put_object<B: BlobStore>(
     .await
     {
         Ok(caller) => caller,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let tenant = &caller.tenant;
     let state = &gateway.app;
@@ -1036,17 +882,22 @@ async fn get_object<B: BlobStore>(
 ) -> Response {
     let caller = match authorize_bucket(&gateway, &method, &uri, &headers, &bucket).await {
         Ok(caller) => caller,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let tenant = &caller.tenant;
     let store = match caller.store(&gateway.app).await {
         Ok(store) => store,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let record = match lookup_servable(&store, tenant, &key).await {
         Ok(record) => record,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
+    // The same gate the REST face applies: bytes no scanner has
+    // cleared do not serve.
+    if gateway.app.withholds_pending_scan(&record) {
+        return copal_to_s3(CopalError::conflict("content is awaiting a malware scan"));
+    }
     let digest = record.digest.as_ref().expect("servable implies digest");
     // AWS's own vocabulary for exactly this: an archived object's GET
     // refuses with InvalidObjectState, and the client speaks
@@ -1111,16 +962,16 @@ async fn head_object<B: BlobStore>(
 ) -> Response {
     let caller = match authorize_bucket(&gateway, &method, &uri, &headers, &bucket).await {
         Ok(caller) => caller,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let tenant = &caller.tenant;
     let store = match caller.store(&gateway.app).await {
         Ok(store) => store,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let record = match lookup_servable(&store, tenant, &key).await {
         Ok(record) => record,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let digest = record.digest.as_ref().expect("servable implies digest");
     let mut response = (
@@ -1165,24 +1016,24 @@ pub(crate) async fn lookup_servable(
     store: &copal_store::Store,
     tenant: &TenantId,
     key: &str,
-) -> Result<copal_core::FileRecord, Response> {
+) -> Result<copal_core::FileRecord, Box<Response>> {
     let record = file_repo::find_by_path(store, tenant, key)
         .await
         .map_err(copal_to_s3)?
         .ok_or_else(|| xml_error(StatusCode::NOT_FOUND, "NoSuchKey", "no such key"))?;
     if !record.servable_content() {
-        return Err(xml_error(
+        return Err(Box::new(xml_error(
             StatusCode::NOT_FOUND,
             "NoSuchKey",
             "no served content at this key",
-        ));
+        )));
     }
     if record.access == AccessLevel::Grant {
-        return Err(xml_error(
+        return Err(Box::new(xml_error(
             StatusCode::FORBIDDEN,
             "AccessDenied",
             "grant-access content is served through grants only",
-        ));
+        )));
     }
     Ok(record)
 }
@@ -1198,12 +1049,12 @@ async fn delete_object<B: BlobStore>(
 ) -> Response {
     let caller = match authorize_bucket(&gateway, &method, &uri, &headers, &bucket).await {
         Ok(caller) => caller,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let tenant = &caller.tenant;
     let store = match caller.store(&gateway.app).await {
         Ok(store) => store,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     match file_repo::find_by_path(&store, tenant, &key).await {
         Ok(Some(record)) => {
@@ -1396,7 +1247,7 @@ async fn mint_credential<B: BlobStore>(
     Path(tenant): Path<String>,
     body: Option<axum::Json<MintCredentialRequest>>,
 ) -> Result<(StatusCode, axum::Json<serde_json::Value>), crate::error::ApiError> {
-    crate::auth::require_admin(&gateway.app, &headers)?;
+    let operator = crate::auth::require_admin(&gateway.app, &headers)?;
     let tenant = TenantId::parse(&tenant)?;
     let request = body.map(|b| b.0).unwrap_or_default();
     // A credential under a principal answers to it: the gateway
@@ -1446,7 +1297,7 @@ async fn mint_credential<B: BlobStore>(
     copal_store::repo::auth::record_audit(
         &gateway.app.store,
         &tenant,
-        "admin",
+        operator.as_str(),
         "s3credential.minted",
         &row.access_key_id(),
         forwarded_origin(&headers).as_deref(),
@@ -1482,7 +1333,7 @@ async fn revoke_credential<B: BlobStore>(
     headers: HeaderMap,
     Path((tenant, access_key_id)): Path<(String, String)>,
 ) -> Result<StatusCode, crate::error::ApiError> {
-    crate::auth::require_admin(&gateway.app, &headers)?;
+    let operator = crate::auth::require_admin(&gateway.app, &headers)?;
     let tenant = TenantId::parse(&tenant)?;
     if !s3_repo::revoke_credential(&gateway.app.store, &tenant, &access_key_id).await? {
         return Err(CopalError::not_found(format!("credential {access_key_id}")).into());
@@ -1490,7 +1341,7 @@ async fn revoke_credential<B: BlobStore>(
     copal_store::repo::auth::record_audit(
         &gateway.app.store,
         &tenant,
-        "admin",
+        operator.as_str(),
         "s3credential.revoked",
         &access_key_id,
         forwarded_origin(&headers).as_deref(),

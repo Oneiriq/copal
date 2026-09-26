@@ -1,6 +1,6 @@
 //! The standard post-upload pipeline.
 //!
-//! Three activities over the flow engine; this is the durable-journal
+//! Six activities over the flow engine. This is the durable-journal
 //! replacement for the predecessor's blob-created orchestration, using
 //! nothing but Copal's own planes:
 //!
@@ -8,7 +8,14 @@
 //!    content type; record declared vs sniffed.
 //! 2. `extension_policy`: check the path against the blocked-extension
 //!    denylist; record the verdict.
-//! 3. `finalize_upload`: one CAS moves `scanning -> ready` (clean) or
+//! 3. `scan_malware`: ask clamd for a verdict when one is configured,
+//!    and record that no scanner ran when none is. A blocked verdict
+//!    from an earlier step stands.
+//! 4. `extract_text`: pull searchable text and its passages from the
+//!    scanned content.
+//! 5. `embed_text`: embed the passages when an embedding service is
+//!    configured.
+//! 6. `finalize_upload`: one CAS moves `scanning -> ready` (clean) or
 //!    `scanning -> quarantined` (blocked), annotating
 //!    `metadata.processing` atomically with the transition. Quarantine
 //!    is terminal-until-delete: content and grants refuse via the
@@ -23,6 +30,9 @@
 //! finish the pre-created derived file through the standard claim and
 //! complete path. Refusals (not an image, too large) fail the derived
 //! record and complete the run; only infrastructure errors retry.
+//! Beside it sit `transform_external` for operator transformers,
+//! `fetch_source` for URL ingestion, and the tier recall activities
+//! from [`crate::recall`].
 
 use futures::StreamExt as _;
 use serde_json::{json, Value};
@@ -42,6 +52,13 @@ mod fetch;
 pub use fetch::{fetch_run_key, FetchPolicy};
 
 use fetch::fetch_source;
+
+// The derivatives activity, split out by size alone.
+mod rendition;
+
+pub(crate) use rendition::{complete_rendition, render_image};
+
+use rendition::render_rendition;
 
 /// The derivatives workflow key.
 pub const DERIVE_WORKFLOW: &str = "derive";
@@ -90,6 +107,20 @@ pub fn derive_run_key(derived: &FileId, source_digest: &ContentDigest, params: &
 
 /// The workflow key the server enqueues after uploads when configured.
 pub const UPLOAD_WORKFLOW: &str = "post_upload";
+
+/// Whether the digest a record serves is the one its processing
+/// cleared. The scan gate withholds content for which this is false.
+pub(crate) fn content_cleared(record: &copal_core::FileRecord) -> bool {
+    let Some(digest) = record.digest.as_ref() else {
+        return false;
+    };
+    record
+        .metadata
+        .get("processing")
+        .and_then(|p| p.get("scanned_digest"))
+        .and_then(|v| v.as_str())
+        == Some(digest.as_str())
+}
 
 /// Deterministic idempotency key for a file's post-upload run: recovery
 /// re-enqueues dedupe instead of double-processing.
@@ -596,143 +627,6 @@ async fn transform_external<B: BlobStore>(
         "digest": stored.digest.as_str(),
         "bytes": size,
     }))
-}
-
-/// The derivatives activity body. The derived record was created (and
-/// linked) by the API before the run; this renders the bytes and
-/// finishes it through claim and complete, so a rendition is a real
-/// file with a digest, versions, and every serving rule intact.
-async fn render_rendition<B: BlobStore>(
-    store: &Store,
-    residencies: &crate::app::Residencies<B>,
-    topology: &crate::tiering::Topology,
-    input: Value,
-) -> copal_core::Result<Value> {
-    let tenant = TenantId::parse(input["tenant"].as_str().unwrap_or_default())?;
-    let derived = FileId::parse(input["derived_file"].as_str().unwrap_or_default())?;
-    let source_digest = ContentDigest::parse(input["source_digest"].as_str().unwrap_or_default())?;
-    let width = input["width"].as_u64().unwrap_or(256) as u32;
-    let height = input["height"].as_u64().unwrap_or(256) as u32;
-    let format = input["format"].as_str().unwrap_or("jpeg").to_owned();
-
-    // Replay after success: the derived file already carries content.
-    if let Some(record) = file_repo::get_file(store, &tenant, &derived).await? {
-        if record.state == FileState::Ready && record.digest.is_some() {
-            return Ok(json!({
-                "file": derived.as_str(),
-                "outcome": "already-rendered",
-            }));
-        }
-    }
-
-    let declared_size = input["source_size"].as_u64().unwrap_or(0);
-    if declared_size > MAX_DERIVE_SOURCE_BYTES {
-        let reason = format!(
-            "source is {declared_size} bytes; the decode ceiling is {MAX_DERIVE_SOURCE_BYTES}",
-        );
-        return refuse_derived(store, &tenant, &derived, reason).await;
-    }
-
-    let source_backend = crate::recall::pipeline_source(
-        store,
-        residencies,
-        topology,
-        &tenant,
-        input["source_residency"].as_str().unwrap_or("local"),
-        &source_digest,
-    )
-    .await?;
-    let source = source_backend.read(&source_digest).await?;
-    // A derive reading its source is a byte read, same as transform.
-    crate::tiering::note_blob_read(
-        store,
-        input["source_residency"].as_str().unwrap_or("local"),
-        &source_digest,
-    );
-    if source.len() as u64 > MAX_DERIVE_SOURCE_BYTES {
-        let reason = "source exceeds the decode ceiling".to_owned();
-        return refuse_derived(store, &tenant, &derived, reason).await;
-    }
-    let bytes = match render_image(&source, width, height, &format) {
-        Ok(bytes) => bytes,
-        Err(reason) => return refuse_derived(store, &tenant, &derived, reason).await,
-    };
-
-    // Renditions land in the tenant's CURRENT residency, resolved at
-    // render time like any other new content.
-    let residency = copal_store::repo::tenant::get_residency(store, &tenant).await?;
-    let target = residencies.get(&residency)?;
-    let body = futures::stream::iter(vec![Ok::<_, String>(bytes::Bytes::from(bytes))]);
-    let stored = target.put_streamed(body).await?;
-    blob_repo::record_sighting(
-        store,
-        &stored.digest,
-        stored.size_bytes,
-        &residency,
-        &stored.storage_path,
-    )
-    .await?;
-    file_repo::claim_upload(store, &tenant, &derived, "derive-worker", 900).await?;
-    let record = completion_repo::complete_upload(
-        store,
-        &tenant,
-        &derived,
-        &residency,
-        &stored.digest,
-        stored.size_bytes,
-        "derive",
-        FileState::Ready,
-        None,
-    )
-    .await?;
-    Ok(json!({
-        "file": derived.as_str(),
-        "outcome": "rendered",
-        "digest": stored.digest.as_str(),
-        "size_bytes": stored.size_bytes,
-        "state": record.state.as_str(),
-    }))
-}
-
-/// Decode, resize, and encode one rendition. `Err` carries a refusal
-/// reason (the source is not a workable image), never infrastructure
-/// trouble; both faces of the derivatives surface share this body.
-pub(crate) fn render_image(
-    source: &[u8],
-    width: u32,
-    height: u32,
-    format: &str,
-) -> Result<Vec<u8>, String> {
-    let decoded = decode_bounded(source)
-        .map_err(|err| format!("source does not decode as an image: {err}"))?;
-    let resized = decoded.thumbnail(width, height);
-    let mut encoded = std::io::Cursor::new(Vec::new());
-    let target = match format {
-        "png" => image::ImageFormat::Png,
-        _ => image::ImageFormat::Jpeg,
-    };
-    // JPEG has no alpha; flatten before encoding.
-    let writable = if target == image::ImageFormat::Jpeg {
-        image::DynamicImage::ImageRgb8(resized.to_rgb8())
-    } else {
-        resized
-    };
-    writable
-        .write_to(&mut encoded, target)
-        .map_err(|err| format!("encoding failed: {err}"))?;
-    Ok(encoded.into_inner())
-}
-
-/// Decode an image under an explicit allocation ceiling, so a small
-/// compressed file cannot claim a huge pixel buffer.
-fn decode_bounded(source: &[u8]) -> Result<image::DynamicImage, image::ImageError> {
-    let mut limits = image::Limits::default();
-    limits.max_alloc = Some(MAX_DECODE_BYTES);
-    let mut reader = image::ImageReader::new(std::io::Cursor::new(source))
-        .with_guessed_format()
-        .map_err(image::ImageError::IoError)?;
-    reader.limits(limits);
-    reader.decode()
 }
 
 /// Pull searchable text out of content.

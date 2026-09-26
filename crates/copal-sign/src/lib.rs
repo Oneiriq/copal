@@ -12,7 +12,7 @@
 //! beside it, with `cg1` staying.
 
 use copal_core::CopalError;
-use rand::Rng as _;
+use rand::RngExt as _;
 use sha2::{Digest as _, Sha256};
 
 const PREFIX: &str = "cg1";
@@ -32,7 +32,7 @@ impl GrantToken {
     pub fn mint() -> Self {
         let raw: [u8; SECRET_BYTES] = rand::rng().random();
         Self {
-            grant_id: ulid::Ulid::new().to_string().to_ascii_lowercase(),
+            grant_id: ulid::Ulid::generate().to_string().to_ascii_lowercase(),
             secret: hex::encode(raw),
         }
     }
@@ -73,7 +73,7 @@ impl ApiKeyToken {
     pub fn mint() -> Self {
         let raw: [u8; SECRET_BYTES] = rand::rng().random();
         Self {
-            key_id: ulid::Ulid::new().to_string().to_ascii_lowercase(),
+            key_id: ulid::Ulid::generate().to_string().to_ascii_lowercase(),
             secret: hex::encode(raw),
         }
     }
@@ -181,7 +181,7 @@ fn b64(data: &[u8]) -> String {
 }
 
 fn hmac_sign(secret: &str, data: &[u8]) -> Vec<u8> {
-    use hmac::Mac as _;
+    use hmac::{KeyInit as _, Mac as _};
     let mut mac = hmac::Hmac::<Sha256>::new_from_slice(secret.as_bytes())
         .expect("hmac accepts any key length");
     mac.update(data);

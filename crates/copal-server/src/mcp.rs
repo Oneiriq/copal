@@ -26,13 +26,53 @@ use copal_blob::BlobStore;
 use crate::app::AppState;
 
 /// What one tool name means, resolved once from the contract with
-/// exactly the naming the manifest generator uses.
+/// exactly the naming the manifest generator uses. Actions and queries
+/// carry the names of their multi-valued inputs, which [`join_lists`]
+/// reads.
 #[derive(Debug, Clone)]
 enum Route {
-    List { resource: String },
-    Get { resource: String },
-    Action { resource: String, action: String },
-    Query { name: String },
+    List {
+        resource: String,
+    },
+    Get {
+        resource: String,
+    },
+    Action {
+        resource: String,
+        action: String,
+        lists: Vec<String>,
+    },
+    Query {
+        name: String,
+        lists: Vec<String>,
+    },
+}
+
+/// The names of a declaration's multi-valued inputs.
+fn list_inputs(input: &[kayak::ActionField]) -> Vec<String> {
+    input
+        .iter()
+        .filter(|field| field.multiple)
+        .map(|field| field.name.clone())
+        .collect()
+}
+
+/// The manifest declares a multi-valued input as an array of names,
+/// while the dispatcher reads it as one comma-separated string. An
+/// array of strings in such an input joins into that string, so a
+/// tool call shaped the way the manifest says is accepted. Anything
+/// else passes through for the dispatcher to judge.
+fn join_lists(lists: &[String], arguments: &mut Map<String, Value>) {
+    for name in lists {
+        let Some(Value::Array(items)) = arguments.get(name) else {
+            continue;
+        };
+        let Some(parts) = items.iter().map(Value::as_str).collect::<Option<Vec<_>>>() else {
+            continue;
+        };
+        let joined = parts.join(",");
+        arguments.insert(name.clone(), Value::from(joined));
+    }
 }
 
 fn routes() -> &'static BTreeMap<String, Route> {
@@ -41,7 +81,7 @@ fn routes() -> &'static BTreeMap<String, Route> {
         let contract = crate::contract::contract();
         let mut map = BTreeMap::new();
         for resource in &contract.resources {
-            let singular = janus_singular(&resource.name);
+            let singular = kayak_singular(&resource.name);
             map.insert(
                 format!("{}_list", resource.name),
                 Route::List {
@@ -60,6 +100,7 @@ fn routes() -> &'static BTreeMap<String, Route> {
                     Route::Action {
                         resource: resource.name.clone(),
                         action: action.name.clone(),
+                        lists: list_inputs(&action.input),
                     },
                 );
             }
@@ -69,6 +110,7 @@ fn routes() -> &'static BTreeMap<String, Route> {
                 query.name.clone(),
                 Route::Query {
                     name: query.name.clone(),
+                    lists: list_inputs(&query.input),
                 },
             );
         }
@@ -76,7 +118,7 @@ fn routes() -> &'static BTreeMap<String, Route> {
     })
 }
 
-fn janus_singular(name: &str) -> String {
+fn kayak_singular(name: &str) -> String {
     // The manifest generator uses kayak::naming::singular; the
     // contract's resource names are regular plurals, and the tool
     // router must agree with the manifest byte for byte, which the
@@ -216,7 +258,7 @@ async fn call_tool<B: BlobStore>(
                     },
                 )
                 .await
-                .map_err(janus_to_rpc)?;
+                .map_err(kayak_to_rpc)?;
             json!({ "items": output.items, "next_cursor": output.next_cursor })
         }
         Route::Get { resource } => {
@@ -225,12 +267,19 @@ async fn call_tool<B: BlobStore>(
                 .and_then(|v| v.as_str().map(str::to_owned))
                 .ok_or((-32602, "id is required".to_owned()))?;
             let row = dispatcher
-                .get(&resource, ctx, GetArgs { id })
+                .get(&resource, ctx, GetArgs { id: id.clone() })
                 .await
-                .map_err(janus_to_rpc)?;
-            row.unwrap_or(Value::Null)
+                .map_err(kayak_to_rpc)?;
+            // A missing row is an error, as it is on REST, rather than a
+            // successful call whose text reads null.
+            row.ok_or_else(|| (-32000, format!("not found: {resource} {id}")))?
         }
-        Route::Action { resource, action } => {
+        Route::Action {
+            resource,
+            action,
+            lists,
+        } => {
+            join_lists(&lists, &mut arguments);
             let id = arguments
                 .remove("id")
                 .and_then(|v| v.as_str().map(str::to_owned));
@@ -241,17 +290,18 @@ async fn call_tool<B: BlobStore>(
             let value = dispatcher
                 .action(&resource, &action, ctx, args)
                 .await
-                .map_err(janus_to_rpc)?;
+                .map_err(kayak_to_rpc)?;
             value.unwrap_or(json!({ "ok": true }))
         }
-        Route::Query { name } => {
+        Route::Query { name, lists } => {
+            join_lists(&lists, &mut arguments);
             let args = QueryArgs {
                 input: arguments.into_iter().collect(),
             };
             dispatcher
                 .query(&name, ctx, args)
                 .await
-                .map_err(janus_to_rpc)?
+                .map_err(kayak_to_rpc)?
         }
     };
 
@@ -285,20 +335,13 @@ pub(crate) async fn seeded_context<B: BlobStore>(
     Ok(ctx)
 }
 
-fn janus_to_rpc(err: kayak::runtime::KayakError) -> (i64, String) {
+fn kayak_to_rpc(err: kayak::runtime::KayakError) -> (i64, String) {
     (-32000, err.to_string())
-}
-
-/// The router-facing registration.
-pub fn routes_state<B: BlobStore + 'static>(state: AppState<B>) -> axum::Router {
-    axum::Router::new()
-        .route("/mcp", axum::routing::post(mcp_endpoint::<B>))
-        .with_state(state)
 }
 
 /// The tool router and the generated manifest must agree byte for
 /// byte on names; this is the parity the module doc promises.
-#[allow(dead_code)]
+#[cfg(test)]
 fn assert_route_parity() {
     let manifest = manifest();
     let names: Vec<&str> = manifest["tools"]

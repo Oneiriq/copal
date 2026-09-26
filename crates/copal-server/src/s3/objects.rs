@@ -52,7 +52,7 @@ pub(crate) async fn copy_object<B: BlobStore>(
     .await
     {
         Ok(caller) => caller,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let tenant = &caller.tenant;
     let state = &gateway.app;
@@ -107,11 +107,11 @@ pub(crate) async fn copy_object<B: BlobStore>(
     // refuse. A copy is a read followed by a write.
     let store = match caller.store(state).await {
         Ok(store) => store,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let source = match super::lookup_servable(&store, tenant, source_key).await {
         Ok(record) => record,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let Some(digest) = source.digest.clone() else {
         return xml_error(StatusCode::NOT_FOUND, "NoSuchKey", "no served content");
@@ -239,7 +239,7 @@ pub(crate) async fn delete_objects<B: BlobStore>(
     .await
     {
         Ok(caller) => caller,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let tenant = &caller.tenant;
 
@@ -255,7 +255,7 @@ pub(crate) async fn delete_objects<B: BlobStore>(
         };
     let document = match read_bounded(decoded, MAX_DELETE_BODY_BYTES).await {
         Ok(bytes) => bytes,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let text = String::from_utf8_lossy(&document);
 
@@ -326,17 +326,17 @@ async fn delete_one<B: BlobStore>(
 async fn read_bounded(
     mut stream: futures::stream::BoxStream<'static, Result<Bytes, String>>,
     cap: usize,
-) -> Result<Vec<u8>, Response> {
+) -> Result<Vec<u8>, Box<Response>> {
     let mut collected = Vec::new();
     while let Some(chunk) = stream.next().await {
         let bytes =
             chunk.map_err(|err| xml_error(StatusCode::BAD_REQUEST, "IncompleteBody", &err))?;
         if collected.len() + bytes.len() > cap {
-            return Err(xml_error(
+            return Err(Box::new(xml_error(
                 StatusCode::BAD_REQUEST,
                 "MalformedXML",
                 "delete document too large",
-            ));
+            )));
         }
         collected.extend_from_slice(&bytes);
     }

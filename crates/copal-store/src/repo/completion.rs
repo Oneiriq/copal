@@ -211,7 +211,7 @@ fn completion_statements(
     // by commit it does.
     let version_rid = RecordID::<()>::new(
         super::version::TABLE,
-        ulid::Ulid::new().to_string().to_ascii_lowercase(),
+        ulid::Ulid::generate().to_string().to_ascii_lowercase(),
     )
     .map_err(|e| map_store_err("complete", e))?;
 

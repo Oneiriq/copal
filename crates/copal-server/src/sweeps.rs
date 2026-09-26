@@ -1,23 +1,34 @@
-//! Background maintenance: one pass, three sweeps.
+//! Background maintenance: one pass of independent sweeps.
 //!
-//! 1. Reap expired upload claims to `failed` (retryable).
-//! 2. Clear staging entries past their TTL; aborted and oversize
-//!    uploads leave inert staging garbage by design; this is where it
-//!    leaves the disk.
-//! 3. Garbage-collect unreferenced content: mark blobs whose derived
+//! 1. Reap expired upload claims to `failed` (retryable), return
+//!    expired run claims to `pending`, and fail scans a crash left
+//!    behind.
+//! 2. Drop rate windows that no longer count.
+//! 3. Discard abandoned S3 multipart and tus sessions with their
+//!    staged bytes.
+//! 4. Clear staging entries past their TTL on every backend: local,
+//!    each named residency, and each tier. Aborted and oversize
+//!    uploads leave inert staging garbage by design, and this is where
+//!    it leaves the disk.
+//! 5. Recount tenant usage, the cache the quota check reads.
+//! 6. Garbage-collect unreferenced content: mark blobs whose derived
 //!    link count is zero, then (a full grace period later, and only
 //!    after a FRESH recount) delete the row and then the object.
 //!    Referenced blobs get their advisory refcount cache refreshed on
 //!    the way past.
 //!
 //! Every step is independent and failure-isolated: a store hiccup in
-//! one sweep logs and leaves the others running.
+//! one sweep logs and leaves the others running. The loop then runs
+//! the tiering classifier and the mover under the same leader lease.
 
 use std::time::Duration;
 
 use copal_blob::BlobStore;
 use copal_store::repo::{blob as blob_repo, file as file_repo, flow as flow_repo};
 use copal_store::Store;
+
+/// Tenants recounted per usage page.
+const USAGE_PAGE: i64 = 500;
 
 /// Sweep cadence and retention knobs.
 #[derive(Debug, Clone, Copy)]
@@ -130,29 +141,64 @@ pub async fn run_pass<B: BlobStore>(
         Err(err) => tracing::warn!(error = %err, "tus session sweep failed"),
     }
 
-    match blobs
-        .sweep_staging(Duration::from_secs(config.staging_ttl_secs))
-        .await
-    {
-        Ok(removed) => report.staging_removed = removed,
-        Err(err) => tracing::warn!(error = %err, "staging sweep failed"),
+    // Every backend stages its writes before landing them: uploads into
+    // a named residency, and the mover's copies into a tier. So every
+    // backend collects its own staging garbage, each on its own.
+    let staging_ttl = Duration::from_secs(config.staging_ttl_secs);
+    // Collected before the loop: a lazy chain of borrowing closures
+    // held across the awaits would keep this future from being Send.
+    let backends: Vec<(String, &B)> = std::iter::once(("local".to_owned(), blobs))
+        .chain(
+            residencies
+                .named
+                .iter()
+                .map(|(name, backend)| (name.clone(), backend)),
+        )
+        .chain(residencies.tiers.iter().flat_map(|(residency, tiers)| {
+            tiers
+                .iter()
+                .map(move |(tier, backend)| (format!("{residency}/{tier}"), backend))
+        }))
+        .collect();
+    for (name, backend) in backends {
+        match backend.sweep_staging(staging_ttl).await {
+            Ok(removed) => report.staging_removed += removed,
+            Err(err) => tracing::warn!(backend = %name, error = %err, "staging sweep failed"),
+        }
     }
 
     // The usage counter is a cache; this recount is what keeps a
     // crashed upload or a missed release from drifting it forever.
-    match copal_store::repo::tenant::tenants_with_usage(store, 500).await {
-        Ok(tenants) => {
-            for raw in tenants {
-                let Ok(tenant) = copal_core::TenantId::parse(&raw) else {
-                    continue;
-                };
-                match copal_store::repo::tenant::reconcile_usage(store, &tenant).await {
-                    Ok(_) => report.usage_reconciled += 1,
-                    Err(err) => tracing::warn!(error = %err, "usage reconcile failed"),
-                }
+    // Keyset pages until a short one, so every tenant is recounted
+    // every pass, however many there are.
+    let mut after: Option<String> = None;
+    loop {
+        let tenants = match copal_store::repo::tenant::tenants_with_usage_after(
+            store,
+            after.as_deref(),
+            USAGE_PAGE,
+        )
+        .await
+        {
+            Ok(tenants) => tenants,
+            Err(err) => {
+                tracing::warn!(error = %err, "usage sweep failed");
+                break;
+            }
+        };
+        for raw in &tenants {
+            let Ok(tenant) = copal_core::TenantId::parse(raw) else {
+                continue;
+            };
+            match copal_store::repo::tenant::reconcile_usage(store, &tenant).await {
+                Ok(_) => report.usage_reconciled += 1,
+                Err(err) => tracing::warn!(error = %err, "usage reconcile failed"),
             }
         }
-        Err(err) => tracing::warn!(error = %err, "usage sweep failed"),
+        if (tenants.len() as i64) < USAGE_PAGE {
+            break;
+        }
+        after = tenants.last().cloned();
     }
 
     match gc_pass(store, residencies, config, &mut report).await {

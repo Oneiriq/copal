@@ -318,3 +318,115 @@ async fn failures_back_off_and_filters_hold() {
         assert_eq!(response.status(), expected);
     }
 }
+
+/// The one-endpoint read the contract declares, and the generated
+/// clients call, answers on the REST face. Another tenant's id and an
+/// unknown id both read 404.
+#[tokio::test]
+async fn one_endpoint_reads_by_id() {
+    let (_api, hooks, _store, _cipher, _dir) = stack().await;
+    let url = "http://127.0.0.1:9/hook";
+    let response = hooks
+        .clone()
+        .oneshot(register_req(url, &["file.ready"]))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let id = json_body(response).await["id"].as_str().unwrap().to_owned();
+
+    let get = |tenant: &str, id: &str| {
+        Request::builder()
+            .method("GET")
+            .uri(format!("/v1/webhooks/{id}"))
+            .header("x-copal-tenant", tenant)
+            .body(Body::empty())
+            .unwrap()
+    };
+    let response = hooks.clone().oneshot(get("acme", &id)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = json_body(response).await;
+    assert_eq!(body["id"], id.as_str());
+    assert_eq!(body["target_url"], url);
+    assert_eq!(body["active"], true);
+    assert!(body.get("secret").is_none(), "the secret never reads back");
+
+    for (tenant, id) in [("globex", id.as_str()), ("acme", "missing")] {
+        let response = hooks.clone().oneshot(get(tenant, id)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{tenant}/{id}");
+    }
+}
+
+/// The endpoint listing takes the limit, cursor, and sort the
+/// contract declares: pages walk the whole set once, in either
+/// direction, and a cursor refuses under the other direction.
+#[tokio::test]
+async fn endpoint_listings_page_and_sort() {
+    let (_api, hooks, _store, _cipher, _dir) = stack().await;
+    let mut registered = Vec::new();
+    for port in [9, 10, 11] {
+        let response = hooks
+            .clone()
+            .oneshot(register_req(
+                &format!("http://127.0.0.1:{port}/hook"),
+                &["file.ready"],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        registered.push(json_body(response).await["id"].as_str().unwrap().to_owned());
+    }
+    let list = |query: String| {
+        Request::builder()
+            .method("GET")
+            .uri(format!("/v1/webhooks?{query}"))
+            .header("x-copal-tenant", "acme")
+            .body(Body::empty())
+            .unwrap()
+    };
+    let walk = |sort: &'static str| {
+        let hooks = hooks.clone();
+        async move {
+            let mut seen = Vec::new();
+            let mut cursor: Option<String> = None;
+            for _ in 0..5 {
+                let query = match &cursor {
+                    Some(cursor) => format!("limit=2&sort={sort}&cursor={cursor}"),
+                    None => format!("limit=2&sort={sort}"),
+                };
+                let response = hooks.clone().oneshot(list(query)).await.unwrap();
+                assert_eq!(response.status(), StatusCode::OK);
+                let body = json_body(response).await;
+                let items = body["items"].as_array().unwrap();
+                assert!(items.len() <= 2, "{body:#?}");
+                seen.extend(
+                    items
+                        .iter()
+                        .map(|item| item["id"].as_str().unwrap().to_owned()),
+                );
+                match body["next_cursor"].as_str() {
+                    Some(next) => cursor = Some(next.to_owned()),
+                    None => return (seen, cursor),
+                }
+            }
+            panic!("the walk did not end: {seen:?}");
+        }
+    };
+
+    let (oldest_first, last_cursor) = walk("created_at").await;
+    let mut every = oldest_first.clone();
+    every.sort();
+    registered.sort();
+    assert_eq!(every, registered, "each endpoint exactly once");
+    let (newest_first, _) = walk("-created_at").await;
+    let mut reversed = oldest_first.clone();
+    reversed.reverse();
+    assert_eq!(newest_first, reversed);
+
+    let cursor = last_cursor.expect("a full first page hands out a cursor");
+    let response = hooks
+        .clone()
+        .oneshot(list(format!("sort=-created_at&cursor={cursor}")))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}

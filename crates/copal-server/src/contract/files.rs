@@ -35,9 +35,9 @@ pub fn resource() -> Resource {
         filterable: vec!["state".into()],
         // The set the schema asserts, so a caller narrowing by
         // state picks from what exists rather than guessing at
-        // its spelling. Every face gets it: an enum in the
-        // OpenAPI document and the MCP manifest, and a menu in
-        // the console.
+        // its spelling. The console offers it as a menu. The
+        // OpenAPI and MCP generators do not read it, so neither
+        // document carries an enum for state.
         filter_options: [(
             "state".to_owned(),
             [

@@ -64,7 +64,7 @@ pub async fn create_principal(
     if handle.trim().is_empty() {
         return Err(CopalError::validation("a principal needs a handle"));
     }
-    let id = ulid::Ulid::new().to_string().to_ascii_lowercase();
+    let id = ulid::Ulid::generate().to_string().to_ascii_lowercase();
     let rid = RecordID::<()>::new(TABLE, id.as_str()).map_err(|e| map_store_err("principal", e))?;
     let payload = json!({
         "tenant_id": tenant.as_str(),

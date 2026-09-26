@@ -9,6 +9,7 @@ use serde_json::Value;
 use tower::ServiceExt as _;
 
 use copal_blob::ObjectStore;
+use copal_server::auth::{AuthConfig, AuthMode};
 use copal_server::sweeps::{run_pass, SweepConfig};
 use copal_server::{build_router, AppState};
 use copal_store::{Store, StoreConfig};
@@ -237,4 +238,79 @@ async fn abandoned_sessions_sweep_with_their_bytes() {
         .map(|entries| entries.filter_map(Result::ok).count())
         .unwrap_or_default();
     assert_eq!(leftovers, 0, "staged bytes swept");
+}
+
+/// Mint a key for tenant `acme` on a key-mode router and return its
+/// bearer token.
+async fn mint(router: &axum::Router, admin: &str, name: &str, scopes: &[&str]) -> String {
+    let request = Request::builder()
+        .method("POST")
+        .uri("/v1/admin/tenants/acme/keys")
+        .header("x-copal-admin-token", admin)
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::json!({ "name": name, "scopes": scopes }).to_string(),
+        ))
+        .unwrap();
+    let response = router.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    json_body(response).await["token"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+fn bearer(mut request: Request<Body>, token: &str) -> Request<Body> {
+    request
+        .headers_mut()
+        .insert("authorization", format!("Bearer {token}").parse().unwrap());
+    request
+}
+
+/// Appending bytes is a write. A read-only key of the same tenant is
+/// refused with 403 and the offset does not move.
+#[tokio::test]
+async fn appending_needs_the_write_scope() {
+    const ADMIN: &str = "operator-token";
+    let store = Store::connect(StoreConfig::memory()).await.unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let blobs = ObjectStore::open(dir.path().to_str().unwrap()).unwrap();
+    let state = AppState::new(store, blobs).with_auth(AuthConfig {
+        mode: AuthMode::ApiKeys,
+        admin_token: Some(ADMIN.into()),
+        admin_token_previous: None,
+        operator_header: None,
+    });
+    let router = build_router(state);
+    let writer = mint(&router, ADMIN, "writer", &["read", "write"]).await;
+    let reader = mint(&router, ADMIN, "reader", &["read"]).await;
+    let payload = b"scoped append";
+
+    let response = router
+        .clone()
+        .oneshot(bearer(create_req(payload.len(), "scoped.bin"), &writer))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let location = response.headers()["location"].to_str().unwrap().to_owned();
+
+    let response = router
+        .clone()
+        .oneshot(bearer(patch_req(&location, 0, payload), &reader))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let response = router
+        .clone()
+        .oneshot(bearer(head_req(&location), &writer))
+        .await
+        .unwrap();
+    assert_eq!(response.headers()["upload-offset"], "0");
+
+    let response = router
+        .clone()
+        .oneshot(bearer(patch_req(&location, 0, payload), &writer))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
 }

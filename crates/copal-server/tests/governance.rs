@@ -512,7 +512,7 @@ async fn minted_tokens_open_filtered_sessions() {
     let token = copal_server::engine::mint_caller_token(
         &access,
         &acme,
-        &ulid::Ulid::new().to_string().to_ascii_lowercase(),
+        &ulid::Ulid::generate().to_string().to_ascii_lowercase(),
         &["read".to_owned()],
         None,
     );

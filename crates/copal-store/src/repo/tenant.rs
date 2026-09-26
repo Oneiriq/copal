@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 use surql::query::builder::Query;
 use surql::query::crud::{create_record, query_records};
 use surql::query::expressions::raw;
-use surql::types::operators::eq;
+use surql::types::operators::{eq, gt};
 use surql::types::RecordID;
 
 use copal_core::{CopalError, TenantId};
@@ -78,7 +78,7 @@ pub async fn set_residency(
     if update_in_place().await? {
         return Ok(());
     }
-    let id = ulid::Ulid::new().to_string().to_ascii_lowercase();
+    let id = ulid::Ulid::generate().to_string().to_ascii_lowercase();
     let rid =
         RecordID::<()>::new(TABLE, id.as_str()).map_err(|e| map_store_err("set_residency", e))?;
     let payload = json!({
@@ -189,7 +189,7 @@ pub async fn set_quota(store: &Store, tenant: &TenantId, max_bytes: i64) -> copa
     if update_in_place().await? {
         return Ok(());
     }
-    let id = ulid::Ulid::new().to_string().to_ascii_lowercase();
+    let id = ulid::Ulid::generate().to_string().to_ascii_lowercase();
     let rid =
         RecordID::<()>::new(QUOTA_TABLE, id.as_str()).map_err(|e| map_store_err("set_quota", e))?;
     let payload = json!({
@@ -266,8 +266,35 @@ pub async fn cached_usage(
     }))
 }
 
+/// The usage counter, created from the file rows on first use.
+pub async fn usage_counter(store: &Store, tenant: &TenantId) -> copal_core::Result<(i64, i64)> {
+    match cached_usage(store, tenant).await? {
+        Some(cached) => Ok(cached),
+        None => init_usage(store, tenant).await,
+    }
+}
+
+/// Create the counter from the file rows, unless a row exists by now.
+///
+/// First use lands here, and it never overwrites. A request that found
+/// no counter can get here after a concurrent request created the row
+/// and reserved bytes against it. The file rows do not show that
+/// reservation yet, so writing their figure over the row would hand
+/// the bytes back and let every upload in the race fit under the
+/// ceiling. When the create loses, the row that won is the counter,
+/// and its figure is returned.
+pub async fn init_usage(store: &Store, tenant: &TenantId) -> copal_core::Result<(i64, i64)> {
+    let (bytes, files) = usage(store, tenant).await?;
+    match create_usage(store, tenant, bytes, files).await {
+        Ok(()) => Ok((bytes, files)),
+        // The unique index refused the second row, or the engine
+        // refused a write that raced the winner's.
+        Err(err) => cached_usage(store, tenant).await?.ok_or(err),
+    }
+}
+
 /// Write the counter to a known figure, creating the row if needed.
-/// Reconciliation and lazy initialization both land here.
+/// Reconciliation lands here. First use goes through [`init_usage`].
 pub async fn set_usage(
     store: &Store,
     tenant: &TenantId,
@@ -289,26 +316,33 @@ pub async fn set_usage(
     if !rows.is_empty() {
         return Ok(());
     }
-    let id = ulid::Ulid::new().to_string().to_ascii_lowercase();
-    let rid =
-        RecordID::<()>::new(USAGE_TABLE, id.as_str()).map_err(|e| map_store_err("set_usage", e))?;
+    match create_usage(store, tenant, bytes, files).await {
+        // A racing initializer won. Its figure is as good as ours.
+        Err(CopalError::Conflict(_)) => Ok(()),
+        other => other,
+    }
+}
+
+/// Create the counter row. The unique index on `tenant_id` refuses a
+/// second one.
+async fn create_usage(
+    store: &Store,
+    tenant: &TenantId,
+    bytes: i64,
+    files: i64,
+) -> copal_core::Result<()> {
+    let id = ulid::Ulid::generate().to_string().to_ascii_lowercase();
+    let rid = RecordID::<()>::new(USAGE_TABLE, id.as_str())
+        .map_err(|e| map_store_err("create_usage", e))?;
     let payload = json!({
         "tenant_id": tenant.as_str(),
         "bytes": bytes,
         "files": files,
     });
-    match create_record(store.client(), &rid.to_string(), payload).await {
-        Ok(_) => Ok(()),
-        Err(err) => {
-            let mapped = map_store_err("set_usage", err);
-            // A racing initializer won; its figure is as good as ours.
-            if matches!(mapped, CopalError::Conflict(_)) {
-                Ok(())
-            } else {
-                Err(mapped)
-            }
-        }
-    }
+    create_record(store.client(), &rid.to_string(), payload)
+        .await
+        .map(|_| ())
+        .map_err(|e| map_store_err("create_usage", e))
 }
 
 /// Reserve bytes against the ceiling, atomically.
@@ -382,11 +416,28 @@ pub async fn reconcile_usage(store: &Store, tenant: &TenantId) -> copal_core::Re
     Ok((bytes, files))
 }
 
-/// Tenants carrying a usage row, for the reconciliation sweep.
+/// Tenants carrying a usage row, the first `limit` in id order.
 pub async fn tenants_with_usage(store: &Store, limit: i64) -> copal_core::Result<Vec<String>> {
-    let query = Query::new()
+    tenants_with_usage_after(store, None, limit).await
+}
+
+/// Tenants carrying a usage row, in id order, strictly after `after`:
+/// the keyset the reconciliation sweep pages through, so it reaches
+/// every tenant however many there are.
+pub async fn tenants_with_usage_after(
+    store: &Store,
+    after: Option<&str>,
+    limit: i64,
+) -> copal_core::Result<Vec<String>> {
+    let mut query = Query::new()
         .select(Some(vec!["tenant_id".to_owned()]))
         .from_table(USAGE_TABLE)
+        .map_err(|e| map_store_err("tenants_with_usage", e))?;
+    if let Some(after) = after {
+        query = query.where_(gt("tenant_id", after));
+    }
+    let query = query
+        .order_by("tenant_id", "ASC")
         .map_err(|e| map_store_err("tenants_with_usage", e))?
         .limit(limit)
         .map_err(|e| map_store_err("tenants_with_usage", e))?;
@@ -431,7 +482,7 @@ pub async fn set_retention_policy(
     policy: &RetentionPolicy,
 ) -> copal_core::Result<()> {
     clear_retention_policy(store, tenant).await?;
-    let id = ulid::Ulid::new().to_string().to_ascii_lowercase();
+    let id = ulid::Ulid::generate().to_string().to_ascii_lowercase();
     let rid = RecordID::<()>::new("tenant_retention", id.as_str())
         .map_err(|e| map_store_err("retention_policy", e))?;
     // Absent keys rather than JSON nulls: the engine's option<T>

@@ -182,3 +182,77 @@ async fn the_console_shows_the_operator() {
         "the browser dialog says the username is ignored: {realm}",
     );
 }
+
+/// Edge keys and S3 credentials are key custody, audited like every
+/// other operator action: the trail names who minted and revoked them.
+#[tokio::test]
+async fn key_custody_names_the_operator() {
+    const MASTER_KEY: &str = "5e4d3c2b1a09f8e7d6c5b4a39281706f5e4d3c2b1a09f8e7d6c5b4a392817060";
+    let store = Store::connect(StoreConfig::memory()).await.unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let blobs = ObjectStore::open(dir.path().to_str().unwrap()).unwrap();
+    let state = AppState::new(store, blobs)
+        .with_auth(AuthConfig {
+            mode: AuthMode::ApiKeys,
+            admin_token: Some(ADMIN.into()),
+            admin_token_previous: None,
+            operator_header: Some(HEADER.to_owned()),
+        })
+        .with_cipher(Some(
+            copal_blob::crypto::BlobCipher::from_hex(MASTER_KEY).unwrap(),
+        ));
+    let router = build_router(state.clone())
+        .merge(copal_server::edge::edge_admin_router(state.clone()))
+        .merge(copal_server::s3::s3_admin_router(state));
+    let admin = |method: &str, uri: &str| {
+        Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("x-copal-admin-token", ADMIN)
+            .header(HEADER, "dana@oneiriq.test")
+            .body(Body::empty())
+            .unwrap()
+    };
+
+    let response = router
+        .clone()
+        .oneshot(admin("POST", "/v1/admin/tenants/acme/edge-keys"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let minted: Value = serde_json::from_str(&body_of(response).await).unwrap();
+    let key_id = minted["key_id"].as_str().unwrap();
+    let response = router
+        .clone()
+        .oneshot(admin(
+            "DELETE",
+            &format!("/v1/admin/tenants/acme/edge-keys/{key_id}"),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    let response = router
+        .clone()
+        .oneshot(admin("POST", "/v1/admin/tenants/acme/s3-credentials"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let minted: Value = serde_json::from_str(&body_of(response).await).unwrap();
+    let access_key_id = minted["access_key_id"].as_str().unwrap();
+    let response = router
+        .clone()
+        .oneshot(admin(
+            "DELETE",
+            &format!("/v1/admin/tenants/acme/s3-credentials/{access_key_id}"),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+    assert_eq!(
+        audit_actors(&router).await,
+        vec!["dana@oneiriq.test".to_owned(); 4],
+        "mint and revoke on both surfaces name the person",
+    );
+}

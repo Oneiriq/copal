@@ -137,9 +137,45 @@ fn env_parse<T: std::str::FromStr>(key: &str, default: T) -> T {
         .unwrap_or(default)
 }
 
+/// A boolean switch. The operations guide writes switches as `=1`,
+/// which `bool::from_str` refuses, so the common spellings are read
+/// here. Anything else keeps the default and says so.
+fn env_flag(key: &str, default: bool) -> bool {
+    match std::env::var(key) {
+        Ok(raw) => parse_flag(&raw).unwrap_or_else(|| {
+            tracing::warn!(key, value = %raw, default, "not a boolean; using the default");
+            default
+        }),
+        Err(_) => default,
+    }
+}
+
+/// `true`, `1`, `yes`, and `on` turn a switch on. `false`, `0`, `no`,
+/// and `off` turn it off. Case and surrounding space do not matter.
+fn parse_flag(raw: &str) -> Option<bool> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "true" | "1" | "yes" | "on" => Some(true),
+        "false" | "0" | "no" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+/// Read `COPAL_AUTH_MODE`. Unset means the development default. A value
+/// that names no mode refuses, because falling back would put a
+/// deployment that asked for keys on trusted headers, where every
+/// caller names its own tenant.
+fn parse_auth_mode(raw: Option<&str>) -> Result<crate::auth::AuthMode, String> {
+    match raw {
+        None => Ok(crate::auth::AuthMode::default()),
+        Some(raw) => crate::auth::AuthMode::parse(raw)
+            .ok_or_else(|| format!("COPAL_AUTH_MODE must be header or keys, not {raw:?}")),
+    }
+}
+
 impl Config {
-    /// Read configuration from `COPAL_*` environment variables.
-    pub fn from_env() -> Self {
+    /// Read configuration from `COPAL_*` environment variables. A value
+    /// that would silently weaken authentication refuses instead.
+    pub fn from_env() -> Result<Self, String> {
         let username = std::env::var("COPAL_DB_USER").ok();
         let password = std::env::var("COPAL_DB_PASS").ok();
         // Development default: the compose SurrealDB with root/root.
@@ -147,7 +183,7 @@ impl Config {
             (None, None) => (Some("root".to_owned()), Some("root".to_owned())),
             pair => pair,
         };
-        Self {
+        Ok(Self {
             bind: env_or("COPAL_BIND", "127.0.0.1:8080"),
             admin_bind: std::env::var("COPAL_ADMIN_BIND").ok(),
             s3_bind: std::env::var("COPAL_S3_BIND").ok(),
@@ -184,13 +220,10 @@ impl Config {
             max_upload_bytes: env_parse("COPAL_MAX_UPLOAD_BYTES", 1 << 30),
             upload_lease_secs: env_parse("COPAL_UPLOAD_LEASE_SECS", 900),
             blocked_extensions: std::env::var("COPAL_BLOCKED_EXTENSIONS").ok(),
-            enforce_type_match: env_parse("COPAL_ENFORCE_TYPE_MATCH", false),
+            enforce_type_match: env_flag("COPAL_ENFORCE_TYPE_MATCH", false),
             auth: crate::auth::AuthConfig {
                 // "header" (development default until 1.0) or "keys".
-                mode: std::env::var("COPAL_AUTH_MODE")
-                    .ok()
-                    .and_then(|raw| crate::auth::AuthMode::parse(&raw))
-                    .unwrap_or_default(),
+                mode: parse_auth_mode(std::env::var("COPAL_AUTH_MODE").ok().as_deref())?,
                 admin_token: std::env::var("COPAL_ADMIN_TOKEN").ok(),
                 admin_token_previous: std::env::var("COPAL_ADMIN_TOKEN_PREVIOUS").ok(),
                 operator_header: std::env::var("COPAL_OPERATOR_HEADER").ok(),
@@ -220,9 +253,9 @@ impl Config {
             session_cache_secs: env_parse("COPAL_SESSION_CACHE_SECS", 60),
             session_cache_size: env_parse("COPAL_SESSION_CACHE_SIZE", 256),
             persisted_operations: std::env::var("COPAL_PERSISTED_OPERATIONS").ok(),
-            allow_private_webhook_targets: env_parse("COPAL_WEBHOOK_ALLOW_PRIVATE_TARGETS", false),
-            allow_private_fetch_targets: env_parse("COPAL_FETCH_ALLOW_PRIVATE_TARGETS", false),
-            console_fleet: env_parse("COPAL_CONSOLE_FLEET", false),
+            allow_private_webhook_targets: env_flag("COPAL_WEBHOOK_ALLOW_PRIVATE_TARGETS", false),
+            allow_private_fetch_targets: env_flag("COPAL_FETCH_ALLOW_PRIVATE_TARGETS", false),
+            console_fleet: env_flag("COPAL_CONSOLE_FLEET", false),
             residencies: std::env::var("COPAL_RESIDENCIES")
                 .ok()
                 .and_then(|raw| match serde_json::from_str(&raw) {
@@ -253,7 +286,7 @@ impl Config {
                 tier_move_batch: env_parse("COPAL_TIER_MOVE_BATCH", 100),
                 tier_erase_grace_secs: env_parse("COPAL_TIER_ERASE_GRACE_SECS", 86_400),
             },
-        }
+        })
     }
 }
 
@@ -276,4 +309,43 @@ pub struct TransformerConfig {
     /// Source size ceiling in bytes (default 64 MiB).
     #[serde(default)]
     pub max_source_bytes: Option<u64>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_auth_mode, parse_flag};
+    use crate::auth::AuthMode;
+
+    #[test]
+    fn an_unknown_auth_mode_refuses_instead_of_trusting_headers() {
+        assert_eq!(parse_auth_mode(None), Ok(AuthMode::TrustedHeader));
+        assert_eq!(parse_auth_mode(Some("header")), Ok(AuthMode::TrustedHeader));
+        assert_eq!(parse_auth_mode(Some("keys")), Ok(AuthMode::ApiKeys));
+        for typo in ["Keys", "key", "api-keys", "", " keys"] {
+            let refusal = parse_auth_mode(Some(typo)).unwrap_err();
+            assert!(refusal.contains("COPAL_AUTH_MODE"), "{typo:?}: {refusal}");
+        }
+    }
+
+    #[test]
+    fn startup_configuration_refuses_an_unknown_auth_mode() {
+        // The only test in this binary that reads COPAL_AUTH_MODE.
+        std::env::set_var("COPAL_AUTH_MODE", "kyes");
+        let refusal = super::Config::from_env().unwrap_err();
+        std::env::remove_var("COPAL_AUTH_MODE");
+        assert!(refusal.contains("\"kyes\""), "{refusal}");
+    }
+
+    #[test]
+    fn switches_read_the_spellings_operators_write() {
+        for on in ["1", "true", "TRUE", "yes", "on", " On "] {
+            assert_eq!(parse_flag(on), Some(true), "{on:?}");
+        }
+        for off in ["0", "false", "False", "no", "off"] {
+            assert_eq!(parse_flag(off), Some(false), "{off:?}");
+        }
+        for neither in ["", "2", "enabled", "y"] {
+            assert_eq!(parse_flag(neither), None, "{neither:?}");
+        }
+    }
 }

@@ -8,7 +8,7 @@ use copal_store::Store;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     init_tracing(std::env::var("COPAL_OTLP_ENDPOINT").ok().as_deref());
 
-    let mut config = Config::from_env();
+    let mut config = Config::from_env()?;
     // Custody answers before any store opens, because every backend
     // below takes its key from the resolved configuration.
     if let Some(addr) = config.kms_addr.clone() {
@@ -132,10 +132,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             })
         };
     // Tiers validate at boot, whole-deployment, BEFORE any backend
-    // opens: names hold the residency alphabet, archive classes
-    // refuse until recall ships, and no tier carries its own key. A
-    // deployment cannot come up with a tier its policies could
-    // strand bytes behind.
+    // opens: names hold the residency alphabet, archive classes refuse
+    // on backends whose restore this build does not drive, and no
+    // tier carries its own key. A deployment cannot come up with a
+    // tier its policies could strand bytes behind.
     let tiering = {
         let mut topology = copal_server::tiering::Topology::default();
         let mut register =
@@ -158,7 +158,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let residencies = build_residencies()?;
     if !tiering.is_empty() {
-        tracing::info!("storage tiers configured; observe-only classifier active");
+        tracing::info!("storage tiers configured; classifier and mover active");
     }
     if !residencies.named.is_empty() {
         tracing::info!(
@@ -272,6 +272,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     depth: config.rerank_depth,
                 }),
         );
+    // Tier backends serve reads as well as moves. Once the mover
+    // demotes a blob and erases its hot copy, the request path finds
+    // the bytes through these, and an archive-cold placement answers
+    // with a recall.
+    state.residencies.tiers = residencies.tiers.clone();
     state.limits = copal_server::app::Limits {
         max_upload_bytes: config.max_upload_bytes,
         upload_lease_secs: config.upload_lease_secs,
@@ -286,7 +291,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     if config.allow_private_webhook_targets {
         tracing::warn!(
-            "webhook targets on private addresses are ALLOWED              (COPAL_WEBHOOK_ALLOW_PRIVATE_TARGETS): tenant-supplied URLs can reach              services inside this deployment",
+            "webhook targets on private addresses are ALLOWED \
+             (COPAL_WEBHOOK_ALLOW_PRIVATE_TARGETS): tenant-supplied URLs can reach \
+             services inside this deployment",
         );
     }
     match config.engine_sessions.as_str() {
@@ -508,13 +515,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Durable execution worker: claims pending runs and executes them
-    // over the journal. The production registry starts empty until the
-    // processing activities land; the worker idles harmlessly.
+    // over the journal, with the standard registry built above.
     tokio::spawn(copal_flow::run_worker(
         copal_flow::FlowEngine::new(store.clone(), registry),
         format!(
             "worker-{}",
-            ulid::Ulid::new().to_string().to_ascii_lowercase()
+            ulid::Ulid::generate().to_string().to_ascii_lowercase()
         ),
         2,
     ));

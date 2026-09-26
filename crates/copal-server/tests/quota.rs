@@ -266,6 +266,47 @@ async fn concurrent_uploads_cannot_overshoot_the_ceiling() {
 }
 
 #[tokio::test]
+async fn a_late_first_use_keeps_the_reservation_already_taken() {
+    use copal_store::repo::tenant as tenant_repo;
+
+    // Concurrent first uploads each find no counter. The one that
+    // creates it can reserve against it before the others initialize.
+    // They must adopt that row. Writing the file figure over it would
+    // hand the reservation back, and then every racer fits.
+    let store = Store::connect(StoreConfig::memory()).await.unwrap();
+    let tenant = copal_core::TenantId::parse("acme").unwrap();
+
+    assert_eq!(
+        tenant_repo::usage_counter(&store, &tenant).await.unwrap(),
+        (0, 0)
+    );
+    assert!(tenant_repo::reserve_usage(&store, &tenant, 40, Some(100))
+        .await
+        .unwrap());
+
+    // A second request that saw no counter initializes it now.
+    assert_eq!(
+        tenant_repo::init_usage(&store, &tenant).await.unwrap(),
+        (40, 0),
+        "the initializer reports the row that won",
+    );
+    assert_eq!(
+        tenant_repo::cached_usage(&store, &tenant).await.unwrap(),
+        Some((40, 0)),
+        "the reservation survives",
+    );
+    assert!(tenant_repo::reserve_usage(&store, &tenant, 40, Some(100))
+        .await
+        .unwrap());
+    assert!(
+        !tenant_repo::reserve_usage(&store, &tenant, 40, Some(100))
+            .await
+            .unwrap(),
+        "a third 40 bytes crosses the 100-byte ceiling",
+    );
+}
+
+#[tokio::test]
 async fn the_sweep_recomputes_a_drifted_counter() {
     use copal_server::app::Residencies;
     use copal_server::sweeps::{run_pass, SweepConfig};
@@ -408,4 +449,40 @@ async fn abandoned_resumable_sessions_give_their_reservation_back() {
         0,
         "the sweep releases what the client abandoned",
     );
+}
+
+#[tokio::test]
+async fn the_sweep_recounts_every_tenant_past_one_page() {
+    use copal_server::app::Residencies;
+    use copal_server::sweeps::{run_pass, SweepConfig};
+    use copal_store::repo::tenant as tenant_repo;
+
+    // One more tenant than a usage page holds, each counter drifted
+    // from the truth, which is zero: none of them has a file.
+    let store = Store::connect(StoreConfig::memory()).await.unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let blobs = ObjectStore::open(dir.path().to_str().unwrap()).unwrap();
+    let tenants: Vec<copal_core::TenantId> = (0..501)
+        .map(|i| copal_core::TenantId::parse(format!("tenant{i:03}")).unwrap())
+        .collect();
+    for tenant in &tenants {
+        tenant_repo::set_usage(&store, tenant, 1_234, 5)
+            .await
+            .unwrap();
+    }
+
+    let report = run_pass(
+        &store,
+        &Residencies::local_only(blobs),
+        &SweepConfig::default(),
+    )
+    .await;
+    assert_eq!(report.usage_reconciled, 501);
+    for tenant in [&tenants[0], &tenants[499], &tenants[500]] {
+        assert_eq!(
+            tenant_repo::cached_usage(&store, tenant).await.unwrap(),
+            Some((0, 0)),
+            "{tenant}",
+        );
+    }
 }

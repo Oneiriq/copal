@@ -38,7 +38,8 @@ async fn mint(admin: &axum::Router, scopes: &[&str]) -> String {
         .header("x-copal-admin-token", "root")
         .header("content-type", "application/json")
         .body(Body::from(
-            json!({ "name": format!("k-{}", ulid::Ulid::new()), "scopes": scopes }).to_string(),
+            json!({ "name": format!("k-{}", ulid::Ulid::generate()), "scopes": scopes })
+                .to_string(),
         ))
         .unwrap();
     json_body(admin.clone().oneshot(request).await.unwrap()).await["token"]
@@ -247,4 +248,27 @@ async fn an_agent_ingests_end_to_end() {
         serde_json::from_str(body["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
     assert_eq!(fetched["state"], "ready", "{fetched:#?}");
     assert_eq!(fetched["path"], "agent-authored.txt");
+}
+
+/// A get for a row that does not exist fails the call, as REST
+/// answers 404, instead of succeeding with a null body.
+#[tokio::test]
+async fn a_missing_row_is_an_error_not_a_null_success() {
+    let (router, admin, _dir) = stack().await;
+    let token = mint(&admin, &["read"]).await;
+    let absent = ulid::Ulid::generate().to_string().to_ascii_lowercase();
+
+    let body = rpc(
+        &router,
+        &token,
+        json!({
+            "jsonrpc": "2.0", "id": 9, "method": "tools/call",
+            "params": { "name": "file_get", "arguments": { "id": absent } },
+        }),
+    )
+    .await;
+    assert!(body.get("result").is_none(), "{body:#?}");
+    let message = body["error"]["message"].as_str().unwrap();
+    assert!(message.contains("not found"), "{message}");
+    assert!(message.contains(&absent), "{message}");
 }

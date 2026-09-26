@@ -3,7 +3,7 @@
 # dependencies fetch through a BuildKit secret (a read token), which
 # never lands in a layer; without one, the build works only where the
 # dependency cache is already warm.
-FROM rust:1-bookworm AS build
+FROM rust:1-trixie AS build
 WORKDIR /src
 COPY . .
 RUN --mount=type=secret,id=oneiriq_token \
@@ -23,7 +23,7 @@ RUN --mount=type=secret,id=oneiriq_token \
     cp target/release/copal-server /usr/local/bin/copal-server
 
 # Runtime stage: slim, non-root, no toolchain.
-FROM debian:bookworm-slim AS runtime
+FROM debian:trixie-slim AS runtime
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/* \

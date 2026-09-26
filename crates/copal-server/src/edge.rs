@@ -35,7 +35,9 @@ use crate::error::ApiError;
 /// individually, so the ceiling stays low; `cg1` covers long-lived
 /// needs.
 const MAX_TTL_SECS: i64 = 86_400;
-const DEFAULT_TTL_SECS: i64 = 300;
+/// The TTL a request that names none gets, on every face. The contract
+/// declares it, and it matches the grant family's default.
+pub(crate) const DEFAULT_TTL_SECS: i64 = 900;
 
 /// Edge state: the application plus the sealing cipher.
 #[derive(Clone)]
@@ -139,6 +141,9 @@ pub(crate) async fn issue_edge_url_core<B: BlobStore>(
     if !record.servable_content() {
         return Err(CopalError::conflict("file has no servable content").into());
     }
+    if app.withholds_pending_scan(&record) {
+        return Err(CopalError::conflict("content is awaiting a malware scan").into());
+    }
 
     // The newest active key signs; rotation reads as mint new, revoke
     // old once edge configs have moved.
@@ -209,7 +214,9 @@ async fn redeem_edge<B: BlobStore>(
     let record = file_repo::get_file(&state.app.store, &tenant, &id)
         .await?
         .ok_or_else(refused)?;
-    if !record.servable_content() {
+    // A token outlives the content it was issued for: bytes uploaded
+    // since then wait for their own scan.
+    if !record.servable_content() || state.app.withholds_pending_scan(&record) {
         return Err(refused().into());
     }
     let digest = record.digest.as_ref().expect("servable implies digest");
@@ -244,7 +251,7 @@ async fn mint_edge_key<B: BlobStore>(
     headers: HeaderMap,
     Path(tenant): Path<String>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
-    crate::auth::require_admin(&state.app, &headers)?;
+    let operator = crate::auth::require_admin(&state.app, &headers)?;
     let tenant = TenantId::parse(&tenant)?;
     let token = copal_sign::ApiKeyToken::mint();
     let sealed = state.app.require_cipher()?.seal(token.secret.as_bytes())?;
@@ -253,7 +260,7 @@ async fn mint_edge_key<B: BlobStore>(
     copal_store::repo::auth::record_audit(
         &state.app.store,
         &tenant,
-        "admin",
+        operator.as_str(),
         "edgekey.minted",
         &row.key_id(),
         forwarded_origin(&headers).as_deref(),
@@ -289,7 +296,7 @@ async fn revoke_edge_key<B: BlobStore>(
     headers: HeaderMap,
     Path((tenant, key_id)): Path<(String, String)>,
 ) -> Result<StatusCode, ApiError> {
-    crate::auth::require_admin(&state.app, &headers)?;
+    let operator = crate::auth::require_admin(&state.app, &headers)?;
     let tenant = TenantId::parse(&tenant)?;
     if !edge_repo::revoke_key(&state.app.store, &tenant, &key_id).await? {
         return Err(CopalError::not_found(format!("edge key {key_id}")).into());
@@ -297,7 +304,7 @@ async fn revoke_edge_key<B: BlobStore>(
     copal_store::repo::auth::record_audit(
         &state.app.store,
         &tenant,
-        "admin",
+        operator.as_str(),
         "edgekey.revoked",
         &key_id,
         forwarded_origin(&headers).as_deref(),

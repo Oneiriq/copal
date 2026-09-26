@@ -27,7 +27,7 @@ use aes_gcm::aead::{Aead, KeyInit, Payload};
 pub use aes_gcm::Aes256Gcm;
 use aes_gcm::Nonce;
 use hkdf::Hkdf;
-use rand::RngCore as _;
+use rand::Rng as _;
 use sha2::Sha256;
 
 use copal_core::CopalError;
@@ -226,7 +226,7 @@ fn seal_frame(
     let nonce = nonce_bytes(index, last);
     cipher
         .encrypt(
-            Nonce::from_slice(&nonce),
+            &Nonce::from(nonce),
             Payload {
                 msg: plaintext,
                 aad: &[],
@@ -244,7 +244,7 @@ fn open_frame(
     let nonce = nonce_bytes(index, last);
     cipher
         .decrypt(
-            Nonce::from_slice(&nonce),
+            &Nonce::from(nonce),
             Payload {
                 msg: sealed,
                 aad: &[],

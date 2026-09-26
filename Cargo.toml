@@ -13,7 +13,7 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.90"
+rust-version = "1.94"
 license = "AGPL-3.0-only"
 repository = "https://github.com/Oneiriq/copal"
 authors = ["Shon Thomas <shonpt@outlook.com>"]
@@ -36,15 +36,15 @@ thiserror = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-util", "fs"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-ulid = "1"
-sha2 = "0.10"
+ulid = "3"
+sha2 = "0.11"
 hex = "0.4"
-opendal = { version = "0.58", default-features = false, features = ["services-fs", "services-s3", "services-gcs", "services-azblob"] }
+opendal = { version = "0.59", default-features = false, features = ["services-fs", "services-s3", "services-gcs", "services-azblob"] }
 axum = "0.8"
 tempfile = "3"
 futures = "0.3"
 bytes = "1"
-rand = "0.9"
+rand = "0.10"
 
 # Full debug info costs more than it returns here. The workspace links
 # surrealdb into every one of its test binaries, and on Windows each

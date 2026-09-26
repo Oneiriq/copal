@@ -393,7 +393,7 @@ async fn scale_round_trips_remote() {
         std::env::var("COPAL_BENCH_DB_URL").unwrap_or_else(|_| "ws://127.0.0.1:8000".to_owned());
     let database = format!(
         "bench_{}",
-        ulid::Ulid::new().to_string().to_ascii_lowercase()
+        ulid::Ulid::generate().to_string().to_ascii_lowercase()
     );
     let config = StoreConfig {
         url,

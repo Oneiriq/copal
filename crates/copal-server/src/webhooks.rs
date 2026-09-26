@@ -18,7 +18,7 @@ use axum::routing::get;
 use axum::{Json, Router};
 use base64::Engine as _;
 use futures::StreamExt as _;
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use serde::Deserialize;
 use serde_json::json;
 use sha2::Sha256;
@@ -41,7 +41,8 @@ const HTTP_TIMEOUT_SECS: u64 = 10;
 /// Rows per pass, both fan-out and delivery.
 const PASS_BATCH: i64 = 100;
 
-/// Webhook management state: the application plus the sealing cipher.
+/// Webhook management state: the application, whose cipher seals the
+/// signing secrets.
 #[derive(Clone)]
 pub struct WebhookState<B: BlobStore> {
     pub app: AppState<B>,
@@ -63,7 +64,7 @@ pub fn webhook_router<B: BlobStore + 'static>(app: AppState<B>) -> Router {
         )
         .route(
             "/v1/webhooks/{id}",
-            axum::routing::delete(remove_endpoint::<B>),
+            get(get_endpoint::<B>).delete(remove_endpoint::<B>),
         )
         .with_state(state)
 }
@@ -136,16 +137,115 @@ pub(crate) async fn register_core<B: BlobStore>(
     }))
 }
 
-/// List a tenant's endpoints (never their secrets).
+/// Endpoint listing parameters, as the contract declares them.
+#[derive(Debug, Deserialize)]
+struct EndpointListQuery {
+    #[serde(default)]
+    limit: Option<i64>,
+    #[serde(default)]
+    cursor: Option<String>,
+    #[serde(default)]
+    sort: Option<String>,
+}
+
+/// List a tenant's endpoints (never their secrets), oldest first
+/// unless `sort=-created_at`.
 async fn list_endpoints<B: BlobStore>(
     State(state): State<WebhookState<B>>,
     headers: HeaderMap,
+    axum::extract::Query(params): axum::extract::Query<EndpointListQuery>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let limit = params.limit.unwrap_or(100).clamp(1, 100);
+    let auth =
+        crate::auth::authorize_scoped(&state.app, &headers, crate::auth::Scope::Read, limit as u64)
+            .await?;
+    let ascending = match params.sort.as_deref() {
+        None | Some("created_at") => true,
+        Some("-created_at") => false,
+        Some(other) => {
+            return Err(CopalError::validation(format!("unknown sort {other:?}")).into());
+        }
+    };
+    let (items, next_cursor) = endpoints_page(
+        &auth.store,
+        &auth.tenant,
+        limit as usize,
+        params.cursor.as_deref(),
+        ascending,
+    )
+    .await?;
+    Ok(Json(json!({ "items": items, "next_cursor": next_cursor })))
+}
+
+/// One page of a tenant's endpoints, plus the cursor that resumes it.
+/// Shared by the REST handler and the GraphQL list resolver.
+///
+/// The store answers with the whole set in creation order, and a
+/// tenant's endpoints are few, so the page is cut here. The cursor
+/// names the last endpoint handed out and the direction it was handed
+/// out in. Endpoints are deactivated rather than deleted, so the row a
+/// cursor names stays in the set.
+pub(crate) async fn endpoints_page(
+    store: &Store,
+    tenant: &copal_core::TenantId,
+    limit: usize,
+    cursor: Option<&str>,
+    ascending: bool,
+) -> Result<(Vec<serde_json::Value>, Option<String>), ApiError> {
+    let direction = if ascending { "a" } else { "d" };
+    let mut rows = eventing::list_endpoints(store, tenant).await?;
+    if !ascending {
+        rows.reverse();
+    }
+    let start = match cursor {
+        None => 0,
+        Some(raw) => {
+            let malformed = || CopalError::validation("malformed cursor");
+            let text = hex::decode(raw)
+                .ok()
+                .and_then(|bytes| String::from_utf8(bytes).ok())
+                .ok_or_else(malformed)?;
+            let (dir, id) = text.split_once('|').ok_or_else(malformed)?;
+            if dir != direction {
+                return Err(
+                    CopalError::validation("cursor was issued for a different sort order").into(),
+                );
+            }
+            rows.iter()
+                .position(|row| row.get("id").and_then(|v| v.as_str()) == Some(id))
+                .ok_or_else(malformed)?
+                + 1
+        }
+    };
+    let page: Vec<serde_json::Value> = rows.into_iter().skip(start).collect();
+    let more = page.len() > limit;
+    let page: Vec<serde_json::Value> = page.into_iter().take(limit).collect();
+    let next_cursor = if more {
+        page.last()
+            .and_then(|row| row.get("id").and_then(|v| v.as_str()))
+            .map(|id| hex::encode(format!("{direction}|{id}")))
+    } else {
+        None
+    };
+    Ok((page, next_cursor))
+}
+
+/// One endpoint by id (never its secret). Deactivated endpoints still
+/// read, as they do in the listing.
+async fn get_endpoint<B: BlobStore>(
+    State(state): State<WebhookState<B>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let auth =
         crate::auth::authorize_scoped(&state.app, &headers, crate::auth::Scope::Read, 1).await?;
-    let tenant = &auth.tenant;
-    let items = eventing::list_endpoints(&auth.store, tenant).await?;
-    Ok(Json(json!({ "items": items })))
+    // The same lookup the GraphQL get resolver makes.
+    let found = eventing::list_endpoints(&auth.store, &auth.tenant)
+        .await?
+        .into_iter()
+        .find(|row| row.get("id").and_then(|v| v.as_str()) == Some(id.as_str()))
+        .ok_or_else(|| CopalError::not_found(format!("webhook {id}")))?;
+    Ok(Json(found))
 }
 
 /// Deactivate an endpoint; unknown and already-inactive both read 404.

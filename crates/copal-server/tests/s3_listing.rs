@@ -87,7 +87,7 @@ fn amz_now() -> String {
 }
 
 impl Client {
-    /// Send one signed request; the query must already be sorted.
+    /// Send one signed request. The query must already be sorted.
     async fn send(
         &self,
         method: &str,

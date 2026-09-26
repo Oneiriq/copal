@@ -27,7 +27,8 @@ use crate::app::AppState;
 
 /// What one tool name means, resolved once from the contract with
 /// exactly the naming the manifest generator uses. Actions and queries
-/// carry the names of their multi-valued inputs; see [`join_lists`].
+/// carry the names of their multi-valued inputs, which [`join_lists`]
+/// reads.
 #[derive(Debug, Clone)]
 enum Route {
     List {

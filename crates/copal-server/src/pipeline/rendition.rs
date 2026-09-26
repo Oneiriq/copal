@@ -37,7 +37,7 @@ pub(super) async fn render_rendition<B: BlobStore>(
             }));
         }
         // A crash between completion and the ready mark left the
-        // bytes in place; finish the mark instead of rendering again.
+        // bytes in place. Finish the mark instead of rendering again.
         if let (FileState::Scanning, Some(digest)) = (record.state, record.digest.as_ref()) {
             let cleared = rendition_source_cleared(store, &tenant, &input, &source_digest).await?;
             mark_rendition_ready(store, &tenant, &derived, digest, &source_digest, cleared).await?;

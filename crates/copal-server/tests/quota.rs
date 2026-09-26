@@ -450,3 +450,39 @@ async fn abandoned_resumable_sessions_give_their_reservation_back() {
         "the sweep releases what the client abandoned",
     );
 }
+
+#[tokio::test]
+async fn the_sweep_recounts_every_tenant_past_one_page() {
+    use copal_server::app::Residencies;
+    use copal_server::sweeps::{run_pass, SweepConfig};
+    use copal_store::repo::tenant as tenant_repo;
+
+    // One more tenant than a usage page holds, each counter drifted
+    // from the truth, which is zero: none of them has a file.
+    let store = Store::connect(StoreConfig::memory()).await.unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let blobs = ObjectStore::open(dir.path().to_str().unwrap()).unwrap();
+    let tenants: Vec<copal_core::TenantId> = (0..501)
+        .map(|i| copal_core::TenantId::parse(format!("tenant{i:03}")).unwrap())
+        .collect();
+    for tenant in &tenants {
+        tenant_repo::set_usage(&store, tenant, 1_234, 5)
+            .await
+            .unwrap();
+    }
+
+    let report = run_pass(
+        &store,
+        &Residencies::local_only(blobs),
+        &SweepConfig::default(),
+    )
+    .await;
+    assert_eq!(report.usage_reconciled, 501);
+    for tenant in [&tenants[0], &tenants[499], &tenants[500]] {
+        assert_eq!(
+            tenant_repo::cached_usage(&store, tenant).await.unwrap(),
+            Some((0, 0)),
+            "{tenant}",
+        );
+    }
+}

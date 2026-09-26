@@ -27,6 +27,9 @@ use copal_blob::BlobStore;
 use copal_store::repo::{blob as blob_repo, file as file_repo, flow as flow_repo};
 use copal_store::Store;
 
+/// Tenants recounted per usage page.
+const USAGE_PAGE: i64 = 500;
+
 /// Sweep cadence and retention knobs.
 #[derive(Debug, Clone, Copy)]
 pub struct SweepConfig {
@@ -166,19 +169,36 @@ pub async fn run_pass<B: BlobStore>(
 
     // The usage counter is a cache; this recount is what keeps a
     // crashed upload or a missed release from drifting it forever.
-    match copal_store::repo::tenant::tenants_with_usage(store, 500).await {
-        Ok(tenants) => {
-            for raw in tenants {
-                let Ok(tenant) = copal_core::TenantId::parse(&raw) else {
-                    continue;
-                };
-                match copal_store::repo::tenant::reconcile_usage(store, &tenant).await {
-                    Ok(_) => report.usage_reconciled += 1,
-                    Err(err) => tracing::warn!(error = %err, "usage reconcile failed"),
-                }
+    // Keyset pages until a short one, so every tenant is recounted
+    // every pass, however many there are.
+    let mut after: Option<String> = None;
+    loop {
+        let tenants = match copal_store::repo::tenant::tenants_with_usage_after(
+            store,
+            after.as_deref(),
+            USAGE_PAGE,
+        )
+        .await
+        {
+            Ok(tenants) => tenants,
+            Err(err) => {
+                tracing::warn!(error = %err, "usage sweep failed");
+                break;
+            }
+        };
+        for raw in &tenants {
+            let Ok(tenant) = copal_core::TenantId::parse(raw) else {
+                continue;
+            };
+            match copal_store::repo::tenant::reconcile_usage(store, &tenant).await {
+                Ok(_) => report.usage_reconciled += 1,
+                Err(err) => tracing::warn!(error = %err, "usage reconcile failed"),
             }
         }
-        Err(err) => tracing::warn!(error = %err, "usage sweep failed"),
+        if (tenants.len() as i64) < USAGE_PAGE {
+            break;
+        }
+        after = tenants.last().cloned();
     }
 
     match gc_pass(store, residencies, config, &mut report).await {

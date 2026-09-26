@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 use surql::query::builder::Query;
 use surql::query::crud::{create_record, query_records};
 use surql::query::expressions::raw;
-use surql::types::operators::eq;
+use surql::types::operators::{eq, gt};
 use surql::types::RecordID;
 
 use copal_core::{CopalError, TenantId};
@@ -416,11 +416,28 @@ pub async fn reconcile_usage(store: &Store, tenant: &TenantId) -> copal_core::Re
     Ok((bytes, files))
 }
 
-/// Tenants carrying a usage row, for the reconciliation sweep.
+/// Tenants carrying a usage row, the first `limit` in id order.
 pub async fn tenants_with_usage(store: &Store, limit: i64) -> copal_core::Result<Vec<String>> {
-    let query = Query::new()
+    tenants_with_usage_after(store, None, limit).await
+}
+
+/// Tenants carrying a usage row, in id order, strictly after `after`:
+/// the keyset the reconciliation sweep pages through, so it reaches
+/// every tenant however many there are.
+pub async fn tenants_with_usage_after(
+    store: &Store,
+    after: Option<&str>,
+    limit: i64,
+) -> copal_core::Result<Vec<String>> {
+    let mut query = Query::new()
         .select(Some(vec!["tenant_id".to_owned()]))
         .from_table(USAGE_TABLE)
+        .map_err(|e| map_store_err("tenants_with_usage", e))?;
+    if let Some(after) = after {
+        query = query.where_(gt("tenant_id", after));
+    }
+    let query = query
+        .order_by("tenant_id", "ASC")
         .map_err(|e| map_store_err("tenants_with_usage", e))?
         .limit(limit)
         .map_err(|e| map_store_err("tenants_with_usage", e))?;

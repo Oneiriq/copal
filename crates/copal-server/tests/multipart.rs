@@ -500,3 +500,98 @@ async fn undersized_parts_and_open_sessions_behave_like_s3() {
         "one part is the last part"
     );
 }
+
+/// Completion assembles the parts the manifest lists and nothing
+/// else, and refuses a list out of order the way S3 does. Parts left
+/// out go with the session.
+#[tokio::test]
+async fn completion_assembles_only_the_listed_parts() {
+    let stack = stack().await;
+    let (key_id, secret) = mint(&stack.admin).await;
+    let gateway = &stack.gateway;
+
+    let response = gateway
+        .clone()
+        .oneshot(signed(
+            "POST",
+            "/acme/picked/parts.bin",
+            "uploads=",
+            &key_id,
+            &secret,
+            Vec::new(),
+        ))
+        .await
+        .unwrap();
+    let upload_id = between(&text_body(response).await, "<UploadId>", "</UploadId>");
+
+    let parts = [vec![b'x'; 12], vec![b'y'; 9], vec![b'z'; 7]];
+    for (index, bytes) in parts.iter().enumerate() {
+        let response = gateway
+            .clone()
+            .oneshot(signed(
+                "PUT",
+                "/acme/picked/parts.bin",
+                &format!("partNumber={}&uploadId={upload_id}", index + 1),
+                &key_id,
+                &secret,
+                bytes.clone(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+    let entry = |number: usize| {
+        format!(
+            "<Part><PartNumber>{number}</PartNumber><ETag>\"{}\"</ETag></Part>",
+            hex::encode(Sha256::digest(&parts[number - 1])),
+        )
+    };
+    let complete = |manifest: String| {
+        signed(
+            "POST",
+            "/acme/picked/parts.bin",
+            &format!("uploadId={upload_id}"),
+            &key_id,
+            &secret,
+            format!("<CompleteMultipartUpload>{manifest}</CompleteMultipartUpload>").into_bytes(),
+        )
+    };
+
+    let response = gateway
+        .clone()
+        .oneshot(complete(format!("{}{}", entry(3), entry(1))))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert!(text_body(response).await.contains("InvalidPartOrder"));
+
+    let response = gateway
+        .clone()
+        .oneshot(complete(format!("{}{}", entry(1), entry(3))))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let response = gateway
+        .clone()
+        .oneshot(signed(
+            "GET",
+            "/acme/picked/parts.bin",
+            "",
+            &key_id,
+            &secret,
+            Vec::new(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let mut expected = parts[0].clone();
+    expected.extend_from_slice(&parts[2]);
+    assert_eq!(&bytes[..], &expected[..], "part 2 was left out");
+    assert_eq!(
+        staged_part_files(&stack.dir),
+        0,
+        "every staged part cleaned"
+    );
+}

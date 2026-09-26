@@ -3,9 +3,9 @@
 //! The aws CLI switches to multipart above 8 MiB without asking, so a
 //! gateway without it fails ordinary large-file copies. Parts stage
 //! individually under the session prefix (they arrive in any order,
-//! in parallel, and may be re-sent), and completion streams them in
-//! part order through the same put, finalize, and pipeline path every
-//! other upload face uses.
+//! in parallel, and may be re-sent), and completion streams the parts
+//! its manifest lists, in part order, through the same put, finalize,
+//! and pipeline path every other upload face uses.
 //!
 //! Staging always lives on the LOCAL backend, like resumable
 //! sessions: parts need many small writes, and the completed object
@@ -177,15 +177,29 @@ pub async fn complete_multipart<B: BlobStore>(
         );
     }
 
-    // The manifest names the parts the client believes it sent. Any
-    // number it names that we never stored, or whose ETag disagrees,
-    // fails the completion rather than silently assembling something
-    // the client did not describe.
+    // The manifest names the parts to assemble, in ascending order as
+    // S3 requires. Only those parts assemble: one uploaded and left
+    // out is discarded with the session. Any number the manifest names
+    // that we never stored, or whose ETag disagrees, fails the
+    // completion rather than silently assembling something the client
+    // did not describe. An absent manifest keeps every stored part.
     let claimed = parse_manifest(manifest);
-    if !claimed.is_empty() {
-        for (number, etag) in &claimed {
+    let selected: Vec<&mpu_repo::PartRow> = if claimed.is_empty() {
+        parts.iter().collect()
+    } else {
+        let mut selected = Vec::with_capacity(claimed.len());
+        for (index, (number, etag)) in claimed.iter().enumerate() {
+            if index > 0 && *number <= claimed[index - 1].0 {
+                return super::xml_error(
+                    StatusCode::BAD_REQUEST,
+                    "InvalidPartOrder",
+                    "the part list must be in ascending order of part number",
+                );
+            }
             match parts.iter().find(|p| p.part_number == *number) {
-                Some(part) if etag.is_empty() || etag.trim_matches('"') == part.digest => {}
+                Some(part) if etag.is_empty() || etag.trim_matches('"') == part.digest => {
+                    selected.push(part);
+                }
                 Some(_) => {
                     return super::xml_error(
                         StatusCode::BAD_REQUEST,
@@ -202,13 +216,14 @@ pub async fn complete_multipart<B: BlobStore>(
                 }
             }
         }
-    }
+        selected
+    };
 
     // Every part but the last must meet the floor. The parts are
     // ordered, so the last one is exempt by position, and a
     // single-part upload is all last part.
     let floor = gateway.app.limits.min_multipart_part_bytes;
-    if let Some((_, leading)) = parts.split_last() {
+    if let Some((_, leading)) = selected.split_last() {
         if let Some(undersized) = leading.iter().find(|p| p.size_bytes < floor) {
             return super::xml_error(
                 StatusCode::BAD_REQUEST,
@@ -222,7 +237,7 @@ pub async fn complete_multipart<B: BlobStore>(
     }
 
     let state = &gateway.app;
-    let total: u64 = parts.iter().map(|p| p.size_bytes.max(0) as u64).sum();
+    let total: u64 = selected.iter().map(|p| p.size_bytes.max(0) as u64).sum();
     if let Err(err) = state.quota_headroom(tenant, Some(total)).await {
         return copal_to_s3(err.0);
     }
@@ -280,8 +295,8 @@ pub async fn complete_multipart<B: BlobStore>(
     // Assemble: the parts stream in part order into one put, so the
     // final object is content-addressed like every other upload.
     let local = state.blobs.clone();
-    let keys: Vec<String> = parts.iter().map(|p| p.staging_key.clone()).collect();
-    let assembled = futures::stream::iter(keys.clone())
+    let keys: Vec<String> = selected.iter().map(|p| p.staging_key.clone()).collect();
+    let assembled = futures::stream::iter(keys)
         .then(move |key| {
             let local = local.clone();
             async move { local.open_staged(&key).await }
@@ -335,10 +350,10 @@ pub async fn complete_multipart<B: BlobStore>(
         return copal_to_s3(err.0);
     }
 
-    // The session and its staged parts go last: a crash before this
-    // leaves only garbage the sweep collects.
-    for key in &keys {
-        let _ = state.blobs.discard_staged(key).await;
+    // The session and every staged part, assembled or left out, go
+    // last: a crash before this leaves only garbage the sweep collects.
+    for part in &parts {
+        let _ = state.blobs.discard_staged(&part.staging_key).await;
     }
     let _ = mpu_repo::delete_upload(&state.store, upload_id).await;
 

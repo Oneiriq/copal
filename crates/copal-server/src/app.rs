@@ -323,13 +323,13 @@ impl<B: BlobStore> AppState<B> {
         })
     }
 
-    /// Install the embedding service semantic search asks.
     /// Point search at a reranking service.
     pub fn with_reranker(mut self, reranker: Option<crate::rerank::Reranker>) -> Self {
         self.reranker = reranker;
         self
     }
 
+    /// Install the embedding service semantic search asks.
     pub fn with_embedding(mut self, embedding: Option<(String, String)>) -> Self {
         self.embedding = embedding;
         self
@@ -361,12 +361,13 @@ impl<B: BlobStore> AppState<B> {
         self.scan_gates_serving && !crate::pipeline::content_cleared(record)
     }
 
-    /// Install a populated activity/workflow registry.
+    /// Install the store configuration the console's fleet view walks.
     pub fn with_fleet(mut self, fleet: Option<copal_store::StoreConfig>) -> Self {
         self.fleet = fleet;
         self
     }
 
+    /// Install the named external transformers.
     pub fn with_transformers(
         mut self,
         transformers: std::collections::HashMap<String, crate::config::TransformerConfig>,
@@ -375,6 +376,7 @@ impl<B: BlobStore> AppState<B> {
         self
     }
 
+    /// Install a populated activity/workflow registry.
     pub fn with_flow(mut self, registry: FlowRegistry) -> Self {
         self.flow = FlowEngine::new(self.store.clone(), registry);
         self

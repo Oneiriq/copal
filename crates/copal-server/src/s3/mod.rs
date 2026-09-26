@@ -312,7 +312,6 @@ pub(crate) fn xml_response(status: StatusCode, body: String) -> Response {
     (status, [(header::CONTENT_TYPE, "application/xml")], body).into_response()
 }
 
-/// Map an internal error onto the S3 error envelope.
 /// A claim refused because the previous upload to this key is still
 /// finishing (uploading, or being scanned and indexed).
 ///
@@ -429,6 +428,7 @@ pub(crate) async fn conditional_refusal<B: BlobStore>(
     claim_refusal(state, tenant, id, err).await
 }
 
+/// Map an internal error onto the S3 error envelope.
 pub(crate) fn copal_to_s3(err: CopalError) -> Response {
     match err {
         CopalError::NotFound(msg) => xml_error(StatusCode::NOT_FOUND, "NoSuchKey", &msg),

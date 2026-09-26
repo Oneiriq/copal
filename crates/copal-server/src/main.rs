@@ -291,7 +291,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     if config.allow_private_webhook_targets {
         tracing::warn!(
-            "webhook targets on private addresses are ALLOWED              (COPAL_WEBHOOK_ALLOW_PRIVATE_TARGETS): tenant-supplied URLs can reach              services inside this deployment",
+            "webhook targets on private addresses are ALLOWED \
+             (COPAL_WEBHOOK_ALLOW_PRIVATE_TARGETS): tenant-supplied URLs can reach \
+             services inside this deployment",
         );
     }
     match config.engine_sessions.as_str() {

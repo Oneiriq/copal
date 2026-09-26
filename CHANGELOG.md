@@ -157,16 +157,16 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
   accepts all four levels now so that divergence needs no wire
   change later.
 
-- **The engine policy derives in janus now.** The server rendered its
+- **The engine policy derives in kayak now.** The server rendered its
   SurrealDB `PERMISSIONS` clauses from the contract by hand - a guard
   map, the read-scope conjuncts, the sub-resource walk - one function
   away from the contract layer that classifies every other face's
-  inputs. Janus grew `derive_policy` beside those faces, its default
+  inputs. Kayak grew `derive_policy` beside those faces, its default
   claim vocabulary IS this deployment's caller-token conventions
-  (`sc`, `adm`, `pr`), and janus's own tests hold the derived strings
+  (`sc`, `adm`, `pr`), and kayak's own tests hold the derived strings
   byte-identical to what the hand derivation produced, so the switch
   reviews as deletion: `engine_policy` now calls the library and
-  keeps only what janus deliberately does not model - the retention
+  keeps only what kayak deliberately does not model - the retention
   delete conjunct, stated explicitly because the contract cannot
   declare it yet, and the mechanical tenancy floor, which stays in
   the store because a floor derived from the contract would be
@@ -190,7 +190,7 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
   prove the planner uses one, and the failure that slips through that
   crack is a listing that answers correctly and walks the table to do
   it. A new test stands up the real schema on the embedded engine and
-  runs janus's `EXPLAIN` verification over the whole contract - one
+  runs kayak's `EXPLAIN` verification over the whole contract - one
   probe per filter claim, per sort claim, and per search backing,
   convicting on a table walk and on a backing that does not reach its
   named index. Because it rides the ordinary test suite it runs on
@@ -320,7 +320,7 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
   The deployment page renders its own markup beside the generated
   ones, so it kept the old layout while everything else moved. It
-  takes the frame from janus now, the way it already took the
+  takes the frame from kayak now, the way it already took the
   stylesheet, and lists the tenants in the rail.
 
 ### Operator console
@@ -347,7 +347,7 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 - **The contract declares its closed sets, so callers pick rather than
   guess.** A file's `access` is one of four words and a search's `mode`
   is one of three, and both said so only in a description. They are
-  declared now, which janus carries to every face: an `enum` in the
+  declared now, which kayak carries to every face: an `enum` in the
   OpenAPI document and the MCP manifest, a menu in the console, and a
   refusal at the dispatcher for anything outside the list, ahead of
   the resolver. The `state` filter on the files listing is a menu of
@@ -357,9 +357,9 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 - **One stylesheet, one console.** The deployment page carried its own
   copy of the console's look and rendered its own tables, so it went
-  on printing raw byte counts and nanosecond timestamps after janus
+  on printing raw byte counts and nanosecond timestamps after kayak
   made the generated pages read at a glance. It now takes both the
-  stylesheet and the value formatting from janus: a tenant's usage
+  stylesheet and the value formatting from kayak: a tenant's usage
   says `1.3 KB` and an audit row says `2026-08-05 06:46:46`.
 
   What arrived with it, on every page the contract generates: nested
@@ -426,12 +426,12 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ### Retrieval
 
-- **The generated SDKs can call search.** Janus carried contract
+- **The generated SDKs can call search.** Kayak carried contract
   queries to OpenAPI, GraphQL, MCP, the console, and both runtime
   routers, and never to the four client generators, so `search` and
   `file_text` were published on five faces and absent from every SDK.
   The highlighting and facets above were unreachable from a generated
-  client. Fixed upstream in janus and picked up here: all four clients
+  client. Fixed upstream in kayak and picked up here: all four clients
   now carry both queries, `search` with its seven parameters including
   `facets`.
 
@@ -552,7 +552,7 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
   retrieval surface was REST-only: absent from GraphQL, invisible to
   the differ, and outside the declaration set governing everything
   else, on a product whose thesis is governed retrieval. Both are now
-  contract queries, a shape Janus grew for reads that answer a
+  contract queries, a shape Kayak grew for reads that answer a
   question rather than paging a collection. They declare their
   parameters, their read scope, and their rate class; they render
   into the OpenAPI document and the GraphQL schema; and both faces
@@ -783,8 +783,8 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
   test. `GET /v1/admin/tenants` joined the admin surface for the
   population view the console and the CLI share.
 
-- **The operator console, rendered from the declaration.** Janus
-  grew a console renderer (janus #15): contract-driven pages over
+- **The operator console, rendered from the declaration.** Kayak
+  grew a console renderer (kayak #15): contract-driven pages over
   the same dispatcher every face uses. Copal mounts it at
   `/admin/console` behind HTTP Basic with the admin token as the
   password, adds the deployment home (tenants, audit tail), and
@@ -793,7 +793,7 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
   no JavaScript, no external assets; it works air-gapped. The
   sixth face from one declaration.
 
-- **The contract-first REST face.** Janus grew a runtime REST
+- **The contract-first REST face.** Kayak grew a runtime REST
   router: the route table derives from the contract with the
   OpenAPI path formulas, and requests run the same dispatcher chain
   as GraphQL and MCP (scopes, validation, rate classes, guards).
@@ -812,7 +812,7 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
   every push, and a manually dispatched publish workflow dry-runs
   the release motion until registry tokens exist. The pipeline's
   first run caught a real bug: the generated Python had an
-  IndentationError in every sub-collection method (janus #13),
+  IndentationError in every sub-collection method (kayak #13),
   because nothing had ever compiled the file.
 
 - **The agent face joined the evidence.** A curl-only MCP runner is
@@ -836,7 +836,7 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
   the work back ready, all through tools plus one grant URL.
 
 - **The MCP face.** `POST /mcp` serves agents: `tools/list` is the
-  manifest Janus generates from the contract (every resource's list
+  manifest Kayak generates from the contract (every resource's list
   and get, every action, every query, with scopes and rate classes
   as annotations), committed as `docs/mcp-tools.json` under the same
   drift gate as every artifact. `tools/call` dispatches through the

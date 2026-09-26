@@ -139,6 +139,9 @@ pub(crate) async fn issue_edge_url_core<B: BlobStore>(
     if !record.servable_content() {
         return Err(CopalError::conflict("file has no servable content").into());
     }
+    if app.withholds_pending_scan(&record) {
+        return Err(CopalError::conflict("content is awaiting a malware scan").into());
+    }
 
     // The newest active key signs; rotation reads as mint new, revoke
     // old once edge configs have moved.
@@ -209,7 +212,9 @@ async fn redeem_edge<B: BlobStore>(
     let record = file_repo::get_file(&state.app.store, &tenant, &id)
         .await?
         .ok_or_else(refused)?;
-    if !record.servable_content() {
+    // A token outlives the content it was issued for: bytes uploaded
+    // since then wait for their own scan.
+    if !record.servable_content() || state.app.withholds_pending_scan(&record) {
         return Err(refused().into());
     }
     let digest = record.digest.as_ref().expect("servable implies digest");

@@ -101,6 +101,20 @@ pub fn derive_run_key(derived: &FileId, source_digest: &ContentDigest, params: &
 /// The workflow key the server enqueues after uploads when configured.
 pub const UPLOAD_WORKFLOW: &str = "post_upload";
 
+/// Whether the digest a record serves is the one its processing
+/// cleared. The scan gate withholds content for which this is false.
+pub(crate) fn content_cleared(record: &copal_core::FileRecord) -> bool {
+    let Some(digest) = record.digest.as_ref() else {
+        return false;
+    };
+    record
+        .metadata
+        .get("processing")
+        .and_then(|p| p.get("scanned_digest"))
+        .and_then(|v| v.as_str())
+        == Some(digest.as_str())
+}
+
 /// Deterministic idempotency key for a file's post-upload run: recovery
 /// re-enqueues dedupe instead of double-processing.
 pub fn upload_run_key(file: &FileId, digest: &ContentDigest) -> String {

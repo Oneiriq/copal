@@ -358,18 +358,7 @@ impl<B: BlobStore> AppState<B> {
     /// rule would withhold even though that content was scanned.
     /// Comparing digests answers both.
     pub(crate) fn withholds_pending_scan(&self, record: &copal_core::FileRecord) -> bool {
-        if !self.scan_gates_serving {
-            return false;
-        }
-        let Some(digest) = record.digest.as_ref() else {
-            return true;
-        };
-        record
-            .metadata
-            .get("processing")
-            .and_then(|p| p.get("scanned_digest"))
-            .and_then(|v| v.as_str())
-            != Some(digest.as_str())
+        self.scan_gates_serving && !crate::pipeline::content_cleared(record)
     }
 
     /// Install a populated activity/workflow registry.
@@ -3690,7 +3679,9 @@ async fn redeem_grant<B: BlobStore>(
     let record = file_repo::get_file(&state.store, &tenant, &file_id)
         .await?
         .ok_or_else(refused)?;
-    if !record.servable_content() {
+    // Content that replaced the file after issuance waits for its own
+    // scan, like every other read, and the wait burns no use.
+    if !record.servable_content() || state.withholds_pending_scan(&record) {
         return Err(refused().into());
     }
     let digest = record.digest.as_ref().ok_or_else(refused)?;
@@ -3939,6 +3930,33 @@ pub(crate) async fn list_versions_page(
     ))
 }
 
+/// Whether a version's bytes were cleared by a scan. The current
+/// content answers through the record. An older version answers
+/// through the snapshot its successor took at completion: that
+/// snapshot is the metadata the older bytes left behind, processing
+/// verdict included, and a version replaced before its scan finished
+/// left no verdict naming its digest.
+async fn version_cleared<B: BlobStore>(
+    state: &AppState<B>,
+    store: &Store,
+    tenant: &TenantId,
+    record: &copal_core::FileRecord,
+    version: &copal_core::FileVersion,
+) -> Result<bool, ApiError> {
+    if record.digest.as_ref() == Some(&version.digest) {
+        return Ok(!state.withholds_pending_scan(record));
+    }
+    let successor =
+        version_repo::get_version(store, tenant, &record.id, version.number + 1).await?;
+    Ok(successor.is_some_and(|next| {
+        next.metadata_snapshot
+            .get("processing")
+            .and_then(|p| p.get("scanned_digest"))
+            .and_then(|v| v.as_str())
+            == Some(version.digest.as_str())
+    }))
+}
+
 /// Serve one historical version's bytes.
 async fn download_version<B: BlobStore>(
     State(state): State<AppState<B>>,
@@ -3971,6 +3989,11 @@ async fn download_version<B: BlobStore>(
             "this version's content failed processing and is not servable",
         )
         .into());
+    }
+    if state.scan_gates_serving
+        && !version_cleared(&state, &auth.store, tenant, &record, &version).await?
+    {
+        return Err(CopalError::conflict("content is awaiting a malware scan").into());
     }
     let backend = match state
         .residencies

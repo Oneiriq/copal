@@ -1047,6 +1047,11 @@ async fn get_object<B: BlobStore>(
         Ok(record) => record,
         Err(response) => return response,
     };
+    // The same gate the REST face applies: bytes no scanner has
+    // cleared do not serve.
+    if gateway.app.withholds_pending_scan(&record) {
+        return copal_to_s3(CopalError::conflict("content is awaiting a malware scan"));
+    }
     let digest = record.digest.as_ref().expect("servable implies digest");
     // AWS's own vocabulary for exactly this: an archived object's GET
     // refuses with InvalidObjectState, and the client speaks

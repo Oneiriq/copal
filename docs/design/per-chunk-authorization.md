@@ -1,36 +1,46 @@
 # Per-chunk authorization
 
-Design, ahead of code. The roadmap already made the load-bearing
-call: sensitivity comes from per-upload markers, declared by the
-uploader, who is the only party anywhere in the path that knows. The
-classifier seam is rejected there for a reason worth restating,
-because it shapes everything below. Every seam in this service fails
-safe when it is absent: no extractor means no text, no reranker means
-the fused order, no custody means the server refuses to boot. A
-classifier deciding confidentiality would be the first seam whose
-absence leaks, so the absence of markers must mean exactly what the
-absence of everything else means: today's behavior, nothing more
-exposed. This document designs the rest: what a marker looks like on
-the wire, how it survives extraction, where the level lands in the
-data model, where enforcement lives, and what the API faces see.
+Status: shipped. Markers ride the content PUT header
+(`x-copal-markers`), the fetch body, and tus `Upload-Metadata`; they
+persist on `file_version`, resolve at extraction, and set a level on
+each `text_chunk`. Search, facets, the rerank window, and
+`GET /v1/files/{id}/text` enforce them, and the engine carries the
+`text_chunk` clause. Not built: the SDK upload helper described under
+API surface (the generated clients have no byte upload methods), and
+the items listed as non-goals. The tenant-facing reference is the
+search section of [api.md](../api.md).
 
-## What is already true
+This page records the design. The load-bearing call came first:
+sensitivity comes from per-upload markers, declared by the uploader,
+who is the only party anywhere in the path that knows. A classifier
+seam was rejected for a reason that shapes everything below. Every
+seam in this service fails safe when it is absent: no extractor means
+no text, no reranker means the fused order, no custody means the
+server refuses to boot. A classifier deciding confidentiality would be
+the first seam whose absence leaks, so the absence of markers must
+mean exactly what the absence of everything else means: the behavior
+before markers existed, nothing more exposed. This document covers the
+rest: what a marker looks like on the wire, how it survives
+extraction, where the level lands in the data model, where enforcement
+lives, and what the API faces see.
 
-A chunk is withheld exactly when its file is. The retrieval queries
-in `crates/copal-store/src/repo/text.rs` carry one shared clause
-(`DISCLOSABLE`) beside the tenant predicate: grant-access files
-answer no search, quarantined and deleted records likewise, on both
-retrieval legs and in the facet counts. Enforcement sits inside the
-query, so a withheld passage is never a hit rather than a hit
-filtered late.
+## What was already true
 
-That machinery is the right shape at the wrong granularity, and both
-halves of the fix already have names. The unit exists: `text_chunk`
+Before markers, a chunk was withheld exactly when its file was. The
+retrieval queries in `crates/copal-store/src/repo/text.rs` carried one
+shared clause beside the tenant predicate (now `FILE_DISCLOSABLE`):
+grant-access files answer no search, quarantined and deleted records
+likewise, on both retrieval legs and in the facet counts. Enforcement
+sits inside the query, so a withheld passage never becomes a hit that
+has to be filtered later.
+
+That machinery had the right shape at the wrong granularity, and both
+halves of the fix already had names. The unit existed: `text_chunk`
 rows are what retrieval returns, one per passage, linked to their
-file. The vocabulary exists: `access INSIDE ['public', 'private',
+file. The vocabulary existed: `access INSIDE ['public', 'private',
 'tenant', 'grant']` on the file row, the same four words
-[principals.md](../principals.md) builds toward. What is missing is a
-level on the chunk and a way for an upload to set it.
+[principals.md](../principals.md) uses. What was missing was a level
+on the chunk and a way for an upload to set it.
 
 ## The marker
 
@@ -48,12 +58,12 @@ exists, a widening marker becomes a leak vector that every marked
 upload in history has already armed. Narrowing-only means historical
 markers can only ever have withheld too much.
 
-Stated honestly: at today's enforcement granularity the operative
-restriction is `grant`, because `public`, `private`, and `tenant`
-files all answer the same tenant-scoped, read-scoped search. The full
-vocabulary is accepted anyway. Principals are making `private` and
-`tenant` diverge on the read path, and accepting the four words now
-means that divergence reaches chunks with no wire change.
+At the current enforcement granularity the operative restriction is
+`grant`, because `public`, `private`, and `tenant` files all answer
+the same tenant-scoped, read-scoped search. The full vocabulary is
+accepted anyway. Principals exist but do not yet split `private` from
+`tenant` on the read path; accepting the four words now means that
+split, when it comes, reaches chunks with no wire change.
 
 ### Wire shapes considered
 
@@ -107,8 +117,8 @@ The recommended wire shape is one input carrying both forms:
 
 ### Where it rides
 
-Markers describe content, not the record. A file's record outlives
-its content across re-uploads, so a marker attached at create time
+Markers describe content. A file's record outlives its content
+across re-uploads, so a marker attached at create time
 would describe bytes that had not arrived and would silently apply to
 whatever future upload replaced them, which is wrong in both fail
 directions at once. Markers therefore ride the calls that carry or
@@ -124,7 +134,7 @@ name content:
 
 `POST /v1/files` does not take markers: there is no content there to
 describe. A re-upload without markers is unmarked content, which is
-today's behavior, which is the fail-safe.
+the fail-safe.
 
 Declared markers persist on `file_version`, which freezes at arming.
 [Retention](../retention.md) put its clock on the version for the
@@ -145,7 +155,7 @@ chunker runs as it does today, and each chunk compares its span of
 the text against the resolved marker spans:
 
 **A chunk overlapping any marked span inherits the marker's level.**
-The overlap windows make this deliberately coarse: consecutive chunks
+The overlap windows make this coarse on purpose: consecutive chunks
 share 150 characters, so a sensitive sentence's tail appears at the
 head of the next chunk, and that next chunk inherits too. The fail
 direction is the argument. Inheriting on any overlap over-withholds
@@ -180,7 +190,7 @@ serving this design.
 One nullable column on `text_chunk`:
 
 - `access`: `NONE`, or one of the four levels. `NONE` means "the
-  file's level", which is today's behavior.
+  file's level", which is the behavior before markers existed.
 
 The migration for existing chunks is the column's default. The boot
 reconciler adds it, every existing row reads `NONE`, and `NONE`
@@ -202,16 +212,17 @@ Two supporting pieces:
 Effective level of a chunk: its own `access` when set, else its
 file's. Every enforcement point below speaks that one expression.
 
-**The fused search.** `DISCLOSABLE` grows the chunk half:
+**The fused search.** The shared clause grows a chunk half
+(`CHUNK_DISCLOSABLE`):
 
 ```
 (access IS NONE OR access != 'grant')
 ```
 
 beside the existing file clauses, in the same constant, so the
-lexical leg, the semantic leg, and the facet query cannot drift apart
--- they already share the string. A withheld chunk is never a
-candidate, which settles the downstream surfaces for free:
+lexical leg, the semantic leg, and the facet query cannot drift apart;
+they already share the string. A withheld chunk is never a candidate,
+which settles the downstream surfaces with no extra work:
 
 - **The rerank window** is built from returned hits, so the reranker
   never receives withheld text and cannot resurface it.
@@ -248,17 +259,17 @@ retention received. `file_text` gains the mirror clause over its
 body raw; today no caller session reads it directly, and the
 application path is the enforcement point.
 
-**The byte boundary is deliberately untouched.** Downloads serve
-whole objects under the file's level, as ever. See non-goals.
+**The byte boundary is untouched.** Downloads serve whole objects
+under the file's level, as before. See non-goals.
 
 ## API surface
 
 **Contract and differ.** `file_fetch` gains an optional `markers`
-input. In kayak's vocabulary that is `Change::Compatible` ("optional
+input. In Kayak's vocabulary that is `Change::Compatible` ("optional
 input added"); only a required input would be `Breaking`, and nothing
-here requires. The search query declaration changes not at all: no
-new inputs, no new outputs, withheld passages simply never appear.
-The text query's response gains `withheld`, an added field, likewise
+here requires. The search query declaration does not change: no new
+inputs, no new outputs; withheld passages never appear. The text
+query's response gains `withheld`, an added field, likewise
 compatible.
 
 **Byte routes.** The `x-copal-markers` header on content PUT lives
@@ -266,10 +277,11 @@ where the byte routes live: outside the contract object, covered by
 integration tests, like ranges and conditionals before it.
 
 **SDKs.** The four generated clients pick up `file_fetch`'s optional
-field on regeneration. Upload helpers gain an optional markers
-argument that sets the header. A caller that passes nothing compiles
-and behaves identically, which is the property that lets this ship
-without a major version.
+field on regeneration. The design also called for upload helpers with
+a markers argument that sets the header. That part is not built: the
+generated clients have no byte upload methods at all (see
+[sdks.md](../sdks.md)). A caller that passes no markers behaves
+identically, which is what let this ship without a major version.
 
 **S3 gateway and tus.** tus carries markers in `Upload-Metadata` as
 described. The S3 face carries none initially: S3's vocabulary has no
@@ -282,11 +294,11 @@ to make when someone migrating a bucket asks for it.
   downloads every byte, marked spans included. Per-chunk
   authorization governs the retrieval surfaces: search, facets,
   excerpts, extracted text. Serving a partial PDF is a
-  document-surgery problem this design does not touch, and saying so
-  plainly is what keeps the feature honest: to keep a passage from a
-  reader entirely, the file's own level must exclude that reader.
+  document-surgery problem this design does not touch. To keep a
+  passage from a reader entirely, the file's own level must exclude
+  that reader.
 - **Widening.** No marker loosens; argued above.
-- **A classifier seam.** Rejected in the roadmap; restated here so
+- **A classifier seam.** Rejected before this design; restated here so
   this document cannot be read as reopening it.
 - **Post-hoc marking.** Markers arrive with content. An "add markers
   later" endpoint is safe in the fail direction (it only narrows) and
@@ -299,48 +311,45 @@ to make when someone migrating a bucket asks for it.
 
 | Absent or failing piece | Resulting behavior |
 | --- | --- |
-| No markers on an upload | Every chunk `NONE`: the file's level. Today's behavior exactly. |
-| No extractor configured | No text, no chunks, nothing to mark or leak. Today's behavior. |
+| No markers on an upload | Every chunk `NONE`: the file's level, exactly as before markers existed. |
+| No extractor configured | No text, no chunks, nothing to mark or leak. |
 | Anchor never matches | Whole file's chunks take the marker's level; verdict in `metadata.processing`. Over-withholds. |
 | Range past the truncation ceiling, or on extracted (non-native) content | Same as an unmatched anchor. Over-withholds. |
 | Re-upload without markers | New content is unmarked; file-level behavior. Markers die with their digest. |
 | Marker widens, or names an unknown level | 400 before bytes move. |
-| Embedding service absent | Lexical retrieval over the disclosable set, as today. |
+| Embedding service absent | Lexical retrieval over the disclosable set. |
 | Reranker absent or failing | Fused order over the disclosable set; the reranker never held withheld text to lose. |
-| Engine access key unconfigured | Application-layer WHERE enforces alone, today's posture for every guard. |
+| Engine access key unconfigured | The application-layer WHERE enforces alone, the same posture as every other guard. |
 | Crash during chunk writes | Old chunks already deleted; new chunks land with their level in the same CREATE. No unmarked window. |
 
-Every row degrades toward withholding or toward today's behavior.
-None degrades toward disclosure, which is the property the roadmap
-demanded of whatever filled this design in.
+Every row degrades toward withholding or toward the unmarked
+behavior. None degrades toward disclosure.
 
 ## Decisions
 
-Each of these is open until you close it; a recommendation rides
-each.
+Each decision was closed with the choice shown, and the shipped code
+follows it.
 
-1. **Marker addressing.** Ranges only, anchors only, or both.
-   *Recommendation: both under one input; ranges valid for native
-   text, anchors everywhere, unresolvable declarations restrict the
-   whole file.*
+1. **Marker addressing.** Ranges only, anchors only, or both. Chosen:
+   both under one input; ranges valid for native text, anchors
+   everywhere, and unresolvable declarations restrict the whole file.
 2. **Where markers ride.** Create-time, content-time, or a separate
-   endpoint. *Recommendation: content-bearing calls only (PUT header,
-   fetch body, tus metadata), persisted on `file_version`.*
-3. **Narrowing-only versus independent chunk levels.**
-   *Recommendation: narrowing-only; widening is a non-goal until an
-   anonymous retrieval surface exists to give it meaning.*
+   endpoint. Chosen: content-bearing calls only (PUT header, fetch
+   body, tus metadata), persisted on `file_version`.
+3. **Narrowing-only versus independent chunk levels.** Chosen:
+   narrowing-only; widening is a non-goal until an anonymous
+   retrieval surface exists to give it meaning.
 4. **Chunk column shape.** Nullable `access` with `NONE` meaning
-   inherit, versus a materialized effective level. *Recommendation:
-   nullable inherit; the null is the migration, and a materialized
-   level would have to chase every file-level change.*
+   inherit, versus a materialized effective level. Chosen: nullable
+   inherit; the null is the migration, and a materialized level would
+   have to chase every file-level change.
 5. **Full-text reads under markers.** Elide spans, or refuse the
-   document. *Recommendation: elide, with a `withheld` count and no
-   span positions.*
+   document. Chosen: elide, with a `withheld` count and no span
+   positions.
 6. **The engine's second layer.** Add the `text_chunk` select
-   conjunct now or defer. *Recommendation: now; it is one clause in a
-   vocabulary (`EnginePolicy.select_conjuncts`) that already exists,
-   and deferring second layers is how second layers stay deferred.*
-7. **Marker vocabulary.** Accept all four levels now, or `grant`
-   only until principals split the read path. *Recommendation: all
-   four; enforcement today collapses to grant-versus-rest by itself,
-   and the wire never has to change.*
+   conjunct now or defer. Chosen: now; it is one clause in a
+   vocabulary (`EnginePolicy.select_conjuncts`) that already exists.
+7. **Marker vocabulary.** Accept all four levels now, or `grant` only
+   until principals split the read path. Chosen: all four; enforcement
+   collapses to grant-versus-rest by itself, and the wire never has to
+   change.

@@ -18,7 +18,12 @@ One request, so a short adapter in front of anything can serve it:
 ```
 GET {COPAL_KMS_ADDR}/keys/{COPAL_KMS_KEY_ID}
 Authorization: Bearer {COPAL_KMS_TOKEN}      (when configured)
--> 200 {"current": "<64 hex>", "previous": "<64 hex>" | null}
+```
+
+The answer:
+
+```
+200 {"current": "<64 hex>", "previous": "<64 hex>" | null}
 ```
 
 Both keys arrive in one answer because a rotation is a state. Reading

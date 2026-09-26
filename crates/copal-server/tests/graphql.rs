@@ -704,3 +704,50 @@ async fn persisted_operations_lock_the_face_to_known_documents() {
         "{body:#?}",
     );
 }
+
+/// A webhook's event filter is a list of names. A value that is not
+/// one refuses on the GraphQL face, as it does on REST, rather than
+/// registering an endpoint that receives every event.
+#[tokio::test]
+async fn a_malformed_event_filter_refuses() {
+    let (router, _dir) = test_router().await;
+    let register = "mutation($events: JSON) { webhookRegister(url: \"https://example.com/hook\", events: $events) }";
+    for events in [
+        json!("file.ready"),
+        json!([1]),
+        json!({ "file.ready": true }),
+    ] {
+        let body = json_body(
+            router
+                .clone()
+                .oneshot(graphql(register, json!({ "events": events }), Some("acme")))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let message = body["errors"][0]["message"].as_str().unwrap_or_default();
+        assert!(
+            message.contains("events must be a list"),
+            "{events} must refuse: {body}",
+        );
+    }
+
+    let body = json_body(
+        router
+            .clone()
+            .oneshot(graphql(
+                "{ webhooks(limit: 10) { items { id } } }",
+                json!({}),
+                Some("acme"),
+            ))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(body["errors"], Value::Null, "{body}");
+    assert_eq!(
+        body["data"]["webhooks"]["items"],
+        json!([]),
+        "nothing registered"
+    );
+}

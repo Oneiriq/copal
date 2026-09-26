@@ -476,16 +476,22 @@ pub(crate) fn dispatcher<B: BlobStore + 'static>(
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| KayakError::BadRequest("url is required".into()))?
                     .to_owned();
-                let events = args
-                    .input
-                    .get("events")
-                    .and_then(|v| v.as_array())
-                    .map(|list| {
-                        list.iter()
-                            .filter_map(|v| v.as_str().map(str::to_owned))
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default();
+                // Absent or null means every event, as on REST. Anything
+                // else must be a list of names. Dropping a value that is
+                // not one would widen the endpoint to every event.
+                let events = match args.input.get("events") {
+                    None | Some(serde_json::Value::Null) => Vec::new(),
+                    Some(value) => value
+                        .as_array()
+                        .and_then(|list| {
+                            list.iter()
+                                .map(|v| v.as_str().map(str::to_owned))
+                                .collect::<Option<Vec<_>>>()
+                        })
+                        .ok_or_else(|| {
+                            KayakError::BadRequest("events must be a list of event names".into())
+                        })?,
+                };
                 let origin = ctx.get::<RequestOrigin>().map(|o| o.0.clone());
                 crate::webhooks::register_core(
                     &store,

@@ -11,13 +11,11 @@ authors.workspace = true
 [dependencies]
 copal-core = { workspace = true }
 oneiriq-surql = { workspace = true }
-sha2 = { workspace = true }
 tokio = { workspace = true }
 # The live-query wake stream in `Store::watch`.
 futures = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-thiserror = { workspace = true }
 tracing = { workspace = true }
 ulid = { workspace = true }
 

@@ -497,6 +497,14 @@
             "in": "query",
             "name": "state",
             "schema": {
+              "enum": [
+                "draft",
+                "uploading",
+                "scanning",
+                "ready",
+                "failed",
+                "quarantined"
+              ],
               "type": "string"
             }
           },

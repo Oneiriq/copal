@@ -16,4 +16,4 @@ tracing = { workspace = true }
 tokio = { workspace = true }
 
 [dev-dependencies]
-surrealdb = { version = "3", default-features = false, features = ["kv-mem"] }
+surrealdb = { version = "3.3", default-features = false, features = ["kv-mem"] }

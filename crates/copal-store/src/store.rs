@@ -143,7 +143,9 @@ impl Store {
     ///   [`schema::reference_backfill_script`].
     ///
     /// Concurrent boots race benignly: identical `OVERWRITE`
-    /// statements are idempotent, and a DDL conflict retries once.
+    /// statements are idempotent, and a DDL conflict retries once. An
+    /// index the engine refuses while it reclaims the table's document
+    /// ids retries on a backoff; see [`Store::run_ddl`].
     pub async fn apply_schema(
         &self,
         engine_access_key: Option<&str>,
@@ -152,45 +154,7 @@ impl Store {
         let db = self.introspect().await?;
         let code = schema::code_snapshot(embedding_dimension, &self.engine_policy);
         let diffs = surql::migration::diff::diff_schemas(&code, &db);
-
-        // Analyzers first: a full-text index names one, so index
-        // creation cannot precede it, and the script is not a
-        // transaction.
-        let mut analyzer_ops: Vec<String> = Vec::new();
-        let mut apply: Vec<String> = Vec::new();
-        let mut reverse_fields: Vec<String> = Vec::new();
-        for diff in &diffs {
-            use surql::migration::models::DiffOperation as Op;
-            match diff.operation {
-                Op::DropTable
-                | Op::DropField
-                | Op::DropIndex
-                | Op::DropEvent
-                | Op::DropAnalyzer
-                | Op::DropBucket
-                | Op::DropSequence
-                | Op::DropFunction
-                | Op::DropParam => {
-                    tracing::warn!(
-                        change = %diff.description,
-                        "the database defines this and the code no longer does; remove it \
-                         manually if it is truly retired",
-                    );
-                }
-                Op::AddAnalyzer | Op::ModifyAnalyzer => {
-                    analyzer_ops.push(diff.forward_sql.clone());
-                }
-                Op::AddIndex => apply.push(index_add_statement(&code, diff)),
-                Op::AddField if adds_reverse_reference(&code, diff) => {
-                    reverse_fields.push(diff.forward_sql.clone());
-                }
-                _ => apply.push(diff.forward_sql.clone()),
-            }
-        }
-        let mut apply = {
-            analyzer_ops.extend(apply);
-            analyzer_ops
-        };
+        let (mut apply, reverse_fields) = plan_schema(&code, &diffs);
         if let Some(key) = engine_access_key {
             // Applied whenever configured rather than diffed: the
             // engine redacts keys in its echo, so access definitions
@@ -205,8 +169,13 @@ impl Store {
             statements = applied,
             "bringing the database up to the code's schema",
         );
-        if !apply.is_empty() {
-            self.run_ddl(&apply.join("\n"), "apply_schema").await?;
+        // One statement at a time, so a retry repeats only the statement
+        // that was refused. Re-running the whole script would overwrite
+        // every index ahead of the refused one again, and on SurrealDB
+        // 3.3 an overwritten index is what starts the document-id
+        // reclaim that refused it.
+        for statement in &apply {
+            self.run_ddl(statement, "apply_schema").await?;
         }
         if !reverse_fields.is_empty() {
             // Backfill first, computed fields after: once the fields
@@ -224,22 +193,50 @@ impl Store {
         Ok(applied)
     }
 
-    /// Run one DDL script, retrying once on an engine-level conflict
-    /// (two replicas booting at the same moment race the same
-    /// idempotent statements).
+    /// Run one DDL script, retrying what a later attempt can fix.
+    ///
+    /// An engine-level conflict retries once: two replicas booting at
+    /// the same moment race the same idempotent statements. A
+    /// `DEFINE INDEX` that SurrealDB 3.3 refuses because the table's
+    /// document ids are "still being reclaimed" (the background cleanup
+    /// a removed or overwritten index starts) retries on the backoff in
+    /// [`RECLAIM_WAITS`], about half a minute in all, because the
+    /// refusal ends when the cleanup does.
     async fn run_ddl(&self, script: &str, what: &str) -> copal_core::Result<()> {
-        if let Err(first) = self.client.query(script).await {
-            if first.to_string().contains("conflict") {
-                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-                self.client
-                    .query(script)
-                    .await
-                    .map_err(|e| CopalError::Store(format!("{what} retry: {e}")))?;
+        let mut reclaim_waits = RECLAIM_WAITS.iter();
+        let mut conflict_retried = false;
+        let mut retried = false;
+        loop {
+            let error = match self.client.query(script).await {
+                Ok(_) => return Ok(()),
+                Err(error) => error.to_string(),
+            };
+            let wait = if is_reclaim_refusal(&error) {
+                reclaim_waits.next().copied()
+            } else if error.contains("conflict") && !conflict_retried {
+                conflict_retried = true;
+                Some(std::time::Duration::from_millis(250))
             } else {
-                return Err(CopalError::Store(format!("{what}: {first}")));
+                None
+            };
+            let Some(wait) = wait else {
+                let what = if retried {
+                    format!("{what} retry")
+                } else {
+                    what.to_owned()
+                };
+                return Err(CopalError::Store(format!("{what}: {error}")));
+            };
+            if is_reclaim_refusal(&error) {
+                tracing::info!(
+                    step = what,
+                    wait_ms = wait.as_millis() as u64,
+                    "the engine is still reclaiming a table's document ids; retrying the index",
+                );
             }
+            retried = true;
+            tokio::time::sleep(wait).await;
         }
-        Ok(())
     }
 
     /// The database's schema as it actually stands, from both INFO
@@ -410,7 +407,78 @@ impl Store {
     }
 }
 
-/// The statement for an index the database lacks.
+/// How long [`Store::run_ddl`] waits between attempts at an index the
+/// engine refused while reclaiming its table's document ids. The
+/// cleanup's length grows with the table, and boot is the only thing
+/// waiting, so the waits double up to about half a minute in all
+/// before the refusal is reported.
+const RECLAIM_WAITS: [std::time::Duration; 6] = [
+    std::time::Duration::from_millis(500),
+    std::time::Duration::from_secs(1),
+    std::time::Duration::from_secs(2),
+    std::time::Duration::from_secs(4),
+    std::time::Duration::from_secs(8),
+    std::time::Duration::from_secs(15),
+];
+
+/// Whether an engine error is SurrealDB 3.3's refusal of a
+/// `DEFINE INDEX` while the table's shared document-id space is being
+/// reclaimed: "The shared document-ID space for table `t` is still
+/// being reclaimed; retry DEFINE INDEX after cleanup completes".
+fn is_reclaim_refusal(error: &str) -> bool {
+    error.contains("still being reclaimed")
+}
+
+/// The statements that bring the database to the code's schema, in
+/// order, and apart from them the computed reverse-reference fields
+/// that must wait for the reference backfill.
+///
+/// Analyzers come first: a full-text index names one, so index
+/// creation cannot precede it, and the script is not a transaction.
+/// Definitions only the database holds are logged and skipped.
+fn plan_schema(
+    code: &surql::migration::diff::SchemaSnapshot,
+    diffs: &[surql::migration::models::SchemaDiff],
+) -> (Vec<String>, Vec<String>) {
+    let mut analyzer_ops: Vec<String> = Vec::new();
+    let mut apply: Vec<String> = Vec::new();
+    let mut reverse_fields: Vec<String> = Vec::new();
+    for diff in diffs {
+        use surql::migration::models::DiffOperation as Op;
+        match diff.operation {
+            Op::DropTable
+            | Op::DropField
+            | Op::DropIndex
+            | Op::DropEvent
+            | Op::DropAnalyzer
+            | Op::DropBucket
+            | Op::DropSequence
+            | Op::DropFunction
+            | Op::DropParam => {
+                tracing::warn!(
+                    change = %diff.description,
+                    "the database defines this and the code no longer does; remove it \
+                     manually if it is truly retired",
+                );
+            }
+            Op::AddAnalyzer | Op::ModifyAnalyzer => {
+                analyzer_ops.push(diff.forward_sql.clone());
+            }
+            // A changed index arrives as ModifyIndex (surql 0.34) and
+            // rebuilds like a new one, so both take the backgrounded path.
+            Op::AddIndex | Op::ModifyIndex => apply.push(index_add_statement(code, diff)),
+            Op::AddField if adds_reverse_reference(code, diff) => {
+                reverse_fields.push(diff.forward_sql.clone());
+            }
+            _ => apply.push(diff.forward_sql.clone()),
+        }
+    }
+    analyzer_ops.extend(apply);
+    (analyzer_ops, reverse_fields)
+}
+
+/// The statement for an index the database lacks or defines
+/// differently.
 ///
 /// Non-unique indexes build `CONCURRENTLY`: the `DEFINE` returns at
 /// once and the engine populates the index behind it, so a new or
@@ -503,6 +571,49 @@ mod tests {
             .expect("the live-path constraint is in the fresh diff");
         let sql = index_add_statement(&code, unique);
         assert!(!sql.contains("CONCURRENTLY"), "{sql}");
+    }
+
+    /// A new embedding width rebuilds the vector index, and the rebuild
+    /// must stay behind boot the way a first build does. surql 0.34
+    /// reports the change as ModifyIndex where it used to be an add, so
+    /// routing only adds sent the rebuild down the synchronous path.
+    #[test]
+    fn a_changed_index_is_backgrounded_like_a_new_one() {
+        let policy = crate::schema::EnginePolicy::default();
+        let code = crate::schema::code_snapshot(Some(768), &policy);
+        let db = crate::schema::code_snapshot(Some(384), &policy);
+        let diffs = surql::migration::diff::diff_schemas(&code, &db);
+        let changed = diffs
+            .iter()
+            .find(|d| d.index.as_deref() == Some("idx_chunk_embedding"))
+            .expect("the width change reaches the vector index");
+        assert_eq!(
+            changed.operation,
+            surql::migration::models::DiffOperation::ModifyIndex,
+        );
+
+        let (apply, _) = plan_schema(&code, &diffs);
+        let rebuilt: Vec<&String> = apply
+            .iter()
+            .filter(|sql| sql.contains("idx_chunk_embedding"))
+            .collect();
+        assert_eq!(rebuilt.len(), 1, "{apply:#?}");
+        assert!(rebuilt[0].contains("DIMENSION 768"), "{}", rebuilt[0]);
+        assert!(rebuilt[0].ends_with("CONCURRENTLY;"), "{}", rebuilt[0]);
+    }
+
+    #[test]
+    fn the_reclaim_refusal_is_told_apart_from_other_failures() {
+        assert!(is_reclaim_refusal(
+            "The shared document-ID space for table `text_chunk` is still being \
+             reclaimed; retry DEFINE INDEX after cleanup completes",
+        ));
+        assert!(!is_reclaim_refusal(
+            "Transaction conflict: Resource busy. This transaction can be retried",
+        ));
+        assert!(!is_reclaim_refusal(
+            "The index 'idx_chunk_embedding' already exists"
+        ));
     }
 
     #[test]

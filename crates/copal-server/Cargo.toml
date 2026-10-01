@@ -86,4 +86,4 @@ tempfile = { workspace = true }
 ulid = { workspace = true }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
-surrealdb = { version = "3", default-features = false, features = ["kv-mem"] }
+surrealdb = { version = "3.3", default-features = false, features = ["kv-mem"] }

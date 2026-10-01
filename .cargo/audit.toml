@@ -16,4 +16,20 @@ ignore = [
     # Copal deserializes no rkyv archive on any path. Re-evaluate
     # whenever surrealdb moves to a rust_decimal built on rkyv 0.8.
     "RUSTSEC-2026-0235",
+    # RUSTSEC-2026-0194 and RUSTSEC-2026-0195 (quick-xml < 0.41:
+    # quadratic duplicate-attribute check, unbounded namespace
+    # allocation in NsReader) reach the lockfile as quick-xml 0.39
+    # through object_store 0.13.2's `aws` backend, which surrealdb-core
+    # 3.3.0 enables on native targets; object_store 0.14 takes the
+    # fixed quick-xml, but surrealdb-core pins 0.13. Unlike in kayak,
+    # it IS compiled into the shipped server: the embedded tier is a
+    # default feature (`cargo tree -i quick-xml@0.39.4 -e normal`). It
+    # runs only when the engine talks to an S3-backed SurrealDB
+    # bucket, and Copal defines none: no `DEFINE BUCKET` exists here,
+    # and the blob tiers reach S3 through opendal, which resolves the
+    # fixed quick-xml. Tracked upstream as surrealdb/surrealdb#7568;
+    # remove both entries when surrealdb-core moves to object_store
+    # 0.14 or stops enabling `aws`.
+    "RUSTSEC-2026-0194",
+    "RUSTSEC-2026-0195",
 ]

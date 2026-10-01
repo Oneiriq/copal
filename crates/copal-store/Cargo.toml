@@ -22,7 +22,7 @@ ulid = { workspace = true }
 # The embedded tier: an optional direct dependency on surrealdb whose
 # only job is wiring the on-disk engine into surql-rs via Cargo
 # feature unification. No code here touches it.
-surrealdb = { version = "3", default-features = false, features = [
+surrealdb = { version = "3.3", default-features = false, features = [
     "kv-surrealkv",
     "kv-mem",
 ], optional = true }
@@ -37,7 +37,7 @@ tokio = { workspace = true }
 # Embedded engines are feature-gated on the surrealdb crate itself and
 # surql-rs deliberately does not pull them. Declaring kv-mem here wires
 # the mem:// engine into test builds only, via Cargo feature unification.
-surrealdb = { version = "3", default-features = false, features = ["kv-mem"] }
+surrealdb = { version = "3.3", default-features = false, features = ["kv-mem"] }
 hmac = "0.13"
 tempfile = "3"
 base64 = "0.23"

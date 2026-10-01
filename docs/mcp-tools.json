@@ -16,7 +16,15 @@
           },
           "state": {
             "type": "string",
-            "description": "Filter by state."
+            "description": "Filter by state.",
+            "enum": [
+              "draft",
+              "uploading",
+              "scanning",
+              "ready",
+              "failed",
+              "quarantined"
+            ]
           },
           "sort": {
             "type": "string",
@@ -40,6 +48,37 @@
         "properties": {
           "id": {
             "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "requiredScopes": [
+          "read"
+        ],
+        "rateClass": "reads"
+      }
+    },
+    {
+      "name": "file_versions_list",
+      "description": "Every stored version of this file, newest first.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The file whose versions to list."
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Rows per page, at most 100."
+          },
+          "cursor": {
+            "type": "string",
+            "description": "Resume from a previous page."
           }
         },
         "required": [
@@ -366,6 +405,41 @@
         "properties": {
           "id": {
             "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "requiredScopes": [
+          "read"
+        ],
+        "rateClass": "reads"
+      }
+    },
+    {
+      "name": "webhook_deliveries_list",
+      "description": "Delivery attempts to this endpoint, newest first.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The webhook whose deliveries to list."
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Rows per page, at most 100."
+          },
+          "cursor": {
+            "type": "string",
+            "description": "Resume from a previous page."
+          },
+          "state": {
+            "type": "string",
+            "description": "Filter by state."
           }
         },
         "required": [

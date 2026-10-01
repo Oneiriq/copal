@@ -80,7 +80,7 @@ if [ -z "$COPAL_BENCH_DB_URL" ]; then
     ENGINE_VERSION=$(sed -n 's/.*surrealdb\/surrealdb:\(v[0-9.]*\).*/\1/p' \
         ../conformance/docker-compose.yml | head -1)
     if docker run --rm -d --name copal-scale-engine -p 127.0.0.1:18000:8000 \
-        "surrealdb/surrealdb:${ENGINE_VERSION:-v3.2.4}" \
+        "surrealdb/surrealdb:${ENGINE_VERSION:-v3.3.0}" \
         start --user root --pass root > /dev/null 2>&1; then
         STARTED_ENGINE=1
         COPAL_BENCH_DB_URL=ws://127.0.0.1:18000

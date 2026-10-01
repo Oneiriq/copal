@@ -246,6 +246,49 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
 
 ### Changed
 
+- **surql 0.34 and SurrealDB 3.3.** The workspace takes oneiriq-surql
+  0.34 and kayak at the commit that moved to it, the minimum Rust
+  version rises to 1.95 with surql's, the `surrealdb` floors to 3.3,
+  and the compose, conformance, and scale-bench engines to v3.3.0.
+  Three behaviours moved with it:
+
+  - A changed index now arrives from surql's diff as `ModifyIndex`
+    rather than as an add, and boot routed only adds through the
+    backgrounded `CONCURRENTLY` path, so a new embedding width would
+    have rebuilt the HNSW index synchronously and held boot for the
+    length of the rebuild. Both now take the backgrounded path.
+  - SurrealDB 3.3 can refuse a `DEFINE INDEX` while it reclaims the
+    table's document ids after an index was removed or overwritten
+    ("still being reclaimed"). Boot now retries that refusal on a
+    backoff of about half a minute in all, and applies its schema
+    statement by statement, so the retry repeats only the refused
+    statement rather than overwriting the indexes ahead of it again,
+    which would start another reclaim.
+  - A schemafull `option<array>` field takes object items on 3.3. The
+    engine assumption that pinned the refusal now pins acceptance;
+    `file_version.markers` and `file_text.withheld` stay `TYPE any`
+    until a migration moves them.
+
+  `.cargo/audit.toml` carries the two quick-xml advisories
+  (RUSTSEC-2026-0194/0195) that SurrealDB 3.3's engine brings in
+  through object_store 0.13. The embedded tier compiles them into the
+  server, but they parse only an S3 bucket backend's replies, and
+  Copal defines no SurrealDB bucket.
+
+  Kayak's newer generators came with it, and the artifacts are
+  re-blessed:
+
+  - The MCP manifest lists each sub-collection as a tool,
+    `file_versions_list` and `webhook_deliveries_list`, and the MCP
+    face now routes them through the dispatcher's sub-list, so an agent
+    can page a file's versions or a webhook's deliveries.
+  - The TypeScript client, and so the TypeScript SDK, names fields the
+    way the wire does (`content_type`, `created_at`, ...). The
+    camelCase names it carried before were never on any response, so
+    code reading them got `undefined`.
+  - `docs/openapi.json` lists the values the files `state` filter
+    takes.
+
 - **Copal is licensed under Apache-2.0.** The repository moves from
   AGPL-3.0-only to the Apache License, Version 2.0, the license Kayak
   already ships under, so Copal can be embedded, modified, and run as

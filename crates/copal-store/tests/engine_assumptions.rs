@@ -190,14 +190,19 @@ async fn distinct_files_per_group_need_array_group() {
 }
 
 /// Why `file_version.markers` and `file_text.withheld` are `TYPE any`
-/// rather than `array`: a schemafull `array` field refuses object
-/// items outright ("no such field exists" for the item's keys), the
-/// `FLEXIBLE` escape attaches only to object-bearing types the schema
-/// builder cannot spell, and `any` carries the array of objects
-/// verbatim, absence included. If this pins differently after an
-/// engine upgrade, those columns can graduate to a real array type.
+/// rather than `array`: through SurrealDB 3.2 a schemafull `array`
+/// field refused object items outright ("no such field exists" for
+/// the item's keys), the `FLEXIBLE` escape attaches only to
+/// object-bearing types the schema builder cannot spell, and `any`
+/// carries the array of objects verbatim, absence included.
+///
+/// SurrealDB 3.3 changed the first half: a schemafull `option<array>`
+/// now takes object items and keeps their keys, which this pins. The
+/// columns stay `any` for now because moving them to an array type is
+/// a schema change with its own migration, and `any` still carries
+/// everything they hold.
 #[tokio::test]
-async fn any_typed_fields_carry_object_arrays_and_plain_arrays_refuse_them() {
+async fn any_typed_fields_carry_object_arrays_and_so_do_plain_arrays_since_3_3() {
     let client = seeded_client().await;
     for statement in [
         "DEFINE TABLE spans_probe SCHEMAFULL;",
@@ -207,16 +212,15 @@ async fn any_typed_fields_carry_object_arrays_and_plain_arrays_refuse_them() {
         client.inner().query(statement).await.expect(statement);
     }
 
-    // The strict column refuses the very shape markers need.
-    let mut response = client
-        .inner()
-        .query("CREATE spans_probe:strict CONTENT { strict: [{ start: 1, end: 5 }] };")
-        .await
-        .expect("statement runs");
-    assert!(
-        !response.take_errors().is_empty(),
-        "a schemafull array field accepted object items; `any` is no longer required",
-    );
+    // The strict column takes the very shape markers need, keys and all.
+    let rows: Vec<serde_json::Value> = query_records_raw(
+        &client,
+        "CREATE spans_probe:strict CONTENT \
+         { strict: [{ start: 1, end: 5, access: 'grant' }] } RETURN AFTER;",
+    )
+    .await;
+    assert_eq!(rows[0]["strict"][0]["start"], 1, "{rows:?}");
+    assert_eq!(rows[0]["strict"][0]["access"], "grant", "{rows:?}");
 
     // The any column carries it whole, and admits absence.
     let rows: Vec<serde_json::Value> = query_records_raw(

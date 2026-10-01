@@ -5,13 +5,13 @@ export interface File {
   path: string
   state: string
   access: string
-  contentType: string
+  content_type: string
   size?: number
   digest?: string
   metadata: unknown
-  versionCount: number
-  createdAt: string
-  updatedAt: string
+  version_count: number
+  created_at: string
+  updated_at: string
 }
 
 export interface FilePage {
@@ -22,12 +22,12 @@ export interface FilePage {
 export interface FileVersion {
   id: string
   number: number
-  contentType: string
+  content_type: string
   size: number
   digest: string
-  metadataSnapshot: unknown
-  createdBy?: string
-  createdAt: string
+  metadata_snapshot: unknown
+  created_by?: string
+  created_at: string
 }
 
 export interface FileVersionPage {
@@ -37,10 +37,10 @@ export interface FileVersionPage {
 
 export interface Webhook {
   id: string
-  targetUrl: string
+  target_url: string
   events: string
   active: boolean
-  createdAt: string
+  created_at: string
 }
 
 export interface WebhookPage {
@@ -52,9 +52,9 @@ export interface WebhookDelivery {
   id: string
   state: string
   attempts: number
-  lastStatus?: number
-  nextAttemptAt?: string
-  createdAt: string
+  last_status?: number
+  next_attempt_at?: string
+  created_at: string
 }
 
 export interface WebhookDeliveryPage {
@@ -66,7 +66,7 @@ export interface Event {
   id: string
   action: string
   payload: unknown
-  createdAt: string
+  created_at: string
 }
 
 export interface EventPage {
@@ -80,8 +80,8 @@ export interface Run {
   status: string
   output?: unknown
   error?: string
-  createdAt: string
-  endedAt?: string
+  created_at: string
+  ended_at?: string
 }
 
 export interface RunPage {

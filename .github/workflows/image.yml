@@ -1,7 +1,7 @@
 name: image
 
 # Publishes the deployable image on main pushes. Deliberately its own
-# workflow, not a job behind the aur0 self-hosted checks: a parked
+# workflow, not a job behind the shaman self-hosted checks: a parked
 # runner fleet must not park deploys, and the docker build compiles the
 # same locked tree the checks compile.
 #

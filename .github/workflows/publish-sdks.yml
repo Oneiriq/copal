@@ -18,7 +18,7 @@ permissions:
 jobs:
   publish:
     name: assemble + publish
-    runs-on: [self-hosted, aur0]
+    runs-on: [self-hosted, shaman]
     steps:
       - uses: actions/checkout@v7
 

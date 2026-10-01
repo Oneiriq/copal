@@ -36,6 +36,11 @@ mkdir -p "$dist/go"
 cp "$here/go/go.mod" "$dist/go/go.mod"
 cp "$root/clients/client.go" "$dist/go/copal.go"
 
+# Every package ships the repository's license text beside its manifest.
+for pkg in rust python typescript go; do
+  cp "$root/LICENSE" "$dist/$pkg/LICENSE"
+done
+
 echo "validating rust"
 (cd "$dist/rust" && cargo check --quiet)
 

@@ -1,6 +1,6 @@
 services:
   surrealdb:
-    image: surrealdb/surrealdb:v3.2.4
+    image: surrealdb/surrealdb:v3.3.0
     command: start --user root --pass root rocksdb:/data/copal.db
     environment:
       # Enables SurrealDB's experimental file buckets. Copal does not use

@@ -248,6 +248,23 @@ async fn an_agent_ingests_end_to_end() {
         serde_json::from_str(body["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
     assert_eq!(fetched["state"], "ready", "{fetched:#?}");
     assert_eq!(fetched["path"], "agent-authored.txt");
+
+    // The upload left a version, and the sub-collection tool the
+    // manifest declares for it lists that version under its file.
+    let body = rpc(
+        &router,
+        &token,
+        json!({
+            "jsonrpc": "2.0", "id": 13, "method": "tools/call",
+            "params": { "name": "file_versions_list", "arguments": { "id": id, "limit": 5 } },
+        }),
+    )
+    .await;
+    assert_eq!(body["result"]["isError"], false, "{body:#?}");
+    let page: Value =
+        serde_json::from_str(body["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    let versions = page["items"].as_array().expect("a page of versions");
+    assert_eq!(versions.len(), 1, "{page:#?}");
 }
 
 /// A get for a row that does not exist fails the call, as REST

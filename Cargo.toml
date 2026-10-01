@@ -13,7 +13,7 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.94"
+rust-version = "1.95"
 license = "Apache-2.0"
 repository = "https://github.com/Oneiriq/copal"
 authors = ["Shon Thomas <shonpt@outlook.com>"]
@@ -26,9 +26,10 @@ copal-sign = { path = "crates/copal-sign" }
 copal-flow = { path = "crates/copal-flow" }
 
 # Schema, query building, and the SurrealDB client all come from
-# surql-rs, taken from the registry. 0.32 is the batched release the
-# adoption work was written against.
-oneiriq-surql = { version = "0.33", default-features = false, features = ["client-rustls"] }
+# surql-rs, taken from the registry. 0.34 is the release that follows
+# SurrealDB 3.3. Kayak (git, below in copal-server) must name the same
+# minor, or its schema types and these are two different crates.
+oneiriq-surql = { version = "0.34", default-features = false, features = ["client-rustls"] }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

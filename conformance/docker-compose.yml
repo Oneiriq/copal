@@ -6,7 +6,7 @@
 
 services:
   surrealdb:
-    image: surrealdb/surrealdb:v3.2.4
+    image: surrealdb/surrealdb:v3.3.0
     command: start --user root --pass root
 
   minio:

@@ -19,7 +19,7 @@ use axum::Json;
 use serde_json::{json, Map, Value};
 
 use copal_core::TenantId;
-use kayak::runtime::{ActionArgs, GetArgs, ListArgs, QueryArgs, SortDirection};
+use kayak::runtime::{ActionArgs, GetArgs, ListArgs, QueryArgs, SortDirection, SubListArgs};
 
 use copal_blob::BlobStore;
 
@@ -36,6 +36,13 @@ enum Route {
     },
     Get {
         resource: String,
+    },
+    /// One parent's sub-collection; `identity` names the input that
+    /// carries the parent's id, the resource's wire identity.
+    SubList {
+        resource: String,
+        sub: String,
+        identity: String,
     },
     Action {
         resource: String,
@@ -94,6 +101,20 @@ fn routes() -> &'static BTreeMap<String, Route> {
                     resource: resource.name.clone(),
                 },
             );
+            // The manifest refuses to generate a sub-collection tool for
+            // a resource with no wire identity, so one always exists here.
+            if let Some(identity) = resource.wire_identity() {
+                for sub in &resource.sub_resources {
+                    map.insert(
+                        format!("{singular}_{}_list", sub.name),
+                        Route::SubList {
+                            resource: resource.name.clone(),
+                            sub: sub.name.clone(),
+                            identity: identity.to_owned(),
+                        },
+                    );
+                }
+            }
             for action in &resource.actions {
                 map.insert(
                     format!("{singular}_{}", action.name),
@@ -230,21 +251,7 @@ async fn call_tool<B: BlobStore>(
 
     let value = match route {
         Route::List { resource } => {
-            let limit = arguments
-                .remove("limit")
-                .and_then(|v| v.as_i64())
-                .unwrap_or(50)
-                .clamp(1, 1_000) as u32;
-            let cursor = arguments
-                .remove("cursor")
-                .and_then(|v| v.as_str().map(str::to_owned));
-            let sort = arguments
-                .remove("sort")
-                .and_then(|v| v.as_str().map(str::to_owned))
-                .map(|raw| match raw.split_once(":desc") {
-                    Some((column, _)) => (column.to_owned(), SortDirection::Desc),
-                    None => (raw, SortDirection::Asc),
-                });
+            let (limit, cursor, sort) = page_arguments(&mut arguments);
             let filters: BTreeMap<String, Value> = arguments.into_iter().collect();
             let output = dispatcher
                 .list(
@@ -273,6 +280,34 @@ async fn call_tool<B: BlobStore>(
             // A missing row is an error, as it is on REST, rather than a
             // successful call whose text reads null.
             row.ok_or_else(|| (-32000, format!("not found: {resource} {id}")))?
+        }
+        Route::SubList {
+            resource,
+            sub,
+            identity,
+        } => {
+            let parent_id = arguments
+                .remove(&identity)
+                .and_then(|v| v.as_str().map(str::to_owned))
+                .ok_or((-32602, format!("{identity} is required")))?;
+            let (limit, cursor, sort) = page_arguments(&mut arguments);
+            let filters: BTreeMap<String, Value> = arguments.into_iter().collect();
+            let output = dispatcher
+                .sub_list(
+                    &resource,
+                    &sub,
+                    ctx,
+                    SubListArgs {
+                        parent_id,
+                        limit,
+                        cursor,
+                        filters,
+                        sort,
+                    },
+                )
+                .await
+                .map_err(kayak_to_rpc)?;
+            json!({ "items": output.items, "next_cursor": output.next_cursor })
         }
         Route::Action {
             resource,
@@ -309,6 +344,31 @@ async fn call_tool<B: BlobStore>(
         "content": [ { "type": "text", "text": value.to_string() } ],
         "isError": false,
     }))
+}
+
+/// The paging inputs a listing tool takes, removed from `arguments` so
+/// what remains is its filters: the page size (50 when absent, held to
+/// 1..=1000 before the dispatcher applies the declared ceiling), the
+/// resume cursor, and `sort` as `column` or `column:desc`.
+fn page_arguments(
+    arguments: &mut Map<String, Value>,
+) -> (u32, Option<String>, Option<(String, SortDirection)>) {
+    let limit = arguments
+        .remove("limit")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(50)
+        .clamp(1, 1_000) as u32;
+    let cursor = arguments
+        .remove("cursor")
+        .and_then(|v| v.as_str().map(str::to_owned));
+    let sort = arguments
+        .remove("sort")
+        .and_then(|v| v.as_str().map(str::to_owned))
+        .map(|raw| match raw.split_once(":desc") {
+            Some((column, _)) => (column.to_owned(), SortDirection::Desc),
+            None => (raw, SortDirection::Asc),
+        });
+    (limit, cursor, sort)
 }
 
 pub(crate) async fn seeded_context<B: BlobStore>(

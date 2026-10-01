@@ -251,7 +251,9 @@ Copal has not cut a release yet. Everything below is the road to 0.1.0.
   already ships under, so Copal can be embedded, modified, and run as
   a service without network-copyleft obligations. The workspace
   crates, `copalctl`, and the TypeScript, Python, and Rust SDK
-  manifests all declare `Apache-2.0`.
+  manifests all declare `Apache-2.0`, and `sdks/build.sh` now puts
+  the license text in all four SDK packages, which shipped without
+  it before.
 
 - **The scale envelope is measured.** `bench/scale.sh` and its ignored
   release-mode tests time the large-object path at 512 MiB, 1 GiB, and

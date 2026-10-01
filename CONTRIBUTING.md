@@ -88,4 +88,4 @@ commands above before you ask for a review.
 ## License
 
 By contributing, you agree that your contributions are licensed under the
-[AGPL-3.0-only](LICENSE) license that covers this repository.
+[Apache-2.0](LICENSE) license that covers this repository.

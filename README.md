@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="LICENSE"><img alt="License: AGPL-3.0-only" src="https://img.shields.io/badge/license-AGPL--3.0--only-1A1410?style=flat-square"></a>
+  <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-1A1410?style=flat-square"></a>
   <img alt="Rust 1.90 or newer" src="https://img.shields.io/badge/rust-1.90%2B-1A1410?style=flat-square">
   <img alt="SurrealDB 3" src="https://img.shields.io/badge/SurrealDB-3-1A1410?style=flat-square">
 </p>
@@ -302,6 +302,6 @@ The workspace is split by job:
 
 ## License
 
-Copal is licensed under the [GNU Affero General Public License v3.0
-only](LICENSE). The client packages under [`sdks/`](sdks/) declare their
-license in their own package manifests.
+Copal is licensed under the [Apache License, Version 2.0](LICENSE). The
+client packages under [`sdks/`](sdks/) are published under the same
+license.

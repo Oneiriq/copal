@@ -3,7 +3,7 @@ name = "copal-cli"
 version = "0.1.0"
 edition = "2021"
 description = "copalctl: the Copal service from a terminal."
-license = "AGPL-3.0-only"
+license = "Apache-2.0"
 
 [[bin]]
 name = "copalctl"

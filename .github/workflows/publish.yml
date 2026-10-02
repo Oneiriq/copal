@@ -1,0 +1,135 @@
+name: Publish to crates.io
+
+# Mirrors Oneiriq/surql-rs's, chine's and kayak's `publish.yml`: it fires on a
+# published GitHub Release (or a manual dispatch), re-verifies the tagged
+# commit, then publishes every workspace crate to crates.io behind a
+# human-approved environment gate. `cargo publish --workspace` uploads the
+# members in dependency order: copal-core, then the planes, then
+# copal-server and copal-cli.
+#
+# crates.io has no staging registry, so:
+#   * a prerelease Release, or a `dry-run` dispatch, runs `verify` only
+#     (packages + `cargo publish --workspace --dry-run`, uploads nothing);
+#   * a normal Release, or a `crates-io` dispatch, runs verify -> approval
+#     (the `crates-io-approval` environment gate) -> publish.
+#
+# The client SDKs under `sdks/` are not part of this: publish-sdks.yml
+# releases them on its own dispatch.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Publish target"
+        required: true
+        default: "dry-run"
+        type: choice
+        options:
+          - dry-run
+          - crates-io
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  verify:
+    name: Verify release readiness
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Verify tag matches the workspace version
+        if: github.event_name == 'release'
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          CRATE_VERSION="$(cargo pkgid -p copal-core | sed -E 's/.*[#@]([^@#]+)$/\1/')"
+          echo "Tag version:       $TAG_VERSION"
+          echo "Workspace version: $CRATE_VERSION"
+          if [ "$TAG_VERSION" != "$CRATE_VERSION" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match the workspace version $CRATE_VERSION"
+            exit 1
+          fi
+
+      - name: cargo fmt --check
+        run: cargo fmt --all --check
+
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: cargo test
+        run: cargo test --workspace
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
+      - name: cargo audit
+        run: cargo audit
+
+      - name: cargo publish --dry-run
+        run: cargo publish --workspace --dry-run
+
+      # The rust-cache post step walks target/ after the job and treats the
+      # package-verification dirs cargo leaves behind as workspaces, so its
+      # probes land as failure-level annotations on a succeeding job. The dirs
+      # have served their purpose by now.
+      - name: Drop the package-verification dirs
+        run: rm -rf target/package
+
+  approval:
+    name: Approve crates.io publish
+    needs: verify
+    # Only the real-publish path: a normal Release, or an explicit `crates-io`
+    # dispatch. A prerelease Release or a `dry-run` dispatch stops after verify.
+    if: >-
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.target == 'crates-io') ||
+      (github.event_name == 'release' && !github.event.release.prerelease)
+    runs-on: ubuntu-latest
+    # `crates-io-approval` is a GitHub Environment; add required reviewers in
+    # the repo settings to make this job wait on human sign-off before publish.
+    environment:
+      name: crates-io-approval
+      url: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - run: echo "Awaiting approval to publish to crates.io..."
+
+  publish:
+    name: Publish to crates.io
+    needs: approval
+    runs-on: ubuntu-latest
+    environment:
+      name: crates-io
+      url: https://crates.io/crates/copal-server
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      # cargo reads the token from the environment, which keeps it off the
+      # command line.
+      - name: Publish
+        run: cargo publish --workspace
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Drop the package-verification dirs
+        run: rm -rf target/package

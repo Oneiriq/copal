@@ -19,8 +19,6 @@ services:
   copal:
     build:
       context: ..
-      secrets:
-        - oneiriq_token
     depends_on:
       - surrealdb
     environment:
@@ -76,7 +74,3 @@ services:
 
 volumes:
   seed:
-
-secrets:
-  oneiriq_token:
-    environment: ONEIRIQ_READ_PAT

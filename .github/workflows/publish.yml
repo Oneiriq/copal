@@ -1,0 +1,206 @@
+name: Publish to crates.io
+
+# Mirrors Oneiriq/surql-rs's, chine's and kayak's `publish.yml`: it fires on a
+# published GitHub Release (or a manual dispatch), re-verifies the tagged
+# commit, then publishes every workspace crate to crates.io behind a
+# human-approved environment gate. `cargo publish --workspace` uploads the
+# members in dependency order: copal-core, then the planes, then
+# copal-server and copal-cli.
+#
+# crates.io has no staging registry, so:
+#   * a prerelease Release, or a `dry-run` dispatch, runs `verify` only
+#     (packages + `cargo publish --workspace --dry-run`, uploads nothing);
+#   * a normal Release, or a `crates-io` dispatch, runs verify -> approval
+#     (the `crates-io-approval` environment gate) -> publish.
+#
+# The client SDKs under `sdks/` are not part of this: publish-sdks.yml
+# releases them on its own dispatch.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Publish target"
+        required: true
+        default: "dry-run"
+        type: choice
+        options:
+          - dry-run
+          - crates-io
+
+permissions:
+  contents: read
+
+# One publish at a time: two runs would race for the same versions.
+concurrency:
+  group: publish-crates-io
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  verify:
+    name: Verify release readiness
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Verify tag matches the workspace version
+        if: github.event_name == 'release'
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          CRATE_VERSION="$(cargo pkgid -p copal-core | sed -E 's/.*[#@]([^@#]+)$/\1/')"
+          echo "Tag version:       $TAG_VERSION"
+          echo "Workspace version: $CRATE_VERSION"
+          if [ "$TAG_VERSION" != "$CRATE_VERSION" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match the workspace version $CRATE_VERSION"
+            exit 1
+          fi
+
+      - name: cargo fmt --check
+        run: cargo fmt --all --check
+
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: cargo test
+        run: cargo test --workspace
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
+      - name: cargo audit
+        run: cargo audit
+
+      - name: cargo publish --dry-run
+        run: cargo publish --workspace --dry-run
+
+      # The rust-cache post step walks target/ after the job and treats the
+      # package-verification dirs cargo leaves behind as workspaces, so its
+      # probes land as failure-level annotations on a succeeding job. The dirs
+      # have served their purpose by now.
+      - name: Drop the package-verification dirs
+        run: rm -rf target/package
+
+  approval:
+    name: Approve crates.io publish
+    needs: verify
+    # Only the real-publish path: a normal Release, or an explicit `crates-io`
+    # dispatch. A prerelease Release or a `dry-run` dispatch stops after verify.
+    if: >-
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.target == 'crates-io') ||
+      (github.event_name == 'release' && !github.event.release.prerelease)
+    runs-on: ubuntu-latest
+    # `crates-io-approval` is a GitHub Environment; add required reviewers in
+    # the repo settings to make this job wait on human sign-off before publish.
+    environment:
+      name: crates-io-approval
+      url: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - run: echo "Awaiting approval to publish to crates.io..."
+
+  publish:
+    name: Publish to crates.io
+    needs: approval
+    runs-on: ubuntu-latest
+    # A first release waits out the crates.io new-crate limit (see below).
+    timeout-minutes: 180
+    environment:
+      name: crates-io
+      url: https://crates.io/crates/copal-server
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+
+      # crates.io lets an account publish five new crates in a burst, then
+      # one every ten minutes, and this workspace creates seven. A plain
+      # `cargo publish --workspace` would stop with HTTP 429 partway, and a
+      # rerun would fail on the first crate already up. So each attempt
+      # excludes the members whose version is already in the crates.io
+      # index, and a 429 waits and retries. Re-running a failed publish job
+      # resumes the same way. (Same loop as Oneiriq/sigilbuzz.)
+      #
+      # cargo reads the token from the environment, which keeps it off the
+      # command line.
+      - name: Publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          # The members cargo would publish, as "name version" lines.
+          members() {
+            cargo metadata --no-deps --format-version 1 |
+              jq -r '.packages[] | select(.publish != []) | "\(.name) \(.version)"'
+          }
+
+          # Succeeds when the crates.io sparse index lists version $2 of crate $1.
+          on_crates_io() {
+            local name=$1 version=$2 path
+            case ${#name} in
+              1) path="1/$name" ;;
+              2) path="2/$name" ;;
+              3) path="3/${name:0:1}/$name" ;;
+              *) path="${name:0:2}/${name:2:2}/$name" ;;
+            esac
+            curl -fsS "https://index.crates.io/$path" 2>/dev/null |
+              jq -e --arg v "$version" 'select(.vers == $v)' >/dev/null
+          }
+
+          for attempt in $(seq 1 12); do
+            excludes=()
+            pending=0
+            while read -r name version; do
+              if on_crates_io "$name" "$version"; then
+                echo "$name $version is already on crates.io"
+                excludes+=(--exclude "$name")
+              else
+                pending=$((pending + 1))
+              fi
+            done < <(members)
+
+            if [ "$pending" -eq 0 ]; then
+              echo "Every crate is on crates.io."
+              exit 0
+            fi
+
+            # The log lives outside the checkout: a file in the repo makes
+            # the working tree dirty, and cargo publish refuses to package it.
+            log="$RUNNER_TEMP/publish.log"
+            if cargo publish --workspace "${excludes[@]}" 2>&1 | tee "$log"; then
+              exit 0
+            fi
+
+            # Retry only a rate-limit refusal, or a crate that is up but not
+            # yet visible in the index. Anything else is a real failure.
+            if ! grep -qE 'status 429|already exists' "$log"; then
+              exit 1
+            fi
+            echo "::notice::crates.io rate limit reached on attempt $attempt; retrying in 11 minutes"
+            sleep 660
+          done
+
+          echo "::error::Crates are still unpublished after 12 attempts"
+          exit 1
+
+      - name: Drop the package-verification dirs
+        run: rm -rf target/package

@@ -1,6 +1,0 @@
-# Fetch git dependencies with the git CLI rather than the builtin
-# transport: the oneiriq-kayak dependency lives in a private repo
-# reached over ssh, which the CLI authenticates (local keys, CI deploy
-# keys) where libgit2 cannot.
-[net]
-git-fetch-with-cli = true

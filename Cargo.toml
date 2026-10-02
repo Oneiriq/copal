@@ -19,15 +19,15 @@ repository = "https://github.com/Oneiriq/copal"
 authors = ["Shon Thomas <shonpt@outlook.com>"]
 
 [workspace.dependencies]
-copal-core = { path = "crates/copal-core" }
-copal-store = { path = "crates/copal-store" }
-copal-blob = { path = "crates/copal-blob" }
-copal-sign = { path = "crates/copal-sign" }
-copal-flow = { path = "crates/copal-flow" }
+copal-core = { path = "crates/copal-core", version = "0.1.0" }
+copal-store = { path = "crates/copal-store", version = "0.1.0" }
+copal-blob = { path = "crates/copal-blob", version = "0.1.0" }
+copal-sign = { path = "crates/copal-sign", version = "0.1.0" }
+copal-flow = { path = "crates/copal-flow", version = "0.1.0" }
 
 # Schema, query building, and the SurrealDB client all come from
 # surql-rs, taken from the registry. 0.34 is the release that follows
-# SurrealDB 3.3. Kayak (git, below in copal-server) must name the same
+# SurrealDB 3.3. Kayak (below in copal-server) must name the same
 # minor, or its schema types and these are two different crates.
 oneiriq-surql = { version = "0.34", default-features = false, features = ["client-rustls"] }
 

@@ -183,13 +183,16 @@ jobs:
               exit 0
             fi
 
-            if cargo publish --workspace "${excludes[@]}" 2>&1 | tee publish.log; then
+            # The log lives outside the checkout: a file in the repo makes
+            # the working tree dirty, and cargo publish refuses to package it.
+            log="$RUNNER_TEMP/publish.log"
+            if cargo publish --workspace "${excludes[@]}" 2>&1 | tee "$log"; then
               exit 0
             fi
 
             # Retry only a rate-limit refusal, or a crate that is up but not
             # yet visible in the index. Anything else is a real failure.
-            if ! grep -qE 'status 429|already exists' publish.log; then
+            if ! grep -qE 'status 429|already exists' "$log"; then
               exit 1
             fi
             echo "::notice::crates.io rate limit reached on attempt $attempt; retrying in 11 minutes"

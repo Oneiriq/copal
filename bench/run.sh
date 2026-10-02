@@ -18,7 +18,6 @@ cd "$(dirname "$0")"
 export MSYS_NO_PATHCONV=1
 TENANT=bench
 COMPOSE="docker compose -f ../conformance/docker-compose.yml -f overlay.yml"
-export ONEIRIQ_READ_PAT="${ONEIRIQ_READ_PAT:-$(gh auth token 2>/dev/null || true)}"
 
 mkdir -p results
 rm -f results/*.txt

@@ -3909,7 +3909,8 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 [[package]]
 name = "oneiriq-kayak"
 version = "0.1.0"
-source = "git+ssh://git@github.com/Oneiriq/kayak.git?branch=main#268ac8d5a109df2e375b0d4300043a00679e1e2b"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3596b82217667fda799f5c0d1e5ee5129a9fb523f0eaaf6e5c6e4373e914200d"
 dependencies = [
  "async-graphql",
  "futures-core",

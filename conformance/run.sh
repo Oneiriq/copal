@@ -15,11 +15,6 @@ TENANT=conformance
 mkdir -p results
 rm -f results/*.txt
 
-# The build fetches private git dependencies through a BuildKit
-# secret; locally the gh CLI supplies the token, CI supplies the org
-# read PAT.
-export ONEIRIQ_READ_PAT="${ONEIRIQ_READ_PAT:-$(gh auth token 2>/dev/null || true)}"
-
 # COPAL_HA=1 stands up TWO instances behind round-robin nginx and
 # runs the same scenario through the proxy: the proof that leases,
 # claims, and multipart survive instance hops.

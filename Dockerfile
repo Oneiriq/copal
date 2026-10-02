@@ -1,25 +1,13 @@
 # syntax=docker/dockerfile:1
-# Build stage: locked dependencies, release profile. The private git
-# dependencies fetch through a BuildKit secret (a read token), which
-# never lands in a layer; without one, the build works only where the
-# dependency cache is already warm.
+# Build stage: locked dependencies, release profile. Every dependency
+# comes from crates.io, so the build needs no credentials.
 FROM rust:1-trixie AS build
 WORKDIR /src
 COPY . .
-RUN --mount=type=secret,id=oneiriq_token \
-    --mount=type=cache,target=/usr/local/cargo/registry \
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     set -e; \
-    if [ -s /run/secrets/oneiriq_token ]; then \
-        token="$(cat /run/secrets/oneiriq_token)"; \
-        git config --global \
-            url."https://x-access-token:${token}@github.com/Oneiriq/".insteadOf \
-            "ssh://git@github.com/Oneiriq/"; \
-        git config --global --add \
-            url."https://x-access-token:${token}@github.com/Oneiriq/".insteadOf \
-            "https://github.com/Oneiriq/"; \
-    fi; \
-    CARGO_NET_GIT_FETCH_WITH_CLI=true cargo build --release --locked -p copal-server; \
+    cargo build --release --locked -p copal-server; \
     cp target/release/copal-server /usr/local/bin/copal-server
 
 # Runtime stage: slim, non-root, no toolchain.

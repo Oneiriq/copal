@@ -31,12 +31,12 @@ futures = { workspace = true }
 ulid = { workspace = true }
 hex = { workspace = true }
 bytes = { workspace = true }
-# The contract layer, from its own repo. The files contract is defined
+# The contract layer, from crates.io. The files contract is defined
 # over copal-store's real schema; the drift gate compares generated
 # artifacts against the checked-in documents, and the RUNTIME serves
 # /graphql from the very same contract object; resolvers dispatch into
 # this crate's repositories through Kayak middleware.
-oneiriq-kayak = { git = "ssh://git@github.com/Oneiriq/kayak.git", branch = "main", features = [
+oneiriq-kayak = { version = "0.1", features = [
     "graphql",
     "console",
 ] }
@@ -79,7 +79,7 @@ base64 = "0.23"
 # feature reaches test builds only and the shipped binary gains
 # nothing; the client it pulls unifies with the workspace surql's
 # client-rustls.
-oneiriq-kayak = { git = "ssh://git@github.com/Oneiriq/kayak.git", branch = "main", features = [
+oneiriq-kayak = { version = "0.1", features = [
     "verify",
 ] }
 tempfile = { workspace = true }

@@ -15,8 +15,6 @@ services:
   copal2:
     build:
       context: ..
-      secrets:
-        - oneiriq_token
     depends_on:
       - surrealdb
     environment:

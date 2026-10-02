@@ -4,9 +4,6 @@ name: image
 # workflow, not a job behind the shaman self-hosted checks: a parked
 # runner fleet must not park deploys, and the docker build compiles the
 # same locked tree the checks compile.
-#
-# ONEIRIQ_READ_TOKEN feeds the Dockerfile's BuildKit secret for the
-# private git dependencies; it never lands in a layer.
 
 on:
   push:
@@ -35,8 +32,6 @@ jobs:
         with:
           context: .
           push: true
-          secrets: |
-            oneiriq_token=${{ secrets.ONEIRIQ_READ_TOKEN }}
           tags: |
             ghcr.io/oneiriq/copal:${{ github.sha }}
             ghcr.io/oneiriq/copal:latest

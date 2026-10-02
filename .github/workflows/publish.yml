@@ -33,6 +33,11 @@ on:
 permissions:
   contents: read
 
+# One publish at a time: two runs would race for the same versions.
+concurrency:
+  group: publish-crates-io
+  cancel-in-progress: false
+
 env:
   CARGO_TERM_COLOR: always
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -112,6 +117,8 @@ jobs:
     name: Publish to crates.io
     needs: approval
     runs-on: ubuntu-latest
+    # A first release waits out the crates.io new-crate limit (see below).
+    timeout-minutes: 180
     environment:
       name: crates-io
       url: https://crates.io/crates/copal-server
@@ -124,12 +131,73 @@ jobs:
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
 
+      # crates.io lets an account publish five new crates in a burst, then
+      # one every ten minutes, and this workspace creates seven. A plain
+      # `cargo publish --workspace` would stop with HTTP 429 partway, and a
+      # rerun would fail on the first crate already up. So each attempt
+      # excludes the members whose version is already in the crates.io
+      # index, and a 429 waits and retries. Re-running a failed publish job
+      # resumes the same way. (Same loop as Oneiriq/sigilbuzz.)
+      #
       # cargo reads the token from the environment, which keeps it off the
       # command line.
       - name: Publish
-        run: cargo publish --workspace
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          # The members cargo would publish, as "name version" lines.
+          members() {
+            cargo metadata --no-deps --format-version 1 |
+              jq -r '.packages[] | select(.publish != []) | "\(.name) \(.version)"'
+          }
+
+          # Succeeds when the crates.io sparse index lists version $2 of crate $1.
+          on_crates_io() {
+            local name=$1 version=$2 path
+            case ${#name} in
+              1) path="1/$name" ;;
+              2) path="2/$name" ;;
+              3) path="3/${name:0:1}/$name" ;;
+              *) path="${name:0:2}/${name:2:2}/$name" ;;
+            esac
+            curl -fsS "https://index.crates.io/$path" 2>/dev/null |
+              jq -e --arg v "$version" 'select(.vers == $v)' >/dev/null
+          }
+
+          for attempt in $(seq 1 12); do
+            excludes=()
+            pending=0
+            while read -r name version; do
+              if on_crates_io "$name" "$version"; then
+                echo "$name $version is already on crates.io"
+                excludes+=(--exclude "$name")
+              else
+                pending=$((pending + 1))
+              fi
+            done < <(members)
+
+            if [ "$pending" -eq 0 ]; then
+              echo "Every crate is on crates.io."
+              exit 0
+            fi
+
+            if cargo publish --workspace "${excludes[@]}" 2>&1 | tee publish.log; then
+              exit 0
+            fi
+
+            # Retry only a rate-limit refusal, or a crate that is up but not
+            # yet visible in the index. Anything else is a real failure.
+            if ! grep -qE 'status 429|already exists' publish.log; then
+              exit 1
+            fi
+            echo "::notice::crates.io rate limit reached on attempt $attempt; retrying in 11 minutes"
+            sleep 660
+          done
+
+          echo "::error::Crates are still unpublished after 12 attempts"
+          exit 1
 
       - name: Drop the package-verification dirs
         run: rm -rf target/package

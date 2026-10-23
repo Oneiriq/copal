@@ -7,6 +7,15 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Security
+
+- **Dependencies moved past the October 2026 advisories** that failed
+  `cargo audit`: rustls 0.23.46 (RUSTSEC-2026-0346 through -0349),
+  rustls-webpki 0.103.16 (RUSTSEC-2026-0382), webpki-roots and
+  webpki-root-certs 1.0.11, which drop the distrusted emSign intermediates
+  (RUSTSEC-2026-0381, -0383), ammonia 4.2.4 (RUSTSEC-2026-0373,
+  RUSTSEC-2021-0157, -0158), and ctutils 0.4.5 (RUSTSEC-2026-0385).
+
 ## [0.1.0] - 2026-10-02
 
 The first release. The workspace crates (copal-core, copal-store,

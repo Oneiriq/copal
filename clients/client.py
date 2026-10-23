@@ -143,6 +143,9 @@ class Client:
   def issue_url_file(self, id: str, body: dict[str, Any] | None = None) -> Any:
     return self._request('POST', f'/v1/files/{id}/url', body or {})
 
+  def issue_render_url_file(self, id: str, body: dict[str, Any] | None = None) -> Any:
+    return self._request('POST', f'/v1/files/{id}/render-url', body or {})
+
   def issue_upload_url_file(self, id: str, body: dict[str, Any] | None = None) -> Any:
     return self._request('POST', f'/v1/files/{id}/upload-url', body or {})
 

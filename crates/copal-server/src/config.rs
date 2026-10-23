@@ -19,6 +19,14 @@ pub struct Config {
     /// `blob_encryption_key`: SigV4 needs the shared secret back, and
     /// credentials are stored sealed under that key or not at all.
     pub s3_bind: Option<String>,
+    /// Optional bind for the render listener, which serves render
+    /// links and nothing else: content displayed inside a sandbox on
+    /// an origin of its own. Unset, render links cannot be issued.
+    pub render_bind: Option<String>,
+    /// Public origin of the render listener as viewers reach it, e.g.
+    /// `https://view.example.com`. Defaults to `http://` plus the bind
+    /// address, which suits local development only.
+    pub render_origin: Option<String>,
     /// Metadata plane connection.
     pub store: StoreConfig,
     /// Root directory of the filesystem blob store.
@@ -172,6 +180,28 @@ fn parse_auth_mode(raw: Option<&str>) -> Result<crate::auth::AuthMode, String> {
     }
 }
 
+/// Read `COPAL_RENDER_ORIGIN`: an `http` or `https` origin with no
+/// path, query, or fragment, since render links are built by appending
+/// `/v1/render/...` to it. A trailing slash is dropped.
+fn parse_render_origin(raw: Option<String>) -> Result<Option<String>, String> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let origin = raw.trim().trim_end_matches('/');
+    let rest = origin
+        .strip_prefix("https://")
+        .or_else(|| origin.strip_prefix("http://"));
+    match rest {
+        Some(authority) if !authority.is_empty() && !authority.contains(['/', '?', '#', ' ']) => {
+            Ok(Some(origin.to_owned()))
+        }
+        _ => Err(format!(
+            "COPAL_RENDER_ORIGIN must be an http or https origin such as \
+             https://view.example.com, not {raw:?}",
+        )),
+    }
+}
+
 impl Config {
     /// Read configuration from `COPAL_*` environment variables. A value
     /// that would silently weaken authentication refuses instead.
@@ -187,6 +217,8 @@ impl Config {
             bind: env_or("COPAL_BIND", "127.0.0.1:8080"),
             admin_bind: std::env::var("COPAL_ADMIN_BIND").ok(),
             s3_bind: std::env::var("COPAL_S3_BIND").ok(),
+            render_bind: std::env::var("COPAL_RENDER_BIND").ok(),
+            render_origin: parse_render_origin(std::env::var("COPAL_RENDER_ORIGIN").ok())?,
             store: StoreConfig {
                 url: env_or("COPAL_DB_URL", "ws://127.0.0.1:8000"),
                 namespace: env_or("COPAL_DB_NS", "copal"),
@@ -313,8 +345,34 @@ pub struct TransformerConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_auth_mode, parse_flag};
+    use super::{parse_auth_mode, parse_flag, parse_render_origin};
     use crate::auth::AuthMode;
+
+    #[test]
+    fn a_render_origin_is_an_origin_and_nothing_more() {
+        assert_eq!(parse_render_origin(None), Ok(None));
+        assert_eq!(
+            parse_render_origin(Some("https://view.example.com/".into())),
+            Ok(Some("https://view.example.com".into())),
+        );
+        assert_eq!(
+            parse_render_origin(Some("http://127.0.0.1:8098".into())),
+            Ok(Some("http://127.0.0.1:8098".into())),
+        );
+        for bad in [
+            "view.example.com",
+            "ftp://view.example.com",
+            "https://",
+            "https://view.example.com/pages",
+            "https://view.example.com?x=1",
+        ] {
+            let refusal = parse_render_origin(Some(bad.into())).unwrap_err();
+            assert!(
+                refusal.contains("COPAL_RENDER_ORIGIN"),
+                "{bad:?}: {refusal}"
+            );
+        }
+    }
 
     #[test]
     fn an_unknown_auth_mode_refuses_instead_of_trusting_headers() {

@@ -818,6 +818,56 @@
         ]
       }
     },
+    "/v1/files/{id}/render-url": {
+      "post": {
+        "description": "Issue a revocable link that displays the file, HTML included, inside a sandbox on the render listener. Requires COPAL_RENDER_BIND.",
+        "operationId": "issue_render_url_files",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "max_uses": {
+                    "type": "integer"
+                  },
+                  "ttl_secs": {
+                    "type": "integer"
+                  }
+                },
+                "required": [],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Action result."
+          }
+        },
+        "x-requires-scopes": [
+          "read"
+        ]
+      }
+    },
     "/v1/files/{id}/renditions": {
       "post": {
         "description": "Derive an image rendition; repeating a request returns the existing one.",

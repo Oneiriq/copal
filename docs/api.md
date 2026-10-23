@@ -10,6 +10,7 @@ Copal serves the same files on several faces:
 | MCP for agents | `POST /mcp` | [The MCP face](#the-mcp-face) |
 | tus resumable uploads | `/v1/tus` | [Resumable uploads](#resumable-uploads) |
 | S3-compatible gateway | its own listener, `COPAL_S3_BIND` | [S3 gateway](#s3-gateway) |
+| Render links | its own listener, `COPAL_RENDER_BIND` | [Render links](#render-links) |
 | Operator console | `/admin/console` on the admin surface | [operations.md](operations.md) |
 
 All of them reach the same repositories and enforce the same access
@@ -56,6 +57,7 @@ section below.
 | Versions | `GET /v1/files/{id}/versions`, `GET /v1/files/{id}/versions/{n}/content` |
 | Signed read URLs (`cg1` grants) | `POST /v1/files/{id}/url`, redeemed at `GET /v1/grants/{token}`, revoked at `DELETE /v1/grants/{id}` |
 | Upload URLs | `POST /v1/files/{id}/upload-url`, redeemed at `PUT /v1/grants/{token}` |
+| Render links | `POST /v1/files/{id}/render-url`, redeemed at `GET /v1/render/{token}` on the render listener, revoked at `DELETE /v1/grants/{id}` |
 | Renditions | `POST /v1/files/{id}/renditions`, `GET /v1/files/{id}/renditions`, `GET /v1/files/{id}/renditions/{kind}-{w}x{h}.{format}` |
 | Transform | `POST /v1/files/{id}/transform` |
 | Fetch from a URL | `POST /v1/files/fetch` |
@@ -769,6 +771,44 @@ is consumed only when bytes actually serve. Refused redemptions and 304
 revalidations leave the counter alone, and a revoked or expired grant stops
 revalidating as well. Range requests consume per request, so media seeking
 should use TTL-bounded grants without `max_uses`.
+
+## Render links
+
+Every face downloads script-capable content (HTML, SVG, XML) instead of
+displaying it, so an upload can never run under the service's origin,
+where tenant keys and the console live. Render links are how such content
+gets displayed. Set `COPAL_RENDER_BIND` and Copal opens a listener that
+serves render links and nothing else.
+
+`POST /v1/files/{id}/render-url` issues one. It takes the same `ttl_secs`
+(default 900, capped at one year) and `max_uses` as a read grant, and
+answers with an absolute `url` on the render origin:
+
+```
+POST   /v1/files/{id}/render-url   issue a render link, tenant-authenticated
+GET    /v1/render/{token}          render listener only: display the file, no tenant header
+DELETE /v1/grants/{id}             revoke, the same as any grant
+```
+
+A render link is a grant whose one operation is `render`. It refuses on
+`/v1/grants`, and a read grant refuses on the render listener, both with
+the uniform 404. Use counting, revocation and the scan gate behave as they
+do for read grants. A private file stays private until its owner issues a
+link, and the owner can take the link back.
+
+Every rendered response carries a `sandbox` content security policy
+without `allow-same-origin`. The page gets an opaque origin: its scripts
+run, but cookies, storage and credentialed requests to other origins are
+out of reach, and `connect-src 'none'` stops it from calling out. Styles
+and fonts may load from Google Fonts, scripts from cdnjs, jsDelivr and
+unpkg, the allowances hosted artifacts conventionally use. Images and
+media must be inline. The full policy is `copal_server::serve::RENDER_CSP`.
+
+`COPAL_RENDER_ORIGIN` names the origin viewers reach, for example
+`https://view.example.com` behind a proxy. Unset, links use `http://` plus
+the bind address, which suits development. In production, give the render
+listener its own registrable domain: separate ports are separate origins,
+but browsers scope cookies by host.
 
 ## Usage and quotas
 

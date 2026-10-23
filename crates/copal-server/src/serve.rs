@@ -15,6 +15,13 @@
 //! - `ETag`/`If-None-Match` conditional GETs and single-range
 //!   `Range`/`If-Range` requests, both natural gifts of
 //!   content-addressed storage.
+//!
+//! The one exception to forced downloads is the render listener
+//! (`COPAL_RENDER_BIND`), a separate origin that serves nothing but
+//! render links. There [`render_sandbox`] displays content inline
+//! under a `sandbox` content security policy: the page gets an opaque
+//! origin, so its scripts run without reaching any cookie, storage, or
+//! credential, and it may not open network connections of its own.
 
 use axum::body::Body;
 use axum::http::{header, HeaderMap, StatusCode};
@@ -192,6 +199,63 @@ pub fn if_none_match_hits(request_headers: &HeaderMap, etag: &str) -> bool {
         })
 }
 
+/// The content security policy every rendered response carries.
+///
+/// `sandbox` without `allow-same-origin` gives the page an opaque
+/// origin: scripts run, but `document.cookie`, storage, and any
+/// credentialed request to another origin are out of reach, so hostile
+/// content cannot act as its viewer. `connect-src 'none'` stops the
+/// page from calling out. The fetch allowances match what hosted
+/// artifacts conventionally load: inline script and style, Google
+/// Fonts, and pinned libraries from the three common script CDNs.
+/// Images and media must be inline (`data:` or `blob:`).
+pub const RENDER_CSP: &str = "sandbox allow-scripts allow-popups \
+     allow-popups-to-escape-sandbox; default-src 'none'; script-src 'unsafe-inline' \
+     https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://unpkg.com; style-src \
+     'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com \
+     data:; img-src data: blob:; media-src data: blob:; connect-src 'none'; frame-src \
+     'none'; worker-src blob:; form-action 'none'; base-uri 'none'; frame-ancestors \
+     'none'";
+
+/// Turn a served response into a rendered one: displayed inline under
+/// [`RENDER_CSP`], never framed, never referring, and denied the
+/// device features a page could otherwise prompt for.
+///
+/// Only the render listener calls this. The service's own origin keeps
+/// forcing script-capable types to download, so an upload can never
+/// execute where tenant credentials live.
+pub fn render_sandbox(mut response: Response) -> Response {
+    let headers = response.headers_mut();
+    // The served disposition already carries the sanitized filename;
+    // only its kind changes.
+    let inline = headers
+        .get(header::CONTENT_DISPOSITION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("attachment"))
+        .and_then(|rest| header::HeaderValue::from_str(&format!("inline{rest}")).ok());
+    if let Some(value) = inline {
+        headers.insert(header::CONTENT_DISPOSITION, value);
+    }
+    let fixed: [(header::HeaderName, &'static str); 6] = [
+        (header::CONTENT_SECURITY_POLICY, RENDER_CSP),
+        (header::REFERRER_POLICY, "no-referrer"),
+        (header::X_FRAME_OPTIONS, "DENY"),
+        (
+            header::HeaderName::from_static("cross-origin-resource-policy"),
+            "same-origin",
+        ),
+        (
+            header::HeaderName::from_static("permissions-policy"),
+            "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+        ),
+        (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+    ];
+    for (name, value) in fixed {
+        headers.insert(name, header::HeaderValue::from_static(value));
+    }
+    response
+}
+
 /// A 304 with the caching headers but no disposition and no body.
 pub fn not_modified_response(spec: &ServeSpec<'_>) -> Response {
     let etag = format!("\"{}\"", spec.digest);
@@ -311,6 +375,39 @@ mod tests {
         for t in ["application/pdf", "text/plain", "image/png"] {
             assert!(!script_capable(t), "{t}");
         }
+    }
+
+    #[test]
+    fn render_sandbox_displays_inline_inside_an_opaque_origin() {
+        let served = (
+            [(
+                header::CONTENT_DISPOSITION,
+                "attachment; filename=\"page.html\"",
+            )],
+            Body::empty(),
+        )
+            .into_response();
+        let rendered = render_sandbox(served);
+        let get = |name: &str| rendered.headers().get(name).unwrap().to_str().unwrap();
+        assert_eq!(get("content-disposition"), "inline; filename=\"page.html\"");
+        let csp = get("content-security-policy");
+        assert!(csp.starts_with("sandbox allow-scripts"), "{csp}");
+        // The opaque origin is the whole point: same-origin must never
+        // be granted back.
+        assert!(!csp.contains("allow-same-origin"), "{csp}");
+        assert!(csp.contains("connect-src 'none'"), "{csp}");
+        assert!(csp.contains("frame-ancestors 'none'"), "{csp}");
+        assert_eq!(get("referrer-policy"), "no-referrer");
+        assert_eq!(get("x-frame-options"), "DENY");
+        assert_eq!(get("x-content-type-options"), "nosniff");
+    }
+
+    #[test]
+    fn render_sandbox_adds_no_disposition_to_a_304() {
+        let not_modified = (StatusCode::NOT_MODIFIED, Body::empty()).into_response();
+        let rendered = render_sandbox(not_modified);
+        assert!(rendered.headers().get("content-disposition").is_none());
+        assert!(rendered.headers().get("content-security-policy").is_some());
     }
 
     #[test]

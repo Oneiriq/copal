@@ -169,6 +169,36 @@
       }
     },
     {
+      "name": "file_issue_render_url",
+      "description": "Issue a revocable link that displays the file, HTML included, inside a sandbox on the render listener. Requires COPAL_RENDER_BIND.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "ttl_secs": {
+            "type": "integer",
+            "description": "Seconds until the link stops working (default 900, max one year)."
+          },
+          "max_uses": {
+            "type": "integer",
+            "description": "Cap on views. Unset = unlimited within the TTL."
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "requiredScopes": [
+          "read"
+        ],
+        "rateClass": "mutations"
+      }
+    },
+    {
       "name": "file_issue_upload_url",
       "description": "Issue a single-use write capability, so a browser can upload without holding a tenant key.",
       "inputSchema": {

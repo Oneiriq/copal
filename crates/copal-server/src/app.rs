@@ -251,6 +251,12 @@ pub struct AppState<B: BlobStore> {
     /// no tiering anywhere, which is every deployment that has not
     /// configured a `tiers` block.
     pub tiering: crate::tiering::Topology,
+    /// Public origin of the render listener (`COPAL_RENDER_BIND`),
+    /// e.g. `https://view.example.com`. Render links are minted
+    /// against it, and the surface that mints them exists only when it
+    /// is set: script-capable content is never displayed under the
+    /// service's own origin.
+    pub render_origin: Option<String>,
 }
 
 impl<B: BlobStore> AppState<B> {
@@ -277,7 +283,15 @@ impl<B: BlobStore> AppState<B> {
             engine_sessions: false,
             sessions: std::sync::Arc::new(crate::session_cache::SessionCache::default()),
             tiering: crate::tiering::Topology::default(),
+            render_origin: None,
         }
+    }
+
+    /// Install the render listener's public origin. Trailing slashes
+    /// are dropped so minted links never carry a double slash.
+    pub fn with_render_origin(mut self, origin: Option<String>) -> Self {
+        self.render_origin = origin.map(|o| o.trim_end_matches('/').to_owned());
+        self
     }
 
     /// Install the tier topology validated at boot.
@@ -667,6 +681,7 @@ pub fn api_router<B: BlobStore + 'static>(state: AppState<B>) -> Router {
         .route("/v1/runs/{id}/retry", post(retry_run::<B>))
         .route("/v1/files/{id}/versions", get(list_versions::<B>))
         .route("/v1/files/{id}/url", post(issue_grant::<B>))
+        .route("/v1/files/{id}/render-url", post(issue_render_grant::<B>))
         .route("/v1/files/{id}/upload-url", post(issue_upload_grant::<B>))
         .route(
             "/v1/files/{id}/renditions",
@@ -3578,6 +3593,99 @@ pub(crate) async fn issue_grant_core<B: BlobStore>(
     max_uses: Option<u32>,
     origin: Option<&str>,
 ) -> Result<serde_json::Value, ApiError> {
+    let (token, grant) = mint_read_grant(
+        store,
+        state,
+        tenant,
+        id,
+        &ReadGrant {
+            ttl_secs,
+            max_uses,
+            op: "get",
+            audit_verb: "grant.issued",
+        },
+        origin,
+    )
+    .await?;
+    Ok(json!({
+        "grant_id": token.grant_id,
+        "token": token.encode(),
+        "url": format!("/v1/grants/{}", token.encode()),
+        "expires_at": grant.expires_at,
+        "max_uses": grant.max_uses,
+    }))
+}
+
+/// Issue a render link: a grant that displays the file on the render
+/// listener, inside a sandbox, instead of downloading it. The shared
+/// core behind the REST handler and the GraphQL action resolver.
+///
+/// The `url` is absolute, unlike a download grant's: it names the
+/// render origin, which is by design not the origin the caller is
+/// talking to. Without a render listener the surface refuses, naming
+/// the setting that enables it.
+pub(crate) async fn issue_render_grant_core<B: BlobStore>(
+    store: &Store,
+    state: &AppState<B>,
+    tenant: &TenantId,
+    id: &FileId,
+    ttl_secs: u32,
+    max_uses: Option<u32>,
+    origin: Option<&str>,
+) -> Result<serde_json::Value, ApiError> {
+    let render_origin = state.render_origin.as_deref().ok_or_else(|| {
+        CopalError::conflict(
+            "rendering is not configured; set COPAL_RENDER_BIND (and COPAL_RENDER_ORIGIN \
+             behind a proxy) to give rendered content its own origin",
+        )
+    })?;
+    let (token, grant) = mint_read_grant(
+        store,
+        state,
+        tenant,
+        id,
+        &ReadGrant {
+            ttl_secs,
+            max_uses,
+            op: "render",
+            audit_verb: "grant.render_issued",
+        },
+        origin,
+    )
+    .await?;
+    Ok(json!({
+        "grant_id": token.grant_id,
+        "token": token.encode(),
+        "url": format!("{render_origin}/v1/render/{}", token.encode()),
+        "expires_at": grant.expires_at,
+        "max_uses": grant.max_uses,
+    }))
+}
+
+/// What a read-family grant authorizes, and how its issuance is
+/// audited.
+struct ReadGrant<'a> {
+    ttl_secs: u32,
+    max_uses: Option<u32>,
+    /// `get` downloads the bytes; `render` displays them on the
+    /// render listener.
+    op: &'a str,
+    audit_verb: &'a str,
+}
+
+/// Validate, issue, and audit a read-family grant. Download and render
+/// links share every rule; only the operation they authorize differs.
+async fn mint_read_grant<B: BlobStore>(
+    store: &Store,
+    state: &AppState<B>,
+    tenant: &TenantId,
+    id: &FileId,
+    spec: &ReadGrant<'_>,
+    origin: Option<&str>,
+) -> Result<(GrantToken, grant_repo::GrantRow), ApiError> {
+    let ReadGrant {
+        ttl_secs, max_uses, ..
+    } = *spec;
     if ttl_secs == 0 || ttl_secs > 31_536_000 {
         return Err(CopalError::validation("ttl_secs must be between 1 and 31536000").into());
     }
@@ -3612,7 +3720,7 @@ pub(crate) async fn issue_grant_core<B: BlobStore>(
             ttl_secs,
             max_uses,
             created_by: "api".to_owned(),
-            op: "get".to_owned(),
+            op: spec.op.to_owned(),
         },
     )
     .await?;
@@ -3620,20 +3728,35 @@ pub(crate) async fn issue_grant_core<B: BlobStore>(
         store,
         tenant,
         tenant.as_str(),
-        "grant.issued",
+        spec.audit_verb,
         &token.grant_id,
         origin,
         Some(json!({ "file": id.as_str(), "ttl_secs": ttl_secs, "max_uses": max_uses })),
     )
     .await?;
+    Ok((token, grant))
+}
 
-    Ok(json!({
-        "grant_id": token.grant_id,
-        "token": token.encode(),
-        "url": format!("/v1/grants/{}", token.encode()),
-        "expires_at": grant.expires_at,
-        "max_uses": grant.max_uses,
-    }))
+async fn issue_render_grant<B: BlobStore>(
+    State(state): State<AppState<B>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(request): Json<IssueGrantRequest>,
+) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
+    let auth = crate::auth::authorize_scoped(&state, &headers, crate::auth::Scope::Read, 1).await?;
+    let tenant = &auth.tenant;
+    let id = parse_id(&id)?;
+    let issued = issue_render_grant_core(
+        &auth.store,
+        &state,
+        tenant,
+        &id,
+        request.ttl_secs,
+        request.max_uses,
+        forwarded_origin(&headers).as_deref(),
+    )
+    .await?;
+    Ok((StatusCode::CREATED, Json(issued)))
 }
 
 async fn issue_grant<B: BlobStore>(
@@ -3668,9 +3791,23 @@ async fn redeem_grant<B: BlobStore>(
     headers: HeaderMap,
     Path(grant_ref): Path<String>,
 ) -> Result<Response, ApiError> {
+    redeem_read_grant(&state, &headers, &grant_ref, "get").await
+}
+
+/// Redeem a read-family grant whose operation must be `op`: `get` on
+/// the service's own `/v1/grants` route, `render` on the render
+/// listener. A render link cannot download under the service origin,
+/// and a download link cannot render, for the same reason an upload
+/// token cannot read.
+pub(crate) async fn redeem_read_grant<B: BlobStore>(
+    state: &AppState<B>,
+    headers: &HeaderMap,
+    grant_ref: &str,
+    op: &str,
+) -> Result<Response, ApiError> {
     let refused = || CopalError::not_found("unknown or unusable grant");
 
-    let token = GrantToken::parse(&grant_ref).map_err(|_| refused())?;
+    let token = GrantToken::parse(grant_ref).map_err(|_| refused())?;
     let grant = grant_repo::fetch(&state.store, &token.grant_id)
         .await?
         .ok_or_else(refused)?;
@@ -3684,8 +3821,8 @@ async fn redeem_grant<B: BlobStore>(
     // Range request IS a read and does consume; media seeking against
     // counted grants should use TTL-only grants (max_uses unset).
     // A capability authorizes ONE operation: an upload token cannot
-    // read, and a download token cannot write.
-    if grant.op != "get" {
+    // read, a download token cannot write, and neither renders.
+    if grant.op != op {
         return Err(refused().into());
     }
     let tenant = TenantId::parse(&grant.tenant_id).map_err(|_| refused())?;
@@ -3708,7 +3845,7 @@ async fn redeem_grant<B: BlobStore>(
         cache: crate::serve::CacheClass::Private,
     };
     let etag = format!("\"{digest}\"");
-    if crate::serve::if_none_match_hits(&headers, &etag) {
+    if crate::serve::if_none_match_hits(headers, &etag) {
         // The revalidation gate re-checks the grant's guards (revoked,
         // expired, exhausted) without consuming: a dead grant must not
         // keep refreshing a cache it no longer authorizes.
@@ -3737,7 +3874,7 @@ async fn redeem_grant<B: BlobStore>(
         record.blob_residency.as_deref().unwrap_or("local"),
         spec.digest,
     );
-    crate::serve::serve_blob(&backend, &headers, spec).await
+    crate::serve::serve_blob(&backend, headers, spec).await
 }
 
 /// Revoke a grant by id. Tenant-authenticated; the bearer token is not

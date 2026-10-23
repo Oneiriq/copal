@@ -120,6 +120,7 @@ pub(crate) fn dispatcher<B: BlobStore + 'static>(
     let list_state = state.clone();
     let get_state = state.clone();
     let url_state = state.clone();
+    let render_url_state = state.clone();
     let create_state = state.clone();
     let upload_url_state = state.clone();
     let rendition_state = state.clone();
@@ -242,6 +243,38 @@ pub(crate) fn dispatcher<B: BlobStore + 'static>(
                     .and_then(|v| u32::try_from(v).ok());
                 let origin = ctx.get::<RequestOrigin>().map(|o| o.0.clone());
                 issue_grant_core(
+                    &store,
+                    &state,
+                    &tenant,
+                    &id,
+                    ttl_secs,
+                    max_uses,
+                    origin.as_deref(),
+                )
+                .await
+                .map(Some)
+                .map_err(|e| to_kayak_error(e.0))
+            }
+        })
+        .action("files", "issue_render_url", move |ctx, args| {
+            let state = render_url_state.clone();
+            async move {
+                let tenant = tenant_of(&ctx)?;
+                let store = store_of(&ctx, &state.store);
+                let id = parse_file_id(args.id.as_deref().unwrap_or_default())?;
+                let ttl_secs = args
+                    .input
+                    .get("ttl_secs")
+                    .and_then(|v| v.as_u64())
+                    .and_then(|v| u32::try_from(v).ok())
+                    .unwrap_or(900);
+                let max_uses = args
+                    .input
+                    .get("max_uses")
+                    .and_then(|v| v.as_u64())
+                    .and_then(|v| u32::try_from(v).ok());
+                let origin = ctx.get::<RequestOrigin>().map(|o| o.0.clone());
+                crate::app::issue_render_grant_core(
                     &store,
                     &state,
                     &tenant,

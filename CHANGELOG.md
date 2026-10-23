@@ -7,6 +7,26 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Added
+
+- **Render links.** `POST /v1/files/{id}/render-url`, and `issue_render_url`
+  on the GraphQL, MCP and `/v1c` faces and the SDKs, issues a revocable grant
+  that displays a file, HTML included, on a separate render listener
+  (`COPAL_RENDER_BIND`, `COPAL_RENDER_ORIGIN`). Responses there carry a
+  `sandbox` content security policy without `allow-same-origin`, so pages run
+  in an opaque origin with no network access of their own. The service origin
+  still forces script-capable types to download. Grants gain a third
+  operation, `render`, which the schema applies at boot.
+
+### Security
+
+- **Dependencies moved past the October 2026 advisories** that failed
+  `cargo audit`: rustls 0.23.46 (RUSTSEC-2026-0346 through -0349),
+  rustls-webpki 0.103.16 (RUSTSEC-2026-0382), webpki-roots and
+  webpki-root-certs 1.0.11, which drop the distrusted emSign intermediates
+  (RUSTSEC-2026-0381, -0383), ammonia 4.2.4 (RUSTSEC-2026-0373,
+  RUSTSEC-2021-0157, -0158), and ctutils 0.4.5 (RUSTSEC-2026-0385).
+
 ## [0.1.0] - 2026-10-02
 
 The first release. The workspace crates (copal-core, copal-store,

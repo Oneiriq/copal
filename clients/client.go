@@ -204,6 +204,14 @@ func (c *Client) IssueUrlFile(id string, input map[string]any) (map[string]any, 
 	return out, nil
 }
 
+func (c *Client) IssueRenderUrlFile(id string, input map[string]any) (map[string]any, error) {
+	out := map[string]any{}
+	if err := c.request("POST", "/v1/files" + "/" + id + "/render-url", input, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *Client) IssueUploadUrlFile(id string, input map[string]any) (map[string]any, error) {
 	out := map[string]any{}
 	if err := c.request("POST", "/v1/files" + "/" + id + "/upload-url", input, &out); err != nil {

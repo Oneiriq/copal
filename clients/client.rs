@@ -170,6 +170,11 @@ impl Client {
         Ok(self.http.post(url).header("x-copal-tenant", &self.tenant).json(&input).send().await?.error_for_status()?.json().await?)
     }
 
+    pub async fn issue_render_url_file(&self, id: &str, input: Value) -> Result<Value, Error> {
+        let url = format!("{}/v1/files/{id}/render-url", self.base_url);
+        Ok(self.http.post(url).header("x-copal-tenant", &self.tenant).json(&input).send().await?.error_for_status()?.json().await?)
+    }
+
     pub async fn issue_upload_url_file(&self, id: &str, input: Value) -> Result<Value, Error> {
         let url = format!("{}/v1/files/{id}/upload-url", self.base_url);
         Ok(self.http.post(url).header("x-copal-tenant", &self.tenant).json(&input).send().await?.error_for_status()?.json().await?)

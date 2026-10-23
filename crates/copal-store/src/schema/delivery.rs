@@ -34,10 +34,11 @@ fn access_grant_table() -> TableDefinition {
             // row is schemafull-valid.
             built(record_field("file", Some("file")).nullable(true)),
             // What the capability authorizes: reading the file's
-            // bytes, or writing them once (a browser-direct upload).
+            // bytes, writing them once (a browser-direct upload), or
+            // displaying them on the sandboxed render listener.
             built(
                 string_field("op")
-                    .assertion("$value INSIDE ['get', 'put']")
+                    .assertion("$value INSIDE ['get', 'put', 'render']")
                     .default("'get'"),
             ),
             // sha256 of the bearer secret; the secret itself never
@@ -70,8 +71,8 @@ mod tests {
         let ddl = surql::schema::generate_table_sql(&access_grant_table(), false).join("\n");
         assert!(ddl.contains("DEFINE FIELD file ON TABLE access_grant TYPE option<record<file>>"));
         assert!(ddl.contains("DEFINE FIELD expires_at ON TABLE access_grant TYPE option<datetime>"));
-        // Both halves of the capability vocabulary: reads and the
-        // single-use writes browser uploads redeem.
-        assert!(ddl.contains("$value INSIDE ['get', 'put']"));
+        // The whole capability vocabulary: reads, the single-use
+        // writes browser uploads redeem, and sandboxed renders.
+        assert!(ddl.contains("$value INSIDE ['get', 'put', 'render']"));
     }
 }

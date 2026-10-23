@@ -350,6 +350,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
         state.persisted_operations = Some(std::sync::Arc::new(listed));
     }
+    // Rendered content gets an origin of its own, or no rendering at
+    // all: a public origin without a listener behind it would mint
+    // links that cannot work.
+    let render_origin = match (&config.render_bind, &config.render_origin) {
+        (Some(bind), origin) => Some(origin.clone().unwrap_or_else(|| format!("http://{bind}"))),
+        (None, Some(_)) => {
+            return Err(
+                "COPAL_RENDER_ORIGIN requires COPAL_RENDER_BIND: render links need a listener \
+                 of their own to land on"
+                    .into(),
+            );
+        }
+        (None, None) => None,
+    };
+    state = state.with_render_origin(render_origin);
     tracing::info!(instance = %state.instance_id, "upload-claim owner id");
     let instance_id = state.instance_id.clone();
     let cors = config.cors_origins.as_deref();
@@ -377,6 +392,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let gateway = gateway.layer(axum::middleware::from_fn(copal_server::trace::middleware));
             if let Err(err) = axum::serve(listener, gateway).await {
                 tracing::error!(error = %err, "s3 listener failed");
+            }
+        });
+    }
+    // The render listener serves render links and nothing else, so
+    // displayed content never shares an origin with the API, the
+    // console, or the gateway.
+    if let Some(render_bind) = &config.render_bind {
+        let surface = copal_server::render::render_router(state.clone());
+        let listener = tokio::net::TcpListener::bind(render_bind).await?;
+        tracing::info!(
+            addr = %listener.local_addr()?,
+            origin = state.render_origin.as_deref().unwrap_or_default(),
+            "render listener up",
+        );
+        tokio::spawn(async move {
+            let surface = surface.layer(axum::middleware::from_fn(copal_server::trace::middleware));
+            if let Err(err) = axum::serve(listener, surface).await {
+                tracing::error!(error = %err, "render listener failed");
             }
         });
     }

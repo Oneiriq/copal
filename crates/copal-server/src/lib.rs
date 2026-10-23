@@ -24,6 +24,7 @@ pub mod netguard;
 pub mod pipeline;
 pub mod rate;
 pub mod recall;
+pub mod render;
 pub mod rerank;
 pub mod rest_runtime;
 pub mod rotate;

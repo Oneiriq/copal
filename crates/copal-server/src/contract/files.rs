@@ -196,6 +196,41 @@ pub fn resource() -> Resource {
                 rate_class: Some("mutations".into()),
             },
             Action {
+                name: "issue_render_url".into(),
+                method: "POST".into(),
+                path: "/{id}/render-url".into(),
+                input: vec![
+                    ActionField {
+                        name: "ttl_secs".into(),
+                        kind: TypeRef::Int,
+                        required: false,
+                        multiple: false,
+                        options: Vec::new(),
+                        description: Some(
+                            "Seconds until the link stops working (default 900, max one year)."
+                                .into(),
+                        ),
+                    },
+                    ActionField {
+                        name: "max_uses".into(),
+                        kind: TypeRef::Int,
+                        required: false,
+                        multiple: false,
+                        options: Vec::new(),
+                        description: Some("Cap on views. Unset = unlimited within the TTL.".into()),
+                    },
+                ],
+                output: ActionOutput::Json,
+                description: Some(
+                    "Issue a revocable link that displays the file, HTML included, inside a \
+                     sandbox on the render listener. Requires COPAL_RENDER_BIND."
+                        .into(),
+                ),
+                graphql_field: None,
+                requires: vec!["read".into()],
+                rate_class: Some("mutations".into()),
+            },
+            Action {
                 name: "issue_upload_url".into(),
                 method: "POST".into(),
                 path: "/{id}/upload-url".into(),

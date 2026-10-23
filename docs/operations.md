@@ -33,6 +33,8 @@ How values are read:
 | `COPAL_BIND` | `127.0.0.1:8080` | Tenant-facing listener: REST, `/v1c`, GraphQL, MCP, tus, health. It also carries the admin surface when `COPAL_ADMIN_BIND` is unset. |
 | `COPAL_ADMIN_BIND` | unset | Separate listener for the admin surface, `/metrics`, and the console. When set, those routes exist only there. |
 | `COPAL_S3_BIND` | unset | Listener for the S3-compatible gateway (path-style bucket routes at its root). Requires an encryption key, from `COPAL_BLOB_ENCRYPTION_KEY` or key custody; startup refuses otherwise. The S3 credential admin routes exist only when this is set. |
+| `COPAL_RENDER_BIND` | unset | Listener for render links, which display content, HTML included, inside a sandbox on an origin of its own. It serves nothing else. Unset, render links cannot be issued. |
+| `COPAL_RENDER_ORIGIN` | `http://` plus the render bind | Public origin of the render listener, such as `https://view.example.com`, used to build render links. Requires `COPAL_RENDER_BIND`, and startup refuses otherwise. Give it its own registrable domain in production. |
 | `COPAL_CORS_ORIGINS` | unset | Comma-separated browser-origin allowlist. Unset attaches no CORS layer at all. |
 
 ### Metadata database

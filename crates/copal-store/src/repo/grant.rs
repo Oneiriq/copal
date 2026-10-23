@@ -67,7 +67,8 @@ pub struct GrantSpec {
     pub max_uses: Option<u32>,
     /// Principal recorded as the issuer.
     pub created_by: String,
-    /// `get` to read bytes, `put` to write them.
+    /// `get` to read bytes, `put` to write them, `render` to display
+    /// them on the render listener.
     pub op: String,
 }
 

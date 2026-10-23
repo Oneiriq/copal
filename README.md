@@ -183,6 +183,7 @@ permissions.
 | GraphQL | `/graphql` | Queries and mutations, and live subscriptions over server-sent events. `GET /graphql` returns the [schema](docs/schema.graphql). |
 | MCP | `/mcp` | Giving an AI agent tools to list, read, search, and manage files. |
 | S3 gateway | `COPAL_S3_BIND` | The AWS CLI, rclone, the MinIO client, and S3 SDKs. Each tenant is a bucket. |
+| Render links | `COPAL_RENDER_BIND` | Sharing HTML pages and other documents that display in a browser, sandboxed on an origin of their own. |
 | tus | `/v1/tus` | Resumable uploads from browsers and unreliable networks. |
 | Contract REST | `/v1c` | The contract-declared routes served directly from the contract by [Kayak](https://github.com/Oneiriq/kayak), with the same shapes as `/v1`. |
 | Admin console | `/admin/console` | Browsing tenants, files, keys, and the audit trail. |
@@ -233,6 +234,7 @@ config file. These are the ones most deployments set:
 | `COPAL_BLOB_ROOT` | `./data/blobs` | Where file bytes go on local disk. |
 | `COPAL_BLOB_ENCRYPTION_KEY` | unset | 64 hex characters. Encrypts file bytes at rest. Webhooks, edge links, and the S3 gateway need it. |
 | `COPAL_S3_BIND` | unset | Address for the S3-compatible gateway. |
+| `COPAL_RENDER_BIND`, `COPAL_RENDER_ORIGIN` | unset | Listener and public origin for render links. |
 | `COPAL_RESIDENCIES` | unset | JSON describing extra storage backends (S3, GCS, Azure). |
 | `COPAL_CLAMAV_ADDR` | unset | A clamd address to scan uploads for malware. |
 | `COPAL_EXTRACTOR_ADDR` | unset | A Tika-compatible text extractor for PDFs and office documents. |

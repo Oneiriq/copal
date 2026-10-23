@@ -134,6 +134,10 @@ export class Client {
     return this.request('POST', `/v1/files/${id}/url`, input)
   }
 
+  issueRenderUrlFile(id: string, input: Record<string, unknown>): Promise<Record<string, unknown>> {
+    return this.request('POST', `/v1/files/${id}/render-url`, input)
+  }
+
   issueUploadUrlFile(id: string, input: Record<string, unknown>): Promise<Record<string, unknown>> {
     return this.request('POST', `/v1/files/${id}/upload-url`, input)
   }

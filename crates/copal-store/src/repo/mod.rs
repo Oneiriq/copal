@@ -17,6 +17,7 @@ pub mod principal;
 pub mod rate;
 pub mod rotate;
 pub mod s3;
+pub mod short_link;
 pub mod tenant;
 pub mod text;
 pub mod tier;

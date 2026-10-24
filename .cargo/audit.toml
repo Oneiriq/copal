@@ -32,4 +32,14 @@ ignore = [
     # 0.14 or stops enabling `aws`.
     "RUSTSEC-2026-0194",
     "RUSTSEC-2026-0195",
+    # RUSTSEC-2026-0387 (crypto-bigint: timing variability in operations
+    # meant to be constant-time) is fixed only in 0.7.6. The lockfile's
+    # crypto-bigint 0.5.5 arrives through the same JWT stack as the rsa
+    # entry above: surrealdb-core 3.3.0 -> jsonwebtoken 10.4 -> p256 0.13
+    # -> elliptic-curve 0.13, which cannot take 0.7. The leak needs
+    # secret P-256 scalar operations to time, and Copal performs none: no
+    # Copal crate depends on jsonwebtoken, p256 or ecdsa, and the one
+    # SurrealDB access it defines (`caller`) signs with HS256. Re-evaluate
+    # whenever surrealdb or jsonwebtoken move to elliptic-curve 0.14.
+    "RUSTSEC-2026-0387",
 ]

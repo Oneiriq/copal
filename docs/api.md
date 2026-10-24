@@ -57,7 +57,7 @@ section below.
 | Versions | `GET /v1/files/{id}/versions`, `GET /v1/files/{id}/versions/{n}/content` |
 | Signed read URLs (`cg1` grants) | `POST /v1/files/{id}/url`, redeemed at `GET /v1/grants/{token}`, revoked at `DELETE /v1/grants/{id}` |
 | Upload URLs | `POST /v1/files/{id}/upload-url`, redeemed at `PUT /v1/grants/{token}` |
-| Render links | `POST /v1/files/{id}/render-url`, redeemed at `GET /v1/render/{token}` on the render listener, revoked at `DELETE /v1/grants/{id}` |
+| Render links | `POST /v1/files/{id}/render-url`, redeemed at `GET /v1/render/{token}` on the render listener, or at `GET /a/{short_link}` when issued with a `short_name`, revoked at `DELETE /v1/grants/{id}` |
 | Renditions | `POST /v1/files/{id}/renditions`, `GET /v1/files/{id}/renditions`, `GET /v1/files/{id}/renditions/{kind}-{w}x{h}.{format}` |
 | Transform | `POST /v1/files/{id}/transform` |
 | Fetch from a URL | `POST /v1/files/fetch` |
@@ -809,6 +809,39 @@ media must be inline. The full policy is `copal_server::serve::RENDER_CSP`.
 the bind address, which suits development. In production, give the render
 listener its own registrable domain: separate ports are separate origins,
 but browsers scope cookies by host.
+
+### Short links
+
+A render link's token is too long to type. Pass `short_name` when issuing
+one and Copal also gives it a short link, `<name>-<code>`, answered in
+`short_link` and `short_url`:
+
+```
+POST /v1/files/{id}/render-url  {"ttl_secs": 2592000, "short_name": "ceiling"}
+  -> {"url": ".../v1/render/cg1....", "short_link": "ceiling-k7q2",
+      "short_url": "https://view.example.com/a/ceiling-k7q2", ...}
+GET  /a/{short_link}            render listener only: display the file, no tenant header
+```
+
+The name is the publisher's: lowercase letters, digits and single hyphens,
+at most 40, folded to lowercase. The four-character code is random, drawn
+from letters and digits that cannot be mistaken for one another (no `0`,
+`o`, `1`, `l` or `i`), so knowing the name is not enough to open the page.
+Links match regardless of case, since phone keyboards capitalize.
+
+A short link opens exactly what its grant opens, under the same sandbox,
+use count, expiry and scan gate. Revoking the grant closes the link. To
+move a page to a new version without changing its address, issue the new
+version's render link with `short_link` set to the existing link: the
+link now opens the new grant, and the old grant keeps its own long link
+until it expires or is revoked. Only the tenant that created a link can
+move it. A request may name `short_name` or `short_link`, not both. An
+unknown link, a malformed one and a dead grant are all the same 404.
+
+Four characters from a 31-letter alphabet give 923,521 codes per name.
+That keeps a link private from someone who only knows its name, but it is
+not a secret in the cryptographic sense: for content that must resist a
+determined guesser, share the long link instead.
 
 ## Usage and quotas
 

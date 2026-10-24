@@ -17,6 +17,14 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   in an opaque origin with no network access of their own. The service origin
   still forces script-capable types to download. Grants gain a third
   operation, `render`, which the schema applies at boot.
+- **Short links for render links.** `issue_render_url` accepts `short_name`
+  and answers with `short_link` and `short_url`, a typeable address such as
+  `/a/ceiling-k7q2` on the render listener: the publisher's name plus a
+  random four-character code without look-alike characters, matched
+  regardless of case. `short_link` points an existing link at a new render
+  grant, so one address follows a page across versions. A short link meets
+  every guard its grant does, and revoking the grant closes it. A new
+  `short_link` table holds them, applied at boot.
 
 ### Security
 

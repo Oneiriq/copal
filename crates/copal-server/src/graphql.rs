@@ -273,6 +273,15 @@ pub(crate) fn dispatcher<B: BlobStore + 'static>(
                     .get("max_uses")
                     .and_then(|v| v.as_u64())
                     .and_then(|v| u32::try_from(v).ok());
+                let text = |name: &str| {
+                    args.input
+                        .get(name)
+                        .and_then(|v| v.as_str())
+                        .map(str::to_owned)
+                };
+                let short =
+                    crate::app::ShortLink::from_request(text("short_name"), text("short_link"))
+                        .map_err(to_kayak_error)?;
                 let origin = ctx.get::<RequestOrigin>().map(|o| o.0.clone());
                 crate::app::issue_render_grant_core(
                     &store,
@@ -281,6 +290,7 @@ pub(crate) fn dispatcher<B: BlobStore + 'static>(
                     &id,
                     ttl_secs,
                     max_uses,
+                    short,
                     origin.as_deref(),
                 )
                 .await

@@ -33,10 +33,14 @@ async fn json_body(response: axum::response::Response) -> Value {
 }
 
 fn req(method: &str, uri: &str, body: Body) -> Request<Body> {
+    req_as("acme", method, uri, body)
+}
+
+fn req_as(tenant: &str, method: &str, uri: &str, body: Body) -> Request<Body> {
     let mut builder = Request::builder()
         .method(method)
         .uri(uri)
-        .header("x-copal-tenant", "acme");
+        .header("x-copal-tenant", tenant);
     if method == "POST" {
         builder = builder.header("content-type", "application/json");
     }
@@ -48,12 +52,14 @@ fn anonymous(uri: &str) -> Request<Body> {
 }
 
 async fn upload_html(router: &axum::Router) -> String {
+    upload_page(router, "pages/bounded.html", PAGE).await
+}
+
+async fn upload_page(router: &axum::Router, path: &str, page: &[u8]) -> String {
     let create = req(
         "POST",
         "/v1/files",
-        Body::from(
-            json!({ "path": "pages/bounded.html", "content_type": "text/html" }).to_string(),
-        ),
+        Body::from(json!({ "path": path, "content_type": "text/html" }).to_string()),
     );
     let response = router.clone().oneshot(create).await.unwrap();
     assert_eq!(response.status(), StatusCode::CREATED);
@@ -61,7 +67,7 @@ async fn upload_html(router: &axum::Router) -> String {
     let mut put = req(
         "PUT",
         &format!("/v1/files/{id}/content"),
-        Body::from(PAGE.to_vec()),
+        Body::from(page.to_vec()),
     );
     put.headers_mut().remove("content-type");
     let response = router.clone().oneshot(put).await.unwrap();
@@ -70,9 +76,20 @@ async fn upload_html(router: &axum::Router) -> String {
 }
 
 async fn issue(router: &axum::Router, id: &str, action: &str, body: Value) -> (StatusCode, Value) {
+    issue_as(router, "acme", id, action, body).await
+}
+
+async fn issue_as(
+    router: &axum::Router,
+    tenant: &str,
+    id: &str,
+    action: &str,
+    body: Value,
+) -> (StatusCode, Value) {
     let response = router
         .clone()
-        .oneshot(req(
+        .oneshot(req_as(
+            tenant,
             "POST",
             &format!("/v1/files/{id}/{action}"),
             Body::from(body.to_string()),
@@ -81,6 +98,14 @@ async fn issue(router: &axum::Router, id: &str, action: &str, body: Value) -> (S
         .unwrap();
     let status = response.status();
     (status, json_body(response).await)
+}
+
+/// Status and body of an anonymous GET on the render listener.
+async fn view(render: &axum::Router, path: &str) -> (StatusCode, Vec<u8>) {
+    let response = render.clone().oneshot(anonymous(path)).await.unwrap();
+    let status = response.status();
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    (status, body.to_vec())
 }
 
 /// The path half of an absolute render link.
@@ -212,6 +237,146 @@ async fn render_links_count_views_and_revoke() {
     assert!(revoke.status().is_success(), "{}", revoke.status());
     let after = render.clone().oneshot(anonymous(&path)).await.unwrap();
     assert_eq!(after.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn short_links_open_the_page_and_follow_new_versions() {
+    let (service, render, _dir) = stack(Some(RENDER_ORIGIN)).await;
+    let first = upload_html(&service).await;
+
+    let (status, issued) = issue(
+        &service,
+        &first,
+        "render-url",
+        json!({ "ttl_secs": 600, "short_name": "Ceiling" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{issued}");
+    let link = issued["short_link"].as_str().unwrap().to_owned();
+    let (name, code) = link.rsplit_once('-').unwrap();
+    assert_eq!(name, "ceiling");
+    assert_eq!(code.len(), 4, "{link}");
+    assert_eq!(
+        issued["short_url"],
+        json!(format!("{RENDER_ORIGIN}/a/{link}"))
+    );
+    // The long link still works beside it.
+    assert!(issued["url"].as_str().unwrap().contains("/v1/render/cg1."));
+
+    // Displayed exactly as the render link is: sandboxed, never cached.
+    let response = render
+        .clone()
+        .oneshot(anonymous(&format!("/a/{link}")))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let csp = response.headers()["content-security-policy"]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    assert!(csp.starts_with("sandbox allow-scripts"), "{csp}");
+    assert!(!csp.contains("allow-same-origin"), "{csp}");
+    assert_eq!(response.headers()["cache-control"], "no-store");
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(&body[..], PAGE);
+
+    // Phone keyboards capitalize; the link still opens.
+    let (status, _) = view(&render, &format!("/a/{}", link.to_ascii_uppercase())).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // A new version takes over the same address.
+    let next: &[u8] = b"<!doctype html><title>Bounded v2</title>";
+    let second = upload_page(&service, "pages/bounded-v2.html", next).await;
+    let (status, moved) = issue(
+        &service,
+        &second,
+        "render-url",
+        json!({ "short_link": link.to_ascii_uppercase() }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{moved}");
+    assert_eq!(moved["short_link"], json!(link));
+    let (status, body) = view(&render, &format!("/a/{link}")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body, next);
+}
+
+#[tokio::test]
+async fn short_links_close_with_their_grant_and_refuse_strangers() {
+    let (service, render, _dir) = stack(Some(RENDER_ORIGIN)).await;
+    let id = upload_html(&service).await;
+    let (_, issued) = issue(
+        &service,
+        &id,
+        "render-url",
+        json!({ "short_name": "bounded" }),
+    )
+    .await;
+    let link = issued["short_link"].as_str().unwrap().to_owned();
+
+    // Another tenant can neither move the link nor learn that it exists.
+    let theirs = {
+        let create = req_as(
+            "globex",
+            "POST",
+            "/v1/files",
+            Body::from(json!({ "path": "x.html", "content_type": "text/html" }).to_string()),
+        );
+        let response = service.clone().oneshot(create).await.unwrap();
+        json_body(response).await["id"].as_str().unwrap().to_owned()
+    };
+    let (status, _) = issue_as(
+        &service,
+        "globex",
+        &theirs,
+        "render-url",
+        json!({ "short_link": link }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // Unknown, malformed and wrong-listener requests are all a plain 404.
+    for path in ["/a/bounded-2222", "/a/bounded", "/a/", "/a/bounded-k7q0"] {
+        let (status, _) = view(&render, path).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{path}");
+    }
+    let (status, _) = view(&service, &format!("/a/{link}")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // Requests that cannot be honored say why, before minting anything.
+    for body in [
+        json!({ "short_name": "two words" }),
+        json!({ "short_name": "-edge" }),
+        json!({ "short_name": "a", "short_link": link }),
+    ] {
+        let (status, refused) = issue(&service, &id, "render-url", body.clone()).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body} -> {refused}");
+    }
+    let (status, _) = issue(
+        &service,
+        &id,
+        "render-url",
+        json!({ "short_link": "nope-2222" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // Revoking the grant closes the short link with it.
+    let (status, _) = view(&render, &format!("/a/{link}")).await;
+    assert_eq!(status, StatusCode::OK);
+    let grant_id = issued["grant_id"].as_str().unwrap();
+    let revoke = service
+        .clone()
+        .oneshot(req(
+            "DELETE",
+            &format!("/v1/grants/{grant_id}"),
+            Body::empty(),
+        ))
+        .await
+        .unwrap();
+    assert!(revoke.status().is_success(), "{}", revoke.status());
+    let (status, _) = view(&render, &format!("/a/{link}")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]

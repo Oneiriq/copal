@@ -15,6 +15,8 @@ use copal_core::CopalError;
 use rand::RngExt as _;
 use sha2::{Digest as _, Sha256};
 
+pub mod short_link;
+
 const PREFIX: &str = "cg1";
 const SECRET_BYTES: usize = 32;
 

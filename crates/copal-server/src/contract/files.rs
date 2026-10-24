@@ -219,11 +219,37 @@ pub fn resource() -> Resource {
                         options: Vec::new(),
                         description: Some("Cap on views. Unset = unlimited within the TTL.".into()),
                     },
+                    ActionField {
+                        name: "short_name".into(),
+                        kind: TypeRef::String,
+                        required: false,
+                        multiple: false,
+                        options: Vec::new(),
+                        description: Some(
+                            "Also create a short link, /a/<name>-<code> on the render origin, \
+                             typeable on any device. Lowercase letters, digits and hyphens, at \
+                             most 40."
+                                .into(),
+                        ),
+                    },
+                    ActionField {
+                        name: "short_link".into(),
+                        kind: TypeRef::String,
+                        required: false,
+                        multiple: false,
+                        options: Vec::new(),
+                        description: Some(
+                            "Point an existing short link of this tenant at the new link \
+                             instead, so one address follows a page across versions."
+                                .into(),
+                        ),
+                    },
                 ],
                 output: ActionOutput::Json,
                 description: Some(
                     "Issue a revocable link that displays the file, HTML included, inside a \
-                     sandbox on the render listener. Requires COPAL_RENDER_BIND."
+                     sandbox on the render listener. Requires COPAL_RENDER_BIND. Revoking the \
+                     grant also closes any short link pointing at it."
                         .into(),
                 ),
                 graphql_field: None,

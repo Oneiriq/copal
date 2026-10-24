@@ -820,7 +820,7 @@
     },
     "/v1/files/{id}/render-url": {
       "post": {
-        "description": "Issue a revocable link that displays the file, HTML included, inside a sandbox on the render listener. Requires COPAL_RENDER_BIND.",
+        "description": "Issue a revocable link that displays the file, HTML included, inside a sandbox on the render listener. Requires COPAL_RENDER_BIND. Revoking the grant also closes any short link pointing at it.",
         "operationId": "issue_render_url_files",
         "parameters": [
           {
@@ -839,6 +839,12 @@
                 "properties": {
                   "max_uses": {
                     "type": "integer"
+                  },
+                  "short_link": {
+                    "type": "string"
+                  },
+                  "short_name": {
+                    "type": "string"
                   },
                   "ttl_secs": {
                     "type": "integer"

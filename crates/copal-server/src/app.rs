@@ -3354,6 +3354,22 @@ fn default_grant_ttl() -> u32 {
     900
 }
 
+/// Request body for render-link issuance: a grant's limits, plus an
+/// optional short link to create or move.
+#[derive(Debug, Deserialize)]
+struct IssueRenderRequest {
+    #[serde(default = "default_grant_ttl")]
+    ttl_secs: u32,
+    #[serde(default)]
+    max_uses: Option<u32>,
+    /// A name to give the link a typeable address, `<name>-<code>`.
+    #[serde(default)]
+    short_name: Option<String>,
+    /// An existing short link of this tenant to point at the new grant.
+    #[serde(default)]
+    short_link: Option<String>,
+}
+
 /// Upload-URL request body.
 #[derive(Debug, Deserialize)]
 struct IssueUploadRequest {
@@ -3624,6 +3640,12 @@ pub(crate) async fn issue_grant_core<B: BlobStore>(
 /// render origin, which is by design not the origin the caller is
 /// talking to. Without a render listener the surface refuses, naming
 /// the setting that enables it.
+///
+/// A [`ShortLink`] request also gives the grant a typeable address,
+/// `/a/<name>-<code>` on the render origin, or moves an existing one to
+/// this grant. Both are checked before the grant is minted, so a
+/// refused link leaves no orphan grant behind.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn issue_render_grant_core<B: BlobStore>(
     store: &Store,
     state: &AppState<B>,
@@ -3631,6 +3653,7 @@ pub(crate) async fn issue_render_grant_core<B: BlobStore>(
     id: &FileId,
     ttl_secs: u32,
     max_uses: Option<u32>,
+    short: ShortLink,
     origin: Option<&str>,
 ) -> Result<serde_json::Value, ApiError> {
     let render_origin = state.render_origin.as_deref().ok_or_else(|| {
@@ -3639,6 +3662,24 @@ pub(crate) async fn issue_render_grant_core<B: BlobStore>(
              behind a proxy) to give rendered content its own origin",
         )
     })?;
+    match &short {
+        ShortLink::None => {}
+        // Validates the name; the minted link itself is discarded.
+        ShortLink::Mint(name) => {
+            copal_sign::short_link::mint(name)?;
+        }
+        ShortLink::Repoint(link) => {
+            let owned = match copal_sign::short_link::normalize(link) {
+                Some(link) => copal_store::repo::short_link::resolve(store, &link)
+                    .await?
+                    .is_some_and(|row| row.tenant_id == tenant.as_str()),
+                None => false,
+            };
+            if !owned {
+                return Err(CopalError::not_found(format!("short link {link}")).into());
+            }
+        }
+    }
     let (token, grant) = mint_read_grant(
         store,
         state,
@@ -3653,13 +3694,99 @@ pub(crate) async fn issue_render_grant_core<B: BlobStore>(
         origin,
     )
     .await?;
-    Ok(json!({
+    let mut issued = json!({
         "grant_id": token.grant_id,
         "token": token.encode(),
         "url": format!("{render_origin}/v1/render/{}", token.encode()),
         "expires_at": grant.expires_at,
         "max_uses": grant.max_uses,
-    }))
+    });
+    let link = match short {
+        ShortLink::None => return Ok(issued),
+        ShortLink::Mint(name) => {
+            mint_short_link(store, tenant, &name, &token.grant_id, origin).await?
+        }
+        ShortLink::Repoint(link) => {
+            let link = copal_sign::short_link::normalize(&link)
+                .ok_or_else(|| CopalError::not_found(format!("short link {link}")))?;
+            copal_store::repo::short_link::repoint(store, tenant, &link, &token.grant_id).await?;
+            copal_store::repo::auth::record_audit(
+                store,
+                tenant,
+                tenant.as_str(),
+                "short_link.repointed",
+                &link,
+                origin,
+                Some(json!({ "grant": token.grant_id })),
+            )
+            .await?;
+            link
+        }
+    };
+    issued["short_link"] = json!(link);
+    issued["short_url"] = json!(format!("{render_origin}/a/{link}"));
+    Ok(issued)
+}
+
+/// What a render issuance does about a short link.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ShortLink {
+    None,
+    /// Create `<name>-<code>` for the new grant.
+    Mint(String),
+    /// Move this tenant's existing link to the new grant.
+    Repoint(String),
+}
+
+impl ShortLink {
+    /// Read the two optional request fields; naming both is refused,
+    /// because creating and moving a link are different requests.
+    pub(crate) fn from_request(
+        short_name: Option<String>,
+        short_link: Option<String>,
+    ) -> Result<Self, CopalError> {
+        match (short_name, short_link) {
+            (None, None) => Ok(Self::None),
+            (Some(name), None) => Ok(Self::Mint(name)),
+            (None, Some(link)) => Ok(Self::Repoint(link)),
+            (Some(_), Some(_)) => Err(CopalError::validation(
+                "give short_name to create a link or short_link to move one, not both",
+            )),
+        }
+    }
+}
+
+/// Create a short link for a grant, drawing a new code when one is
+/// taken. Four characters from a 31-letter alphabet leave collisions
+/// rare, so a handful of draws is ample.
+async fn mint_short_link(
+    store: &Store,
+    tenant: &TenantId,
+    name: &str,
+    grant_id: &str,
+    origin: Option<&str>,
+) -> Result<String, ApiError> {
+    for _ in 0..8 {
+        let link = copal_sign::short_link::mint(name)?;
+        match copal_store::repo::short_link::create(store, tenant, &link, grant_id, "api").await {
+            Ok(()) => {
+                copal_store::repo::auth::record_audit(
+                    store,
+                    tenant,
+                    tenant.as_str(),
+                    "short_link.created",
+                    &link,
+                    origin,
+                    Some(json!({ "grant": grant_id })),
+                )
+                .await?;
+                return Ok(link);
+            }
+            Err(CopalError::Conflict(_)) => continue,
+            Err(other) => return Err(other.into()),
+        }
+    }
+    Err(CopalError::conflict(format!("no free short link for {name}; try another name")).into())
 }
 
 /// What a read-family grant authorizes, and how its issuance is
@@ -3741,11 +3868,12 @@ async fn issue_render_grant<B: BlobStore>(
     State(state): State<AppState<B>>,
     headers: HeaderMap,
     Path(id): Path<String>,
-    Json(request): Json<IssueGrantRequest>,
+    Json(request): Json<IssueRenderRequest>,
 ) -> Result<(StatusCode, Json<serde_json::Value>), ApiError> {
     let auth = crate::auth::authorize_scoped(&state, &headers, crate::auth::Scope::Read, 1).await?;
     let tenant = &auth.tenant;
     let id = parse_id(&id)?;
+    let short = ShortLink::from_request(request.short_name, request.short_link)?;
     let issued = issue_render_grant_core(
         &auth.store,
         &state,
@@ -3753,6 +3881,7 @@ async fn issue_render_grant<B: BlobStore>(
         &id,
         request.ttl_secs,
         request.max_uses,
+        short,
         forwarded_origin(&headers).as_deref(),
     )
     .await?;
@@ -3814,6 +3943,44 @@ pub(crate) async fn redeem_read_grant<B: BlobStore>(
     if !copal_sign::verify_secret(&token.secret, &grant.secret_hash) {
         return Err(refused().into());
     }
+    serve_granted(state, headers, &token.grant_id, grant, op).await
+}
+
+/// Redeem a short link on the render listener. The link stands in for
+/// the token's secret, so it resolves to its grant and then meets every
+/// guard a render link meets. An unknown or malformed link is the same
+/// 404 as a dead grant.
+pub(crate) async fn redeem_short_link<B: BlobStore>(
+    state: &AppState<B>,
+    headers: &HeaderMap,
+    link: &str,
+) -> Result<Response, ApiError> {
+    let refused = || CopalError::not_found("unknown or unusable grant");
+    let link = copal_sign::short_link::normalize(link).ok_or_else(refused)?;
+    let row = copal_store::repo::short_link::resolve(&state.store, &link)
+        .await?
+        .ok_or_else(refused)?;
+    let grant = grant_repo::fetch(&state.store, &row.grant_id)
+        .await?
+        .ok_or_else(refused)?;
+    // A link moves only within its tenant, so a grant from any other
+    // tenant here means the rows disagree; refuse rather than serve.
+    if grant.tenant_id != row.tenant_id {
+        return Err(refused().into());
+    }
+    serve_granted(state, headers, &row.grant_id, grant, "render").await
+}
+
+/// Everything redemption does once the caller has proven the right to
+/// a grant: check its operation and file, then consume a use and serve.
+async fn serve_granted<B: BlobStore>(
+    state: &AppState<B>,
+    headers: &HeaderMap,
+    grant_id: &str,
+    grant: grant_repo::GrantRow,
+    op: &str,
+) -> Result<Response, ApiError> {
+    let refused = || CopalError::not_found("unknown or unusable grant");
 
     // Every precondition runs BEFORE the use is consumed: a token whose
     // file was since deleted or quarantined must refuse without burning
@@ -3849,7 +4016,7 @@ pub(crate) async fn redeem_read_grant<B: BlobStore>(
         // The revalidation gate re-checks the grant's guards (revoked,
         // expired, exhausted) without consuming: a dead grant must not
         // keep refreshing a cache it no longer authorizes.
-        if !grant_repo::redeemable(&state.store, &token.grant_id).await? {
+        if !grant_repo::redeemable(&state.store, grant_id).await? {
             return Err(refused().into());
         }
         return Ok(crate::serve::not_modified_response(&spec));
@@ -3866,7 +4033,7 @@ pub(crate) async fn redeem_read_grant<B: BlobStore>(
     // Guards live in the UPDATE: two racing redemptions of a one-use
     // grant serialize here, and this stays the single authorization
     // point for actually reading bytes.
-    if !grant_repo::consume(&state.store, &token.grant_id).await? {
+    if !grant_repo::consume(&state.store, grant_id).await? {
         return Err(refused().into());
     }
     crate::tiering::note_blob_read(

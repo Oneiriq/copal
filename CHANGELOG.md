@@ -25,6 +25,27 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   grant, so one address follows a page across versions. A short link meets
   every guard its grant does, and revoking the grant closes it. A new
   `short_link` table holds them, applied at boot.
+- **Access changes and public pages.** `POST /v1/files/{id}/access`, and
+  `set_access` on every face, changes a file's access level after creation.
+  A `public` file renders on the render listener at `/v1/public/{id}` with no
+  grant and no expiry, `no-store` so that making it private again is
+  immediate. Every other file is the uniform 404 there.
+- **Galleries may frame rendered pages.** `COPAL_RENDER_FRAME_ANCESTORS` names
+  origins allowed to embed rendered pages in an `<iframe>`; they replace
+  `'none'` in the render policy's `frame-ancestors`, and `X-Frame-Options` is
+  dropped. Unset, nothing may frame a page, as before.
+
+### Changed
+
+- **HTML is indexed by its visible text.** `extract_text` drops tags,
+  comments and the contents of `script`, `style` and `template` (extractor
+  `html`), so pages are found by what they say. Before, raw markup was
+  indexed, and a page carrying data inline could fail processing outright.
+- **Oversized passages no longer fail a file.** When the embedding service
+  refuses a passage with an HTTP error, `embed_text` embeds it as 2, 4, then
+  8 pieces and keeps their normalized mean. A small model's token window
+  (all-MiniLM-L6-v2 takes 512) is easy to exceed with 1,000 characters of
+  figures; one such passage used to leave the whole file `failed`.
 
 ### Security
 

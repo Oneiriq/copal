@@ -158,6 +158,10 @@ export class Client {
     return this.request('POST', `/v1/files/fetch`, input)
   }
 
+  setAccessFile(id: string, input: Record<string, unknown>): Promise<File> {
+    return this.request('POST', `/v1/files/${id}/access`, input)
+  }
+
   removeFile(id: string): Promise<void> {
     return this.request('DELETE', `/v1/files/${id}`)
   }

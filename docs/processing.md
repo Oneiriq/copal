@@ -68,11 +68,23 @@ Each step gets up to three attempts.
    scanner the step records `scanned: false`. Content already blocked
    by an earlier step is not scanned.
 4. `extract_text` pulls text from the content. Text and JSON decode
-   natively; other formats go to the extractor at
-   `COPAL_EXTRACTOR_ADDR`. Upload markers resolve here, and the text is
-   split into passages for search. Blocked content is never opened.
+   natively. HTML and XHTML are indexed by their visible text
+   (extractor `html`): tags, comments and the contents of `script`,
+   `style` and `template` are dropped, and block elements become
+   paragraph breaks, so a page is found by what it says rather than by
+   its class names or inline data. Character-range markers do not apply
+   to HTML, since its offsets no longer match the upload; such a marker
+   restricts the whole file, as any unresolvable marker does. Other
+   formats go to the extractor at `COPAL_EXTRACTOR_ADDR`. Upload markers
+   resolve here, and the text is split into passages for search. Blocked
+   content is never opened.
 5. `embed_text` embeds every passage that still lacks a vector, when
-   `COPAL_EMBEDDING_ADDR` is set.
+   `COPAL_EMBEDDING_ADDR` is set. Passages are cut by characters while
+   models count tokens, so dense text can exceed a small model's window.
+   When the service refuses a passage with an HTTP error, it is embedded
+   again as 2, 4, then 8 pieces split at whitespace, and the passage
+   keeps the normalized mean of their vectors. A service that refuses
+   every piece, or cannot be reached, still fails the step.
 6. `finalize_upload` moves the file from `scanning` to `ready`, or to
    `quarantined` when any step blocked it, in one compare-and-swap.
    The verdicts land under `metadata.processing` in the same write.

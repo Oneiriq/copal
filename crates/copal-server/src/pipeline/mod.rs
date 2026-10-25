@@ -202,7 +202,7 @@ pub fn standard_registry<B: BlobStore>(
                     // An unreachable service is an ERROR: silently
                     // skipping would leave passages out of semantic
                     // search with nothing recording why.
-                    let vector = crate::embed::embed(&addr, &model, &chunk.body).await?;
+                    let vector = crate::embed::embed_fitting(&addr, &model, &chunk.body).await?;
                     if copal_store::repo::text::put_embedding(
                         &store,
                         &chunk.chunk_id(),
@@ -667,8 +667,15 @@ async fn extract_text<B: BlobStore>(
         || declared == "application/json"
         || sniffed == "application/json";
 
-    let (body, extractor_name) = if native {
+    // A page's markup, styles and inline script are not what it says, and
+    // a page carrying data inline can pack a passage past what an
+    // embedding model accepts; HTML is indexed by its visible text.
+    let html = ["text/html", "application/xhtml+xml"]
+        .iter()
+        .any(|t| declared.starts_with(t) || sniffed.starts_with(t));
+    let (body, extractor_name) = if native || html {
         match std::str::from_utf8(&content) {
+            Ok(text) if html => (copal_core::html::visible_text(text), "html".to_owned()),
             Ok(text) => (text.to_owned(), "native".to_owned()),
             // Declared text that is not UTF-8 is not text we can index.
             Err(_) => {

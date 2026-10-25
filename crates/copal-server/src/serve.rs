@@ -218,13 +218,20 @@ pub const RENDER_CSP: &str = "sandbox allow-scripts allow-popups \
      'none'";
 
 /// Turn a served response into a rendered one: displayed inline under
-/// [`RENDER_CSP`], never framed, never referring, and denied the
-/// device features a page could otherwise prompt for.
+/// [`RENDER_CSP`], never referring, and denied the device features a
+/// page could otherwise prompt for.
+///
+/// Framing is refused everywhere unless `frame_ancestors` names origins
+/// that may embed rendered pages, such as a gallery that previews them.
+/// Those origins replace `'none'` in the policy's `frame-ancestors`, and
+/// `X-Frame-Options`, which cannot express a list, is left off. The
+/// sandbox is unchanged either way: a framed page still runs in an
+/// opaque origin and cannot reach the page that frames it.
 ///
 /// Only the render listener calls this. The service's own origin keeps
 /// forcing script-capable types to download, so an upload can never
 /// execute where tenant credentials live.
-pub fn render_sandbox(mut response: Response) -> Response {
+pub fn render_sandbox(mut response: Response, frame_ancestors: &[String]) -> Response {
     let headers = response.headers_mut();
     // The served disposition already carries the sanitized filename;
     // only its kind changes.
@@ -236,10 +243,40 @@ pub fn render_sandbox(mut response: Response) -> Response {
     if let Some(value) = inline {
         headers.insert(header::CONTENT_DISPOSITION, value);
     }
-    let fixed: [(header::HeaderName, &'static str); 6] = [
-        (header::CONTENT_SECURITY_POLICY, RENDER_CSP),
+    if frame_ancestors.is_empty() {
+        headers.insert(
+            header::CONTENT_SECURITY_POLICY,
+            header::HeaderValue::from_static(RENDER_CSP),
+        );
+        headers.insert(
+            header::X_FRAME_OPTIONS,
+            header::HeaderValue::from_static("DENY"),
+        );
+    } else {
+        let policy = RENDER_CSP.replace(
+            "frame-ancestors 'none'",
+            &format!("frame-ancestors {}", frame_ancestors.join(" ")),
+        );
+        // Origins are validated at boot; a value that still cannot be a
+        // header falls back to refusing all framing.
+        match header::HeaderValue::from_str(&policy) {
+            Ok(value) => {
+                headers.insert(header::CONTENT_SECURITY_POLICY, value);
+            }
+            Err(_) => {
+                headers.insert(
+                    header::CONTENT_SECURITY_POLICY,
+                    header::HeaderValue::from_static(RENDER_CSP),
+                );
+                headers.insert(
+                    header::X_FRAME_OPTIONS,
+                    header::HeaderValue::from_static("DENY"),
+                );
+            }
+        }
+    }
+    let fixed: [(header::HeaderName, &'static str); 4] = [
         (header::REFERRER_POLICY, "no-referrer"),
-        (header::X_FRAME_OPTIONS, "DENY"),
         (
             header::HeaderName::from_static("cross-origin-resource-policy"),
             "same-origin",
@@ -387,7 +424,7 @@ mod tests {
             Body::empty(),
         )
             .into_response();
-        let rendered = render_sandbox(served);
+        let rendered = render_sandbox(served, &[]);
         let get = |name: &str| rendered.headers().get(name).unwrap().to_str().unwrap();
         assert_eq!(get("content-disposition"), "inline; filename=\"page.html\"");
         let csp = get("content-security-policy");
@@ -405,9 +442,31 @@ mod tests {
     #[test]
     fn render_sandbox_adds_no_disposition_to_a_304() {
         let not_modified = (StatusCode::NOT_MODIFIED, Body::empty()).into_response();
-        let rendered = render_sandbox(not_modified);
+        let rendered = render_sandbox(not_modified, &[]);
         assert!(rendered.headers().get("content-disposition").is_none());
         assert!(rendered.headers().get("content-security-policy").is_some());
+    }
+
+    #[test]
+    fn named_origins_may_frame_a_page_and_no_one_else() {
+        let gallery = vec![
+            "http://10.0.0.130:8081".to_owned(),
+            "https://gallery.example.com".to_owned(),
+        ];
+        let rendered = render_sandbox(Body::empty().into_response(), &gallery);
+        let csp = rendered.headers()["content-security-policy"]
+            .to_str()
+            .unwrap();
+        assert!(
+            csp.ends_with("frame-ancestors http://10.0.0.130:8081 https://gallery.example.com"),
+            "{csp}"
+        );
+        // The sandbox itself does not loosen for a framed page.
+        assert!(csp.starts_with("sandbox allow-scripts"), "{csp}");
+        assert!(!csp.contains("allow-same-origin"), "{csp}");
+        assert!(csp.contains("connect-src 'none'"), "{csp}");
+        // X-Frame-Options cannot name a list, so it gives way to the CSP.
+        assert!(rendered.headers().get("x-frame-options").is_none());
     }
 
     #[test]

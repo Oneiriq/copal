@@ -35,6 +35,7 @@ How values are read:
 | `COPAL_S3_BIND` | unset | Listener for the S3-compatible gateway (path-style bucket routes at its root). Requires an encryption key, from `COPAL_BLOB_ENCRYPTION_KEY` or key custody; startup refuses otherwise. The S3 credential admin routes exist only when this is set. |
 | `COPAL_RENDER_BIND` | unset | Listener for render links, which display content, HTML included, inside a sandbox on an origin of its own. It serves nothing else. Unset, render links cannot be issued. |
 | `COPAL_RENDER_ORIGIN` | `http://` plus the render bind | Public origin of the render listener, such as `https://view.example.com`, used to build render links. Requires `COPAL_RENDER_BIND`, and startup refuses otherwise. Give it its own registrable domain in production. |
+| `COPAL_RENDER_FRAME_ANCESTORS` | unset (no framing) | Origins, separated by commas or spaces, allowed to frame rendered pages, such as a gallery that previews them: `http://10.0.0.130:8081`. They become the render policy's `frame-ancestors`, and `X-Frame-Options` is dropped. Each must be a bare `http` or `https` origin, and startup refuses anything else. The sandbox does not change for a framed page. |
 | `COPAL_CORS_ORIGINS` | unset | Comma-separated browser-origin allowlist. Unset attaches no CORS layer at all. |
 
 ### Metadata database

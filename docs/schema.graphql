@@ -134,6 +134,7 @@ type Mutation {
   fileRequestRendition(id: ID!, kind: String, width: Int, height: Int, format: String): JSON!
   fileTransform(id: ID!, transformer: String!, params: JSON, contentType: String): JSON!
   fileFetch(url: String!, path: String!, contentType: String, access: String, metadata: JSON, idempotencyKey: String, markers: JSON): JSON!
+  fileSetAccess(id: ID!, access: String!): File!
   fileRemove(id: ID!): Boolean!
   webhookRegister(url: String!, events: JSON): JSON!
   webhookRemove(id: ID!): Boolean!

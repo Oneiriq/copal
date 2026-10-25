@@ -132,6 +132,7 @@ pub(crate) fn dispatcher<B: BlobStore + 'static>(
     let hooks_register_state = state.clone();
     let hooks_remove_state = state.clone();
     let remove_state = state.clone();
+    let access_state = state.clone();
     let events_list_state = state.clone();
     let search_state = state.clone();
     let text_state = state.clone();
@@ -464,6 +465,25 @@ pub(crate) fn dispatcher<B: BlobStore + 'static>(
                 crate::app::request_transform_core(&state, &tenant, &id, &spec)
                     .await
                     .map(|(_, body)| Some(body))
+                    .map_err(|e| to_kayak_error(e.0))
+            }
+        })
+        .action("files", "set_access", move |ctx, args| {
+            let state = access_state.clone();
+            async move {
+                let tenant = tenant_of(&ctx)?;
+                let store = store_of(&ctx, &state.store);
+                let id = parse_file_id(args.id.as_deref().unwrap_or_default())?;
+                let access = args
+                    .input
+                    .get("access")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_owned();
+                let origin = ctx.get::<RequestOrigin>().map(|o| o.0.clone());
+                crate::app::set_access_core(&store, &tenant, &id, &access, origin.as_deref())
+                    .await
+                    .map(Some)
                     .map_err(|e| to_kayak_error(e.0))
             }
         })

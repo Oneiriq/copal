@@ -159,6 +159,35 @@ async fn uploaded_text_becomes_searchable() {
 }
 
 #[tokio::test]
+async fn html_is_found_by_what_it_says_not_how_it_is_built() {
+    let (router, engine, _dir) = stack(None).await;
+    let page = br#"<!doctype html><html><head><title>Bounded</title>
+        <style>.wrapper { display: grid }</style></head><body>
+        <h1>The ceiling pays for the floor</h1>
+        <p>Child poverty fell to a record low.</p>
+        <script>var DATA = {"labor":[[1947,65.2]],"wrapper":"gridline"};</script>
+        </body></html>"#;
+    let id = upload(&router, "relics/ceiling/v1.html", "text/html", page).await;
+    assert!(engine.tick("w").await.unwrap());
+
+    // Words a reader sees are found.
+    let hits = search(&router, "poverty").await;
+    assert_eq!(hits.len(), 1, "{hits:?}");
+    assert_eq!(hits[0]["file"], id.as_str());
+    // Words only the styles and scripts carry are not.
+    assert!(search(&router, "gridline").await.is_empty());
+    assert!(search(&router, "wrapper").await.is_empty());
+
+    let get = req("GET", &format!("/v1/files/{id}/text"), Body::empty());
+    let body = json_body(router.clone().oneshot(get).await.unwrap()).await;
+    assert_eq!(body["extractor"], "html");
+    assert_eq!(
+        body["text"],
+        "Bounded\n\nThe ceiling pays for the floor\n\nChild poverty fell to a record low."
+    );
+}
+
+#[tokio::test]
 async fn an_extractor_handles_what_copal_declines_to_parse() {
     let addr = fake_extractor("quarterly revenue grew across every region").await;
     let (router, engine, _dir) = stack(Some(addr)).await;

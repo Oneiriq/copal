@@ -712,6 +712,61 @@
         ]
       }
     },
+    "/v1/files/{id}/access": {
+      "post": {
+        "description": "Change who may read the file's content.",
+        "operationId": "set_access_files",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "access": {
+                    "enum": [
+                      "public",
+                      "private",
+                      "tenant",
+                      "grant"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "access"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/File"
+                }
+              }
+            },
+            "description": "The resource."
+          }
+        },
+        "x-requires-scopes": [
+          "write"
+        ]
+      }
+    },
     "/v1/files/{id}/content": {
       "get": {
         "operationId": "file_download_content",

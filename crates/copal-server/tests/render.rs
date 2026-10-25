@@ -379,6 +379,157 @@ async fn short_links_close_with_their_grant_and_refuse_strangers() {
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
+/// POST an access change as `tenant`, returning status and body.
+async fn set_access_as(
+    router: &axum::Router,
+    tenant: &str,
+    id: &str,
+    access: &str,
+) -> (StatusCode, Value) {
+    let response = router
+        .clone()
+        .oneshot(req_as(
+            tenant,
+            "POST",
+            &format!("/v1/files/{id}/access"),
+            Body::from(json!({ "access": access }).to_string()),
+        ))
+        .await
+        .unwrap();
+    let status = response.status();
+    (status, json_body(response).await)
+}
+
+#[tokio::test]
+async fn public_files_render_with_no_grant_until_made_private() {
+    let (service, render, _dir) = stack(Some(RENDER_ORIGIN)).await;
+    let id = upload_html(&service).await;
+    let public_path = format!("/v1/public/{id}");
+
+    // Private by default: the public route knows nothing about it.
+    let (status, _) = view(&render, &public_path).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let (status, record) = set_access_as(&service, "acme", &id, "public").await;
+    assert_eq!(status, StatusCode::OK, "{record}");
+    assert_eq!(record["access"], json!("public"));
+
+    let response = render
+        .clone()
+        .oneshot(anonymous(&public_path))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let headers = response.headers().clone();
+    let csp = headers["content-security-policy"].to_str().unwrap();
+    assert!(csp.starts_with("sandbox allow-scripts"), "{csp}");
+    assert!(!csp.contains("allow-same-origin"), "{csp}");
+    // Never cached, so taking a page private again is immediate.
+    assert_eq!(headers["cache-control"], "no-store");
+    let body = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(&body[..], PAGE);
+
+    // The service origin still downloads public HTML instead of running it.
+    let response = service
+        .clone()
+        .oneshot(anonymous(&format!("/v1/files/{id}/content")))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let disposition = response.headers()["content-disposition"].to_str().unwrap();
+    assert!(disposition.starts_with("attachment"), "{disposition}");
+
+    // Back to private: the permanent address closes on the next request.
+    let (status, record) = set_access_as(&service, "acme", &id, "private").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(record["access"], json!("private"));
+    let (status, _) = view(&render, &public_path).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn access_changes_belong_to_the_owner_and_name_a_real_level() {
+    let (service, render, _dir) = stack(Some(RENDER_ORIGIN)).await;
+    let id = upload_html(&service).await;
+
+    // Another tenant cannot publish this file, nor learn it exists.
+    let (status, _) = set_access_as(&service, "globex", &id, "public").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = view(&render, &format!("/v1/public/{id}")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let (status, refused) = set_access_as(&service, "acme", &id, "everyone").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{refused}");
+
+    // Unknown and malformed ids on the public route are a plain 404.
+    for path in [
+        "/v1/public/01m5pbtfswyy7b3etqjaeqbvqe",
+        "/v1/public/not-an-id",
+    ] {
+        let (status, _) = view(&render, path).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{path}");
+    }
+
+    // A deleted file cannot be made public.
+    let removed = service
+        .clone()
+        .oneshot(req("DELETE", &format!("/v1/files/{id}"), Body::empty()))
+        .await
+        .unwrap();
+    assert!(removed.status().is_success(), "{}", removed.status());
+    let (status, _) = set_access_as(&service, "acme", &id, "public").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn a_configured_gallery_may_frame_rendered_pages() {
+    let store = Store::connect(StoreConfig::memory()).await.unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let blobs = ObjectStore::open(dir.path().to_str().unwrap()).unwrap();
+    let state = AppState::new(store, blobs)
+        .with_render_origin(Some(RENDER_ORIGIN.to_owned()))
+        .with_render_frame_ancestors(vec!["http://gallery.example.test".to_owned()]);
+    let (service, render) = (build_router(state.clone()), render_router(state));
+    let id = upload_html(&service).await;
+
+    let (_, issued) = issue(&service, &id, "render-url", json!({})).await;
+    set_access_as(&service, "acme", &id, "public").await;
+    for path in [
+        path_of(issued["url"].as_str().unwrap()).to_owned(),
+        format!("/v1/public/{id}"),
+    ] {
+        let response = render.clone().oneshot(anonymous(&path)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{path}");
+        let csp = response.headers()["content-security-policy"]
+            .to_str()
+            .unwrap();
+        assert!(
+            csp.ends_with("frame-ancestors http://gallery.example.test"),
+            "{path}: {csp}"
+        );
+        assert!(!csp.contains("allow-same-origin"), "{csp}");
+        assert!(
+            response.headers().get("x-frame-options").is_none(),
+            "{path}"
+        );
+    }
+
+    // Without the setting, nothing may frame a page.
+    let (service, render, _dir) = stack(Some(RENDER_ORIGIN)).await;
+    let id = upload_html(&service).await;
+    let (_, issued) = issue(&service, &id, "render-url", json!({})).await;
+    let response = render
+        .clone()
+        .oneshot(anonymous(path_of(issued["url"].as_str().unwrap())))
+        .await
+        .unwrap();
+    assert_eq!(response.headers()["x-frame-options"], "DENY");
+    let csp = response.headers()["content-security-policy"]
+        .to_str()
+        .unwrap();
+    assert!(csp.ends_with("frame-ancestors 'none'"), "{csp}");
+}
+
 #[tokio::test]
 async fn without_a_render_listener_issuance_names_the_fix() {
     let (service, _render, _dir) = stack(None).await;

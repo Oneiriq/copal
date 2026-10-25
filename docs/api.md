@@ -57,7 +57,8 @@ section below.
 | Versions | `GET /v1/files/{id}/versions`, `GET /v1/files/{id}/versions/{n}/content` |
 | Signed read URLs (`cg1` grants) | `POST /v1/files/{id}/url`, redeemed at `GET /v1/grants/{token}`, revoked at `DELETE /v1/grants/{id}` |
 | Upload URLs | `POST /v1/files/{id}/upload-url`, redeemed at `PUT /v1/grants/{token}` |
-| Render links | `POST /v1/files/{id}/render-url`, redeemed at `GET /v1/render/{token}` on the render listener, or at `GET /a/{short_link}` when issued with a `short_name`, revoked at `DELETE /v1/grants/{id}` |
+| Render links | `POST /v1/files/{id}/render-url`, redeemed at `GET /v1/render/{token}` on the render listener, or at `GET /a/{short_link}` when issued with a `short_name`, revoked at `DELETE /v1/grants/{id}`; public files render at `GET /v1/public/{id}` with no grant |
+| Access changes | `POST /v1/files/{id}/access` |
 | Renditions | `POST /v1/files/{id}/renditions`, `GET /v1/files/{id}/renditions`, `GET /v1/files/{id}/renditions/{kind}-{w}x{h}.{format}` |
 | Transform | `POST /v1/files/{id}/transform` |
 | Fetch from a URL | `POST /v1/files/fetch` |
@@ -804,11 +805,41 @@ and fonts may load from Google Fonts, scripts from cdnjs, jsDelivr and
 unpkg, the allowances hosted artifacts conventionally use. Images and
 media must be inline. The full policy is `copal_server::serve::RENDER_CSP`.
 
+Rendered pages refuse to be framed (`frame-ancestors 'none'` and
+`X-Frame-Options: DENY`) unless `COPAL_RENDER_FRAME_ANCESTORS` names the
+origins that may frame them, such as a gallery that previews pages in
+`<iframe>`s. Those origins replace `'none'` and `X-Frame-Options` is left
+off. A framed page keeps the same sandbox and cannot reach the page that
+frames it.
+
 `COPAL_RENDER_ORIGIN` names the origin viewers reach, for example
 `https://view.example.com` behind a proxy. Unset, links use `http://` plus
 the bind address, which suits development. In production, give the render
 listener its own registrable domain: separate ports are separate origins,
 but browsers scope cookies by host.
+
+### Public pages
+
+A file whose access is `public` also has a permanent address on the
+render listener, with no grant and no expiry:
+
+```
+POST /v1/files/{id}/access   {"access": "public"}   change who may read the file
+GET  /v1/public/{id}         render listener only: display a public file
+```
+
+`POST /v1/files/{id}/access` takes `public`, `private`, `tenant` or
+`grant` and answers with the updated record. Only the owning tenant can
+change a file's access, and a deleted file cannot be changed. The new
+level governs every read from the next request on: moving a page back
+to `private` closes its `/v1/public/` address immediately, since those
+responses are `no-store`. Grants already issued are their own
+capabilities and keep working until they expire or are revoked.
+
+`/v1/public/{id}` answers only for a ready, public file, under the same
+sandbox as a render link. Any other file, and any unknown id, is the
+uniform 404. On the service origin a public HTML file still downloads
+rather than displays.
 
 ### Short links
 

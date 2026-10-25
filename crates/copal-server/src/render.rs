@@ -25,13 +25,29 @@ use copal_blob::BlobStore;
 use crate::app::AppState;
 use crate::error::ApiError;
 
-/// The whole render surface: render-link and short-link redemption and
-/// nothing else. Every other path on this listener is a 404.
+/// The whole render surface: render-link and short-link redemption,
+/// public files, and nothing else. Every other path on this listener is
+/// a 404.
 pub fn render_router<B: BlobStore + 'static>(state: AppState<B>) -> Router {
     Router::new()
         .route("/v1/render/{grant_ref}", get(redeem_render::<B>))
         .route("/a/{link}", get(redeem_short::<B>))
+        .route("/v1/public/{id}", get(render_public::<B>))
         .with_state(state)
+}
+
+/// Display a file whose access is `public`, with no grant: the
+/// permanent address of a published page. Anything else is a 404.
+async fn render_public<B: BlobStore>(
+    State(state): State<AppState<B>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Response, ApiError> {
+    let response = crate::app::render_public(&state, &headers, &id).await?;
+    Ok(crate::serve::render_sandbox(
+        response,
+        &state.render_frame_ancestors,
+    ))
 }
 
 /// Redeem a short link, `/a/<name>-<code>`: the typeable address of a
@@ -42,7 +58,10 @@ async fn redeem_short<B: BlobStore>(
     Path(link): Path<String>,
 ) -> Result<Response, ApiError> {
     let response = crate::app::redeem_short_link(&state, &headers, &link).await?;
-    Ok(crate::serve::render_sandbox(response))
+    Ok(crate::serve::render_sandbox(
+        response,
+        &state.render_frame_ancestors,
+    ))
 }
 
 /// Redeem a render link. Refusals are the uniform 404 every grant
@@ -53,5 +72,8 @@ async fn redeem_render<B: BlobStore>(
     Path(grant_ref): Path<String>,
 ) -> Result<Response, ApiError> {
     let response = crate::app::redeem_read_grant(&state, &headers, &grant_ref, "render").await?;
-    Ok(crate::serve::render_sandbox(response))
+    Ok(crate::serve::render_sandbox(
+        response,
+        &state.render_frame_ancestors,
+    ))
 }

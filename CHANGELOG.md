@@ -30,6 +30,10 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   A `public` file renders on the render listener at `/v1/public/{id}` with no
   grant and no expiry, `no-store` so that making it private again is
   immediate. Every other file is the uniform 404 there.
+- **Galleries may frame rendered pages.** `COPAL_RENDER_FRAME_ANCESTORS` names
+  origins allowed to embed rendered pages in an `<iframe>`; they replace
+  `'none'` in the render policy's `frame-ancestors`, and `X-Frame-Options` is
+  dropped. Unset, nothing may frame a page, as before.
 
 ### Changed
 

@@ -364,7 +364,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         (None, None) => None,
     };
-    state = state.with_render_origin(render_origin);
+    state = state
+        .with_render_origin(render_origin)
+        .with_render_frame_ancestors(config.render_frame_ancestors.clone());
     tracing::info!(instance = %state.instance_id, "upload-claim owner id");
     let instance_id = state.instance_id.clone();
     let cors = config.cors_origins.as_deref();

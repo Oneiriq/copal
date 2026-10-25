@@ -257,6 +257,9 @@ pub struct AppState<B: BlobStore> {
     /// is set: script-capable content is never displayed under the
     /// service's own origin.
     pub render_origin: Option<String>,
+    /// Origins allowed to frame rendered pages
+    /// (`COPAL_RENDER_FRAME_ANCESTORS`). Empty means none may.
+    pub render_frame_ancestors: Vec<String>,
 }
 
 impl<B: BlobStore> AppState<B> {
@@ -284,6 +287,7 @@ impl<B: BlobStore> AppState<B> {
             sessions: std::sync::Arc::new(crate::session_cache::SessionCache::default()),
             tiering: crate::tiering::Topology::default(),
             render_origin: None,
+            render_frame_ancestors: Vec::new(),
         }
     }
 
@@ -291,6 +295,13 @@ impl<B: BlobStore> AppState<B> {
     /// are dropped so minted links never carry a double slash.
     pub fn with_render_origin(mut self, origin: Option<String>) -> Self {
         self.render_origin = origin.map(|o| o.trim_end_matches('/').to_owned());
+        self
+    }
+
+    /// Install the origins allowed to frame rendered pages, already
+    /// validated as bare origins.
+    pub fn with_render_frame_ancestors(mut self, origins: Vec<String>) -> Self {
+        self.render_frame_ancestors = origins;
         self
     }
 

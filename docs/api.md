@@ -805,6 +805,13 @@ and fonts may load from Google Fonts, scripts from cdnjs, jsDelivr and
 unpkg, the allowances hosted artifacts conventionally use. Images and
 media must be inline. The full policy is `copal_server::serve::RENDER_CSP`.
 
+Rendered pages refuse to be framed (`frame-ancestors 'none'` and
+`X-Frame-Options: DENY`) unless `COPAL_RENDER_FRAME_ANCESTORS` names the
+origins that may frame them, such as a gallery that previews pages in
+`<iframe>`s. Those origins replace `'none'` and `X-Frame-Options` is left
+off. A framed page keeps the same sandbox and cannot reach the page that
+frames it.
+
 `COPAL_RENDER_ORIGIN` names the origin viewers reach, for example
 `https://view.example.com` behind a proxy. Unset, links use `http://` plus
 the bind address, which suits development. In production, give the render

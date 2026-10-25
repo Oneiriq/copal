@@ -482,6 +482,55 @@ async fn access_changes_belong_to_the_owner_and_name_a_real_level() {
 }
 
 #[tokio::test]
+async fn a_configured_gallery_may_frame_rendered_pages() {
+    let store = Store::connect(StoreConfig::memory()).await.unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let blobs = ObjectStore::open(dir.path().to_str().unwrap()).unwrap();
+    let state = AppState::new(store, blobs)
+        .with_render_origin(Some(RENDER_ORIGIN.to_owned()))
+        .with_render_frame_ancestors(vec!["http://gallery.example.test".to_owned()]);
+    let (service, render) = (build_router(state.clone()), render_router(state));
+    let id = upload_html(&service).await;
+
+    let (_, issued) = issue(&service, &id, "render-url", json!({})).await;
+    set_access_as(&service, "acme", &id, "public").await;
+    for path in [
+        path_of(issued["url"].as_str().unwrap()).to_owned(),
+        format!("/v1/public/{id}"),
+    ] {
+        let response = render.clone().oneshot(anonymous(&path)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{path}");
+        let csp = response.headers()["content-security-policy"]
+            .to_str()
+            .unwrap();
+        assert!(
+            csp.ends_with("frame-ancestors http://gallery.example.test"),
+            "{path}: {csp}"
+        );
+        assert!(!csp.contains("allow-same-origin"), "{csp}");
+        assert!(
+            response.headers().get("x-frame-options").is_none(),
+            "{path}"
+        );
+    }
+
+    // Without the setting, nothing may frame a page.
+    let (service, render, _dir) = stack(Some(RENDER_ORIGIN)).await;
+    let id = upload_html(&service).await;
+    let (_, issued) = issue(&service, &id, "render-url", json!({})).await;
+    let response = render
+        .clone()
+        .oneshot(anonymous(path_of(issued["url"].as_str().unwrap())))
+        .await
+        .unwrap();
+    assert_eq!(response.headers()["x-frame-options"], "DENY");
+    let csp = response.headers()["content-security-policy"]
+        .to_str()
+        .unwrap();
+    assert!(csp.ends_with("frame-ancestors 'none'"), "{csp}");
+}
+
+#[tokio::test]
 async fn without_a_render_listener_issuance_names_the_fix() {
     let (service, _render, _dir) = stack(None).await;
     let id = upload_html(&service).await;

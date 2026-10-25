@@ -27,6 +27,10 @@ pub struct Config {
     /// `https://view.example.com`. Defaults to `http://` plus the bind
     /// address, which suits local development only.
     pub render_origin: Option<String>,
+    /// Origins allowed to frame rendered pages
+    /// (`COPAL_RENDER_FRAME_ANCESTORS`), e.g. a gallery that previews
+    /// them. Empty, the default, means no page can be framed anywhere.
+    pub render_frame_ancestors: Vec<String>,
     /// Metadata plane connection.
     pub store: StoreConfig,
     /// Root directory of the filesystem blob store.
@@ -184,19 +188,37 @@ fn parse_auth_mode(raw: Option<&str>) -> Result<crate::auth::AuthMode, String> {
 /// path, query, or fragment, since render links are built by appending
 /// `/v1/render/...` to it. A trailing slash is dropped.
 fn parse_render_origin(raw: Option<String>) -> Result<Option<String>, String> {
-    let Some(raw) = raw else {
-        return Ok(None);
-    };
+    raw.map(|raw| parse_origin("COPAL_RENDER_ORIGIN", &raw))
+        .transpose()
+}
+
+/// Read `COPAL_RENDER_FRAME_ANCESTORS`: origins, separated by commas or
+/// spaces, that may frame rendered pages. Each must be an origin and
+/// nothing more, because the list lands verbatim in a CSP
+/// `frame-ancestors` directive.
+fn parse_frame_ancestors(raw: Option<String>) -> Result<Vec<String>, String> {
+    raw.unwrap_or_default()
+        .split([',', ' '])
+        .filter(|item| !item.trim().is_empty())
+        .map(|item| parse_origin("COPAL_RENDER_FRAME_ANCESTORS", item))
+        .collect()
+}
+
+/// An `http` or `https` origin with no path, query, or fragment, with
+/// a trailing slash dropped; `setting` names the variable in a refusal.
+fn parse_origin(setting: &str, raw: &str) -> Result<String, String> {
     let origin = raw.trim().trim_end_matches('/');
     let rest = origin
         .strip_prefix("https://")
         .or_else(|| origin.strip_prefix("http://"));
     match rest {
-        Some(authority) if !authority.is_empty() && !authority.contains(['/', '?', '#', ' ']) => {
-            Ok(Some(origin.to_owned()))
+        Some(authority)
+            if !authority.is_empty() && !authority.contains(['/', '?', '#', ' ', ';', '\'']) =>
+        {
+            Ok(origin.to_owned())
         }
         _ => Err(format!(
-            "COPAL_RENDER_ORIGIN must be an http or https origin such as \
+            "{setting} must be an http or https origin such as \
              https://view.example.com, not {raw:?}",
         )),
     }
@@ -219,6 +241,9 @@ impl Config {
             s3_bind: std::env::var("COPAL_S3_BIND").ok(),
             render_bind: std::env::var("COPAL_RENDER_BIND").ok(),
             render_origin: parse_render_origin(std::env::var("COPAL_RENDER_ORIGIN").ok())?,
+            render_frame_ancestors: parse_frame_ancestors(
+                std::env::var("COPAL_RENDER_FRAME_ANCESTORS").ok(),
+            )?,
             store: StoreConfig {
                 url: env_or("COPAL_DB_URL", "ws://127.0.0.1:8000"),
                 namespace: env_or("COPAL_DB_NS", "copal"),
@@ -345,8 +370,37 @@ pub struct TransformerConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_auth_mode, parse_flag, parse_render_origin};
+    use super::{parse_auth_mode, parse_flag, parse_frame_ancestors, parse_render_origin};
     use crate::auth::AuthMode;
+
+    #[test]
+    fn frame_ancestors_are_origins_and_nothing_more() {
+        assert_eq!(parse_frame_ancestors(None), Ok(vec![]));
+        assert_eq!(parse_frame_ancestors(Some("  ".into())), Ok(vec![]));
+        assert_eq!(
+            parse_frame_ancestors(Some(
+                "http://10.0.0.130:8081/, https://gallery.example.com".into()
+            )),
+            Ok(vec![
+                "http://10.0.0.130:8081".to_owned(),
+                "https://gallery.example.com".to_owned(),
+            ]),
+        );
+        // Anything that could smuggle a directive into the policy refuses.
+        for bad in [
+            "*",
+            "'self'",
+            "https://a.example.com; script-src *",
+            "https://a.example.com/path",
+            "gallery.example.com",
+        ] {
+            let refusal = parse_frame_ancestors(Some(bad.into())).unwrap_err();
+            assert!(
+                refusal.contains("COPAL_RENDER_FRAME_ANCESTORS"),
+                "{bad:?}: {refusal}"
+            );
+        }
+    }
 
     #[test]
     fn a_render_origin_is_an_origin_and_nothing_more() {

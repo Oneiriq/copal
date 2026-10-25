@@ -235,6 +235,7 @@ config file. These are the ones most deployments set:
 | `COPAL_BLOB_ENCRYPTION_KEY` | unset | 64 hex characters. Encrypts file bytes at rest. Webhooks, edge links, and the S3 gateway need it. |
 | `COPAL_S3_BIND` | unset | Address for the S3-compatible gateway. |
 | `COPAL_RENDER_BIND`, `COPAL_RENDER_ORIGIN` | unset | Listener and public origin for render links. |
+| `COPAL_RENDER_FRAME_ANCESTORS` | unset | Origins allowed to frame rendered pages, such as a gallery. |
 | `COPAL_RESIDENCIES` | unset | JSON describing extra storage backends (S3, GCS, Azure). |
 | `COPAL_CLAMAV_ADDR` | unset | A clamd address to scan uploads for malware. |
 | `COPAL_EXTRACTOR_ADDR` | unset | A Tika-compatible text extractor for PDFs and office documents. |

@@ -44,7 +44,10 @@ async fn render_public<B: BlobStore>(
     Path(id): Path<String>,
 ) -> Result<Response, ApiError> {
     let response = crate::app::render_public(&state, &headers, &id).await?;
-    Ok(crate::serve::render_sandbox(response))
+    Ok(crate::serve::render_sandbox(
+        response,
+        &state.render_frame_ancestors,
+    ))
 }
 
 /// Redeem a short link, `/a/<name>-<code>`: the typeable address of a
@@ -55,7 +58,10 @@ async fn redeem_short<B: BlobStore>(
     Path(link): Path<String>,
 ) -> Result<Response, ApiError> {
     let response = crate::app::redeem_short_link(&state, &headers, &link).await?;
-    Ok(crate::serve::render_sandbox(response))
+    Ok(crate::serve::render_sandbox(
+        response,
+        &state.render_frame_ancestors,
+    ))
 }
 
 /// Redeem a render link. Refusals are the uniform 404 every grant
@@ -66,5 +72,8 @@ async fn redeem_render<B: BlobStore>(
     Path(grant_ref): Path<String>,
 ) -> Result<Response, ApiError> {
     let response = crate::app::redeem_read_grant(&state, &headers, &grant_ref, "render").await?;
-    Ok(crate::serve::render_sandbox(response))
+    Ok(crate::serve::render_sandbox(
+        response,
+        &state.render_frame_ancestors,
+    ))
 }

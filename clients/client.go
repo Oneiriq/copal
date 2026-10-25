@@ -252,6 +252,14 @@ func (c *Client) FetchFile(input map[string]any) (map[string]any, error) {
 	return out, nil
 }
 
+func (c *Client) SetAccessFile(id string, input map[string]any) (*File, error) {
+	var out File
+	if err := c.request("POST", "/v1/files" + "/" + id + "/access", input, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 func (c *Client) RemoveFile(id string) error {
 	return c.request("DELETE", "/v1/files" + "/" + id, nil, nil)
 }

@@ -11,6 +11,7 @@ pub mod digest;
 pub mod error;
 pub mod excerpt;
 pub mod file;
+pub mod html;
 pub mod id;
 pub mod inspect;
 pub mod marker;

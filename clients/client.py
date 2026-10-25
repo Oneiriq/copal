@@ -161,6 +161,10 @@ class Client:
   def fetch_file(self, body: dict[str, Any] | None = None) -> Any:
     return self._request('POST', f'/v1/files/fetch', body or {})
 
+  def set_access_file(self, id: str, body: dict[str, Any] | None = None) -> File:
+    item = self._request('POST', f'/v1/files/{id}/access', body or {})
+    return File(**{k: v for k, v in item.items() if k in File.__dataclass_fields__})
+
   def remove_file(self, id: str) -> None:
     return self._request('DELETE', f'/v1/files/{id}')
 

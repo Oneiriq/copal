@@ -508,6 +508,33 @@ pub fn resource() -> Resource {
                 rate_class: Some("mutations".into()),
             },
             Action {
+                name: "set_access".into(),
+                method: "POST".into(),
+                path: "/{id}/access".into(),
+                input: vec![ActionField {
+                    name: "access".into(),
+                    kind: TypeRef::String,
+                    required: true,
+                    multiple: false,
+                    options: ["public", "private", "tenant", "grant"]
+                        .iter()
+                        .map(|s| (*s).to_owned())
+                        .collect(),
+                    description: Some(
+                        "The new level. public gives the file a permanent address on the \
+                         render listener, /v1/public/{id}; any other level takes it away on \
+                         the next request. Issued grants keep working until they expire or \
+                         are revoked."
+                            .into(),
+                    ),
+                }],
+                output: ActionOutput::Resource,
+                description: Some("Change who may read the file's content.".into()),
+                graphql_field: None,
+                requires: vec!["write".into()],
+                rate_class: Some("mutations".into()),
+            },
+            Action {
                 name: "remove".into(),
                 method: "DELETE".into(),
                 path: "/{id}".into(),

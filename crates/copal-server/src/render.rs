@@ -25,13 +25,26 @@ use copal_blob::BlobStore;
 use crate::app::AppState;
 use crate::error::ApiError;
 
-/// The whole render surface: render-link and short-link redemption and
-/// nothing else. Every other path on this listener is a 404.
+/// The whole render surface: render-link and short-link redemption,
+/// public files, and nothing else. Every other path on this listener is
+/// a 404.
 pub fn render_router<B: BlobStore + 'static>(state: AppState<B>) -> Router {
     Router::new()
         .route("/v1/render/{grant_ref}", get(redeem_render::<B>))
         .route("/a/{link}", get(redeem_short::<B>))
+        .route("/v1/public/{id}", get(render_public::<B>))
         .with_state(state)
+}
+
+/// Display a file whose access is `public`, with no grant: the
+/// permanent address of a published page. Anything else is a 404.
+async fn render_public<B: BlobStore>(
+    State(state): State<AppState<B>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Response, ApiError> {
+    let response = crate::app::render_public(&state, &headers, &id).await?;
+    Ok(crate::serve::render_sandbox(response))
 }
 
 /// Redeem a short link, `/a/<name>-<code>`: the typeable address of a

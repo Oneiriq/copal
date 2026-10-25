@@ -386,6 +386,39 @@
       }
     },
     {
+      "name": "file_set_access",
+      "description": "Change who may read the file's content.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "access": {
+            "type": "string",
+            "enum": [
+              "public",
+              "private",
+              "tenant",
+              "grant"
+            ],
+            "description": "The new level. public gives the file a permanent address on the render listener, /v1/public/{id}; any other level takes it away on the next request. Issued grants keep working until they expire or are revoked."
+          }
+        },
+        "required": [
+          "id",
+          "access"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "requiredScopes": [
+          "write"
+        ],
+        "rateClass": "mutations"
+      }
+    },
+    {
       "name": "file_remove",
       "description": "Soft-delete: tombstone the record and free its live path; bytes are reclaimed by garbage collection once nothing references them.",
       "inputSchema": {

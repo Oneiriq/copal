@@ -551,6 +551,34 @@ pub async fn soft_delete(store: &Store, tenant: &TenantId, id: &FileId) -> copal
     Ok(())
 }
 
+/// Change who may read a live file's content, returning the updated
+/// record. The new level governs every read from the next request on;
+/// grants already issued keep working until they expire or are revoked,
+/// because a grant is its own capability. A foreign or deleted file is
+/// `NotFound`.
+pub async fn set_access(
+    store: &Store,
+    tenant: &TenantId,
+    id: &FileId,
+    access: copal_core::AccessLevel,
+) -> copal_core::Result<FileRecord> {
+    let query = Query::new()
+        .update_set(rid(id)?.to_string())
+        .map_err(|e| map_store_err("set_access", e))?
+        .set("access", Value::from(access.as_str()))
+        .map_err(|e| map_store_err("set_access", e))?
+        .where_(eq("tenant_id", tenant.as_str()))
+        .where_(ne("state", FileState::Deleted.as_str()))
+        .return_after();
+    let rows: Vec<FileRow> = query_records(store.client(), &query)
+        .await
+        .map_err(|e| map_store_err("set_access", e))?;
+    rows.into_iter()
+        .next()
+        .ok_or_else(|| CopalError::not_found(format!("file {id}")))?
+        .into_domain()
+}
+
 /// Sweep every expired upload claim to `failed`, clearing the lease.
 ///
 /// System-wide by design (no tenant scope): the reaper is an operator

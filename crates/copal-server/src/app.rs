@@ -682,6 +682,7 @@ pub fn api_router<B: BlobStore + 'static>(state: AppState<B>) -> Router {
         .route("/v1/files/{id}/versions", get(list_versions::<B>))
         .route("/v1/files/{id}/url", post(issue_grant::<B>))
         .route("/v1/files/{id}/render-url", post(issue_render_grant::<B>))
+        .route("/v1/files/{id}/access", post(set_file_access::<B>))
         .route("/v1/files/{id}/upload-url", post(issue_upload_grant::<B>))
         .route(
             "/v1/files/{id}/renditions",
@@ -2226,6 +2227,102 @@ pub(crate) async fn remove_file_core(
     )
     .await?;
     Ok(())
+}
+
+/// Request body for an access change.
+#[derive(Debug, Deserialize)]
+struct SetAccessRequest {
+    access: String,
+}
+
+async fn set_file_access<B: BlobStore>(
+    State(state): State<AppState<B>>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Json(request): Json<SetAccessRequest>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let auth =
+        crate::auth::authorize_scoped(&state, &headers, crate::auth::Scope::Write, 1).await?;
+    let id = parse_id(&id)?;
+    let record = set_access_core(
+        &auth.store,
+        &auth.tenant,
+        &id,
+        &request.access,
+        forwarded_origin(&headers).as_deref(),
+    )
+    .await?;
+    Ok(Json(record))
+}
+
+/// Change a file's access level after creation, the shared core behind
+/// the REST handler and the GraphQL action resolver. Making a file
+/// `public` is how a page gets a permanent address on the render
+/// listener; moving it back takes that address away on the next request.
+pub(crate) async fn set_access_core(
+    store: &Store,
+    tenant: &TenantId,
+    id: &FileId,
+    access: &str,
+    origin: Option<&str>,
+) -> Result<serde_json::Value, ApiError> {
+    let access = copal_core::AccessLevel::parse(access)?;
+    let record = file_repo::set_access(store, tenant, id, access).await?;
+    copal_store::repo::auth::record_audit(
+        store,
+        tenant,
+        tenant.as_str(),
+        "file.access_changed",
+        id.as_str(),
+        origin,
+        Some(json!({ "access": access.as_str() })),
+    )
+    .await?;
+    Ok(crate::wire::wire_file(&record))
+}
+
+/// Display a public file on the render listener, with no grant. Only a
+/// file whose access is `public` answers; every other file, and every
+/// unknown id, is the uniform 404, so the route says nothing about
+/// private content. Responses are `no-store`, so making a page private
+/// again takes effect on the next view instead of after a cache lifetime.
+pub(crate) async fn render_public<B: BlobStore>(
+    state: &AppState<B>,
+    headers: &HeaderMap,
+    id: &str,
+) -> Result<Response, ApiError> {
+    let refused = || CopalError::not_found("unknown or unusable file");
+    let id = FileId::parse(id).map_err(|_| refused())?;
+    let record = file_repo::get_file_any(&state.store, &id)
+        .await?
+        .ok_or_else(refused)?;
+    if record.access != copal_core::AccessLevel::Public
+        || !record.servable_content()
+        || state.withholds_pending_scan(&record)
+    {
+        return Err(refused().into());
+    }
+    let digest = record.digest.as_ref().ok_or_else(refused)?;
+    let backend = match state.backend_or_recall(&record.tenant_id, &record).await? {
+        Ok(backend) => backend,
+        Err(run) => return Ok(crate::recall::accepted_response(&run)),
+    };
+    crate::tiering::note_blob_read(
+        &state.store,
+        record.blob_residency.as_deref().unwrap_or("local"),
+        digest,
+    );
+    crate::serve::serve_blob(
+        &backend,
+        headers,
+        crate::serve::ServeSpec {
+            content_type: &record.content_type,
+            digest,
+            path: &record.path,
+            cache: crate::serve::CacheClass::Private,
+        },
+    )
+    .await
 }
 
 /// Rendition request body. Defaults produce a 256-square jpeg thumb.

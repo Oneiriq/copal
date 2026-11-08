@@ -46,6 +46,12 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   8 pieces and keeps their normalized mean. A small model's token window
   (all-MiniLM-L6-v2 takes 512) is easy to exceed with 1,000 characters of
   figures; one such passage used to leave the whole file `failed`.
+- **copal-server sizes its own threads.** The binary runs on a 16 MiB
+  thread and gives its runtime's worker threads 16 MiB, where tokio's
+  default is 2 MiB, because the embedded SurrealDB 4 engine needs more
+  (SurrealDB recommends 10 MiB where it is embedded). The workspace's
+  `.cargo/config.toml` sets `RUST_MIN_STACK` to the same for test
+  threads; a value already in the environment wins.
 
 ### Security
 

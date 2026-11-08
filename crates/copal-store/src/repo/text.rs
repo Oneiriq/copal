@@ -498,9 +498,14 @@ async fn semantic_search_impl(
         .from_table(CHUNK_TABLE)
         .map_err(|e| map_store_err("semantic_search", e))?
         .where_(eq("tenant_id", tenant.as_str()))
-        .where_str(FILE_DISCLOSABLE)
         .vector_search_indexed("embedding", embedding.to_vec(), over_fetch, HNSW_EF)
         .map_err(|e| map_store_err("semantic_search", e))?;
+    // Conjunct by conjunct, not `where_str(FILE_DISCLOSABLE)`: see
+    // FILE_DISCLOSABLE_CLAUSES for the SurrealDB 4.0.0 refusal the
+    // grouped form meets beside a KNN operator.
+    for clause in FILE_DISCLOSABLE_CLAUSES {
+        query = query.where_str(clause);
+    }
     if enforce_chunk_levels {
         query = query.where_str(CHUNK_DISCLOSABLE);
     }
@@ -717,6 +722,23 @@ pub const FILE_DISCLOSABLE: &str = "file.access != 'grant' \
                            AND file.state != 'quarantined' \
                            AND file.state != 'deleted'";
 
+/// [`FILE_DISCLOSABLE`] as its separate conjuncts, which the semantic
+/// leg states one by one.
+///
+/// SurrealDB 4.0.0 refuses a KNN statement whose WHERE holds two or more
+/// conditions through a record link grouped in parentheses beside
+/// another condition, with "Internal database error: IR verification
+/// failed: Dominance" (pinned in `tests/engine_assumptions.rs`). Handed
+/// to `where_str` whole, this rule renders exactly that group. Stated
+/// conjunct by conjunct the same rule plans and answers, on 3.x as on
+/// 4.0. A test holds [`FILE_DISCLOSABLE`] to these joined by `AND`, so
+/// the two forms cannot drift apart.
+pub const FILE_DISCLOSABLE_CLAUSES: [&str; 3] = [
+    "file.access != 'grant'",
+    "file.state != 'quarantined'",
+    "file.state != 'deleted'",
+];
+
 /// The chunk half of the same rule: a passage whose own level is
 /// `grant` answers no search, whatever its file's level admits. NONE
 /// means the file's level, so the file clause above already decided
@@ -841,4 +863,16 @@ async fn search_impl(
         .take(limit.max(0) as usize)
         .map(|scored| candidates[scored.index].clone())
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The semantic leg states the file rule conjunct by conjunct, and
+    /// the other legs state it whole; both must be the same rule.
+    #[test]
+    fn the_file_rule_is_the_same_whole_and_in_conjuncts() {
+        assert_eq!(FILE_DISCLOSABLE_CLAUSES.join(" AND "), FILE_DISCLOSABLE);
+    }
 }

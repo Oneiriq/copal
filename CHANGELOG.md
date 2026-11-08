@@ -62,6 +62,11 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   nearest and hybrid fusion reads their real ranks. The lexical leg takes
   its rescore window in id order, the order 3.x scanned it in, so a large
   match set rescores the same window on every identical request.
+- **Semantic search runs on the SurrealDB 4.0.0 engine.** 4.0.0 fails a
+  KNN statement whose WHERE groups two or more record-link conditions in
+  parentheses beside another condition ("IR verification failed:
+  Dominance"), which is how the leg stated its file rule. It now states
+  the rule's three conjuncts one by one; the rule itself is unchanged.
 
 ### Security
 

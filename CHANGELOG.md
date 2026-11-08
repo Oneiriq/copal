@@ -52,6 +52,12 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   (SurrealDB recommends 10 MiB where it is embedded). The workspace's
   `.cargo/config.toml` sets `RUST_MIN_STACK` to the same for test
   threads; a value already in the environment wins.
+- **The SurrealDB 4 client.** Copal moves to oneiriq-surql 0.35 and
+  oneiriq-kayak 0.2, and with them to the SurrealDB 4 Rust SDK
+  (`surrealdb` 4.0.0). The 4.x SDK connects to SurrealDB 3.x servers as
+  well, so a `ws://` deployment, such as one on the compose stack's 3.x
+  server, keeps its server. The embedded tier (`surrealkv://`, `mem://`)
+  now runs the SurrealDB 4.0 engine.
 
 ### Fixed
 
@@ -67,6 +73,11 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   parentheses beside another condition ("IR verification failed:
   Dominance"), which is how the leg stated its file rule. It now states
   the rule's three conjuncts one by one; the rule itself is unchanged.
+- **A completion that loses a write conflict at commit runs again.** On
+  SurrealDB 4 the later of two overlapping completions of one claim is
+  refused at `COMMIT` as a retryable conflict, where it used to commit an
+  empty transaction. Run again, it loses the CAS and reports the
+  conflict as before, instead of a store error.
 
 ### Security
 
@@ -76,6 +87,12 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   webpki-root-certs 1.0.11, which drop the distrusted emSign intermediates
   (RUSTSEC-2026-0381, -0383), ammonia 4.2.4 (RUSTSEC-2026-0373,
   RUSTSEC-2021-0157, -0158), and ctutils 0.4.5 (RUSTSEC-2026-0385).
+- **Off SurrealDB 3.3's engine**, which carried RUSTSEC-2026-0454
+  (`surrealdb-core` 3.3, through `reblessive`'s unsound `Send`/`Sync`) and
+  RUSTSEC-2026-0452 (`surrealkv` 0.21, an out-of-bounds read). Both are
+  fixed only in SurrealDB 4, whose engine takes `surrealkv` 1.3 and no
+  `reblessive`. The move also leaves quick-xml 0.39 behind (0.41 and 0.42
+  now), and tokio resolves to 1.54.1.
 
 ## [0.1.0] - 2026-10-02
 

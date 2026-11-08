@@ -40,12 +40,15 @@ async fn seeded_client() -> DatabaseClient {
     client
 }
 
-/// `search::score` returns 0 for every row, which is why `SearchHit`
-/// carries no score field and why hybrid retrieval fuses RANKS rather
-/// than values. If this test starts failing, the engine grew real
-/// per-row scoring and the fusion can be revisited.
+/// The embedded engine is SurrealDB 4.0, whose `search::score` reports a
+/// real per-row BM25 value: above zero for every match, higher for the
+/// short term-dense document than for the long one. SurrealDB 3.x
+/// returned 0 for every row, and a `ws://` deployment's server may still
+/// be 3.x, which is why `SearchHit` carries no score field and hybrid
+/// retrieval fuses RANKS rather than values. If this test fails, the
+/// engine stopped scoring per row.
 #[tokio::test]
-async fn the_engine_reports_no_per_row_bm25_score() {
+async fn the_engine_reports_a_per_row_bm25_score() {
     let client = seeded_client().await;
     let query = surql::query::Query::new()
         .select(Some(vec![
@@ -57,50 +60,114 @@ async fn the_engine_reports_no_per_row_bm25_score() {
         .where_str("body @1@ 'quick fox'");
     let hits: Vec<serde_json::Value> = query_records(&client, &query).await.expect("rows");
 
+    assert_eq!(hits.len(), 2, "both matching documents come back: {hits:?}");
+    let score_of = |prefix: &str| {
+        hits.iter()
+            .find(|h| h["body"].as_str().is_some_and(|b| b.starts_with(prefix)))
+            .and_then(|h| h["score"].as_f64())
+            .unwrap_or_else(|| panic!("a numeric score for {prefix:?}: {hits:?}"))
+    };
+    let dense = score_of("quick quick quick fox");
+    let rambling = score_of("the quick brown fox");
     assert!(
-        hits.len() >= 2,
-        "both matching documents come back: {hits:?}"
-    );
-    let scores: Vec<f64> = hits
-        .iter()
-        .map(|h| h["score"].as_f64().expect("score projects as a number"))
-        .collect();
-    assert!(
-        scores.iter().all(|s| *s == 0.0),
-        "search::score began reporting values ({scores:?}); hybrid retrieval \
-         can stop fusing ranks and use them",
+        rambling > 0.0 && dense > rambling,
+        "SurrealDB 4 scores every match and the term-dense one higher \
+         (dense {dense}, rambling {rambling})",
     );
 }
 
-/// The full-text scan does NOT order by relevance. It yields matching
-/// rows in insertion order, which is why lexical ranking has to be
-/// computed outside the engine.
+/// The full-text scan ranks only when the statement asks it to.
 ///
-/// Measured across every form the engine accepts: a bare scan, the
-/// score projected, ORDER BY the projected alias, the `@@` operator
-/// without a reference, and an index defined with HIGHLIGHTS. None
-/// ranks. `ORDER BY search::score(1)` is a parse error.
+/// SurrealDB 3.x yielded matching rows in insertion order whatever was
+/// asked: measured across a bare scan, the score projected, ORDER BY the
+/// projected alias, the `@@` operator without a reference, and an index
+/// defined with HIGHLIGHTS, none ranked, and `ORDER BY search::score(1)`
+/// was a parse error. SurrealDB 4.0 returns a statement's rows in no
+/// particular order without an ORDER BY, so the search states one (id
+/// order, which is what 3.x gave), and it ranks on the projected score
+/// when asked, which this pins. Lexical ranking still happens outside
+/// the engine because a deployment's server may be 3.x, where the same
+/// ORDER BY ranks nothing.
 #[tokio::test]
-async fn the_full_text_scan_does_not_rank() {
+async fn the_full_text_scan_ranks_only_when_asked() {
     let client = seeded_client().await;
     let query = surql::query::Query::new()
-        .select(Some(vec!["body".to_owned()]))
+        .select(Some(vec![
+            "body".to_owned(),
+            "search::score(1) AS score".to_owned(),
+        ]))
         .from_table("doc")
         .unwrap()
-        .where_str("body @1@ 'quick fox'");
+        .where_str("body @1@ 'quick fox'")
+        .order_by("score", "DESC")
+        .unwrap();
     let hits: Vec<serde_json::Value> = query_records(&client, &query).await.expect("rows");
 
     let bodies: Vec<&str> = hits.iter().filter_map(|h| h["body"].as_str()).collect();
     assert_eq!(bodies.len(), 2, "{bodies:?}");
-    // The long rambling document was inserted first and comes back
-    // first, even though the short term-dense one is the better BM25
-    // match by both term frequency and length normalization. If this
-    // ever fails, the engine learned to rank and the local scorer can
-    // be reconsidered.
+    // The long rambling document was inserted first, and the short
+    // term-dense one is the better BM25 match by both term frequency and
+    // length normalization, so it comes first only if the engine ranks.
     assert!(
-        bodies[0].starts_with("the quick brown fox"),
-        "the scan began ranking rather than returning insertion order: {bodies:?}",
+        bodies[0].starts_with("quick quick quick fox"),
+        "ORDER BY the projected score did not rank: {bodies:?}",
     );
+}
+
+/// SurrealDB 4.0.0 refuses a KNN statement whose WHERE holds two or more
+/// conditions through a record link grouped in parentheses beside
+/// another condition, with "Internal database error: IR verification
+/// failed: Dominance". Handed whole to `where_str`, the file half of the
+/// retrieval rule renders exactly that group, so the semantic leg states
+/// it conjunct by conjunct (`text::FILE_DISCLOSABLE_CLAUSES`), the form
+/// pinned here as answering. No permissions or record-access session
+/// are involved: this is a root session on schemaless tables. If the
+/// refusal stops, the engine is fixed and the semantic leg can take the
+/// rule whole again.
+#[tokio::test]
+async fn a_knn_beside_a_grouped_link_conjunction_is_refused_on_4_0_0() {
+    let cfg = ConnectionConfig::builder()
+        .url("mem://")
+        .namespace("knn_group")
+        .database("knn_group")
+        .build()
+        .unwrap();
+    let client = DatabaseClient::new(cfg).unwrap();
+    client.connect().await.unwrap();
+    for statement in [
+        "DEFINE TABLE doc SCHEMALESS;",
+        "DEFINE TABLE chunk SCHEMALESS;",
+        "DEFINE INDEX idx_vec ON chunk FIELDS embedding HNSW DIMENSION 3 DIST COSINE;",
+        "CREATE doc:open SET state = 'ready';",
+        "CREATE doc:gone SET state = 'deleted';",
+        "CREATE chunk:1 SET t = 'acme', file = doc:open, embedding = [1.0, 0.0, 0.01];",
+        "CREATE chunk:2 SET t = 'acme', file = doc:gone, embedding = [0.9, 0.1, 0.01];",
+    ] {
+        client.inner().query(statement).await.expect(statement);
+    }
+
+    let knn = "embedding <|2,64|> [1.0, 0.0, 0.01]";
+    let grouped = format!(
+        "SELECT meta::id(id) AS id FROM chunk WHERE {knn} AND (t = 'acme') \
+         AND (file.state != 'quarantined' AND file.state != 'deleted');"
+    );
+    let refused = client
+        .query(&grouped)
+        .await
+        .expect_err("SurrealDB 4.0.0 refuses the grouped form");
+    assert!(
+        refused
+            .to_string()
+            .contains("IR verification failed: Dominance"),
+        "{refused}"
+    );
+
+    let split = format!(
+        "SELECT meta::id(id) AS id FROM chunk WHERE {knn} AND (t = 'acme') \
+         AND (file.state != 'quarantined') AND (file.state != 'deleted');"
+    );
+    let rows = client.query(&split).await.expect("the split form answers");
+    assert_eq!(rows[0], serde_json::json!([{ "id": 1 }]), "{rows}");
 }
 
 /// Facet counts group the linked file ids and measure the distinct

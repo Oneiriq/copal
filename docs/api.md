@@ -558,15 +558,16 @@ stricter.
 
 Hybrid fuses the two rankings by reciprocal rank, using positions
 instead of scores. Lexical and semantic relevance are not on a
-comparable scale, and this engine reports no lexical score at all. A
-document near the top of either ranking scores well, and one near the
-top of both scores best.
+comparable scale, and a SurrealDB 3.x server reports no lexical score
+at all. A document near the top of either ranking scores well, and one
+near the top of both scores best.
 
 Hits carry the file id, the passage that matched, an excerpt bounded
-at 400 characters, and `matches`, in the engine's relevance order.
+at 400 characters, and `matches`, in relevance order.
 There is no score field: SurrealDB 3.x does not report per-row BM25
-values through the full-text scan, so a score column would be a
-constant dressed as relevance. The analyzer lowercases, folds accents,
+values through the full-text scan and 4.0 does, so a score column
+would be a constant dressed as relevance on one server and a value on
+the other. The analyzer lowercases, folds accents,
 and stems English, so `inspect` finds `inspection`.
 
 `matches` locates the query inside the excerpt: a list of

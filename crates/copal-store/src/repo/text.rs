@@ -529,9 +529,9 @@ async fn semantic_search_impl(
 ///
 /// There is no score field on purpose. SurrealDB 3.x does not plumb
 /// per-row BM25 values through the full-text scan (`search::score`
-/// returns 0), so a score column would be a constant pretending to be
-/// relevance. The scan itself returns rows in relevance order, which
-/// is the real signal, so hits arrive ranked and unlabeled.
+/// returns 0), and 4.0 does, so a score column would be a constant on
+/// one server and a value on the other, depending on which one a
+/// deployment runs. Hits arrive in rank order and unlabeled.
 #[derive(Debug, Clone, Deserialize)]
 pub struct SearchHit {
     #[serde(default)]
@@ -762,11 +762,12 @@ pub const CHUNK_DISCLOSABLE: &str = "(access IS NONE OR access != 'grant')";
 ///
 /// Ranking happens in this function. SurrealDB 3.x uses the
 /// BM25 index to decide which rows match and then yields them in
-/// insertion order, reporting `search::score` as 0 for every one
-/// (both pinned by tests in `tests/engine_assumptions.rs`). So the
-/// engine does the selective part through the index and this function
-/// rescores the candidate window, which is the two-stage shape
-/// production search uses anyway.
+/// insertion order, reporting `search::score` as 0 for every one.
+/// SurrealDB 4.0 reports real scores and ranks by them when asked
+/// (both pinned by tests in `tests/engine_assumptions.rs`), and a
+/// deployment's server may be either. So the engine does the selective
+/// part through the index and this function rescores the candidate
+/// window, which is the two-stage shape production search uses anyway.
 ///
 /// A corpus with more than `RESCORE_WINDOW` matches for one query
 /// ranks the window rather than the whole match set. That is a real

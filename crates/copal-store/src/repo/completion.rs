@@ -125,19 +125,23 @@ pub async fn complete_upload(
         markers,
     )?;
 
-    let mut transaction = Transaction::begin(store.client())
-        .await
-        .map_err(|e| map_store_err("complete", e))?;
-    for statement in &statements {
-        transaction
-            .execute(statement)
-            .await
-            .map_err(|e| map_store_err("complete", e))?;
-    }
-    let results = transaction
-        .commit()
-        .await
-        .map_err(|e| map_store_err("complete", e))?;
+    // A commit the engine refuses as a write conflict wrote nothing, so
+    // the transaction runs again as it stands. SurrealDB 4 refuses the
+    // later of two overlapping completions of one claim that way, at
+    // COMMIT, where the loser used to commit an empty transaction; run
+    // again, its CAS matches nothing and it loses as below, with a
+    // conflict. A conflict with some other writer simply succeeds on
+    // the next attempt.
+    let mut attempts = 0;
+    let results = loop {
+        attempts += 1;
+        match run_transaction(store, &statements).await {
+            Err(error) if attempts < COMMIT_ATTEMPTS && is_retryable_conflict(&error) => {
+                tracing::debug!(%error, attempts, "completion lost a write conflict; running it again");
+            }
+            other => break other.map_err(|e| map_store_err("complete", e))?,
+        }
+    };
 
     let outcome = read_outcome(&results)?;
     if outcome.moved == 0 {
@@ -149,6 +153,30 @@ pub async fn complete_upload(
         .next()
         .ok_or_else(|| CopalError::Store("completion committed without a file row".into()))?
         .into_domain()
+}
+
+/// How many times a completion runs before a write conflict is
+/// reported as the error it is.
+const COMMIT_ATTEMPTS: u32 = 3;
+
+/// One attempt: every statement buffered, then flushed and committed.
+async fn run_transaction(
+    store: &Store,
+    statements: &[String],
+) -> Result<Value, surql::error::SurqlError> {
+    let mut transaction = Transaction::begin(store.client()).await?;
+    for statement in statements {
+        transaction.execute(statement).await?;
+    }
+    transaction.commit().await
+}
+
+/// Whether the engine refused a commit because a concurrent
+/// transaction wrote the same keys first, which it reports as
+/// "Transaction conflict: ... This transaction can be retried".
+fn is_retryable_conflict(error: &surql::error::SurqlError) -> bool {
+    let text = error.to_string();
+    text.contains("Transaction conflict") && text.contains("can be retried")
 }
 
 /// The verdict the transaction sends home.
@@ -334,6 +362,23 @@ fn guarded(statement: impl std::fmt::Display) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The refusal SurrealDB 4 gives the later of two overlapping
+    /// completions, as surql reports it, runs again; a refusal of any
+    /// other kind does not.
+    #[test]
+    fn only_a_retryable_write_conflict_runs_again() {
+        let lost = surql::error::SurqlError::Transaction {
+            reason: "commit failed: query error: Cannot COMMIT: Transaction conflict: \
+                     Write conflict, retry the transaction. This transaction can be retried"
+                .to_owned(),
+        };
+        assert!(is_retryable_conflict(&lost));
+        let refused = surql::error::SurqlError::Query {
+            reason: "Database index `uniq_file_live_path` already contains ['acme']".to_owned(),
+        };
+        assert!(!is_retryable_conflict(&refused));
+    }
 
     fn rendered(policy: Option<&RetentionPolicy>) -> Vec<String> {
         rendered_with_markers(policy, None)

@@ -938,14 +938,26 @@ async fn hardening_surfaces_answer_correctly() {
 
     // A zero-second request deadline times ordinary routes out with
     // 408, proving the layer sits on the router.
+    //
+    // The request has to still be waiting when the deadline's timer
+    // fires, so its body arrives 50 ms late. The deadline loses to a
+    // handler that finishes first, and against the embedded SurrealDB 4
+    // engine a bare listing finished first every time and answered 200,
+    // where against 3.3 it lost to the timer.
     let (slow_router, _dir2) = test_router_with(Limits {
         request_timeout_secs: 0,
         ..Limits::default()
     })
     .await;
+    let late_body = Body::from_stream(futures::stream::once(async {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        Ok::<_, std::io::Error>(bytes::Bytes::from(
+            json!({"path": "slow/drip.txt", "content_type": "text/plain"}).to_string(),
+        ))
+    }));
     let response = slow_router
         .clone()
-        .oneshot(req("GET", "/v1/files", Some("acme"), Body::empty()))
+        .oneshot(req("POST", "/v1/files", Some("acme"), late_body))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::REQUEST_TIMEOUT);

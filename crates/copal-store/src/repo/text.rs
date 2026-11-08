@@ -481,11 +481,19 @@ async fn semantic_search_impl(
     // over-fetch absorbs it: the trimmed limit means result counts
     // reveal nothing about how many neighbors were withheld.
     let over_fetch = (limit * 10).clamp(limit, 500);
+    // Nearest first, by an ORDER BY rather than by the scan. SurrealDB 4
+    // returns a statement's rows in no particular order without one,
+    // so the LIMIT below would keep any `limit` of the over-fetched
+    // neighbors instead of the nearest, and the hybrid fusion reads
+    // these rows' ranks. The id breaks ties between identical vectors,
+    // so an identical request ranks them the same way every time.
     let mut query = Query::new()
         .select(Some(vec![
+            "id".to_owned(),
             "file".to_owned(),
             "body".to_owned(),
             "ordinal".to_owned(),
+            "vector::distance::knn() AS distance".to_owned(),
         ]))
         .from_table(CHUNK_TABLE)
         .map_err(|e| map_store_err("semantic_search", e))?
@@ -501,6 +509,10 @@ async fn semantic_search_impl(
     }
     let query = query
         .where_str(format!("vector::distance::knn() <= {max_distance}"))
+        .order_by("distance", "ASC")
+        .map_err(|e| map_store_err("semantic_search", e))?
+        .order_by("id", "ASC")
+        .map_err(|e| map_store_err("semantic_search", e))?
         .limit(limit)
         .map_err(|e| map_store_err("semantic_search", e))?;
     query_records(store.client(), &query)
@@ -787,8 +799,17 @@ async fn search_impl(
     // contributes no snippet and no rank, it never reaches the
     // rescore below or the rerank window downstream, and a file whose
     // only matching passages are withheld never surfaces at all.
+    //
+    // The window is the matches in id order, the order SurrealDB 3.x
+    // scanned them in (chunk ids are ULIDs, so oldest first), stated
+    // as an ORDER BY because SurrealDB 4 returns rows in no particular
+    // order without one. Unordered, a match set larger than the window
+    // would rescore a different window on each identical request, and
+    // equal scores, which keep their input order below, would trade
+    // places between them.
     let mut query = Query::new()
         .select(Some(vec![
+            "id".to_owned(),
             "file".to_owned(),
             "body".to_owned(),
             "ordinal".to_owned(),
@@ -806,6 +827,8 @@ async fn search_impl(
         query = query.where_str(clause);
     }
     let query = query
+        .order_by("id", "ASC")
+        .map_err(|e| map_store_err("search", e))?
         .limit(window)
         .map_err(|e| map_store_err("search", e))?;
     let candidates: Vec<SearchHit> = query_records(store.client(), &query)

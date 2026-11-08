@@ -53,6 +53,16 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   `.cargo/config.toml` sets `RUST_MIN_STACK` to the same for test
   threads; a value already in the environment wins.
 
+### Fixed
+
+- **Search reads state their order.** SurrealDB 4 returns a statement's
+  rows in no particular order without an `ORDER BY`, where 3.x scanned in
+  key order. The semantic leg now orders its neighbors nearest first
+  (`ORDER BY distance, id`) before its `LIMIT`, so the limit keeps the
+  nearest and hybrid fusion reads their real ranks. The lexical leg takes
+  its rescore window in id order, the order 3.x scanned it in, so a large
+  match set rescores the same window on every identical request.
+
 ### Security
 
 - **Dependencies moved past the October 2026 advisories** that failed

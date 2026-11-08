@@ -58,6 +58,14 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   well, so a `ws://` deployment, such as one on the compose stack's 3.x
   server, keeps its server. The embedded tier (`surrealkv://`, `mem://`)
   now runs the SurrealDB 4.0 engine.
+- **An embedded directory an earlier release wrote is refused, not
+  converted.** The SurrealDB 4 engine refuses a `surrealkv://` directory
+  SurrealDB 3.x wrote and leaves it as it was, because its in-place
+  upgrade is experimental and one-way; Copal does not opt in. Boot stops
+  at `connect` with an error that says what to do: back the directory
+  up and upgrade it with a SurrealDB 4 server first (docs/operations.md,
+  "The embedded tier"). SurrealDB's own message names
+  `SURREAL_EXPERIMENTAL_UPGRADE_FROM_3X`, which Copal does not read.
 
 ### Fixed
 

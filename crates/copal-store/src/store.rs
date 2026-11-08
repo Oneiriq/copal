@@ -95,10 +95,7 @@ impl Store {
             .map_err(|e| CopalError::Store(format!("invalid store config: {e}")))?;
         let client =
             DatabaseClient::new(config).map_err(|e| CopalError::Store(format!("client: {e}")))?;
-        client
-            .connect()
-            .await
-            .map_err(|e| CopalError::Store(format!("connect: {e}")))?;
+        client.connect().await.map_err(connect_error)?;
 
         let store = Self {
             client,
@@ -404,6 +401,27 @@ impl Store {
             };
             Ok((change, notification.data))
         }))
+    }
+}
+
+/// The error a failed connect reports.
+///
+/// An embedded SurrealDB 4 engine refuses a datastore SurrealDB 3.x
+/// wrote, which is any surrealkv directory an earlier Copal wrote, and
+/// leaves it as it was. Its message tells the reader to set
+/// `SURREAL_EXPERIMENTAL_UPGRADE_FROM_3X`, which only a SurrealDB
+/// server reads, and surql's adds a builder call no operator can make,
+/// so this names what an operator can do instead. Copal does not opt
+/// in itself: the upgrade is experimental and one-way.
+fn connect_error(error: surql::SurqlError) -> CopalError {
+    match error {
+        surql::SurqlError::DatastoreUpgradeRefused { reason } => CopalError::Store(format!(
+            "connect: {reason}. Copal embeds SurrealDB 4 and does not upgrade a 3.x \
+             datastore itself, and the variable named is read by a SurrealDB server, not \
+             by Copal: back the directory up and upgrade it with a SurrealDB 4 server \
+             first (\"The embedded tier\" in docs/operations.md)",
+        )),
+        other => CopalError::Store(format!("connect: {other}")),
     }
 }
 

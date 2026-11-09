@@ -1,0 +1,8 @@
+# The embedded SurrealDB 4 engine needs a deeper stack than a thread's
+# 2 MiB default (SurrealDB recommends 10 MiB where it is embedded), and
+# every test here that opens `mem://` runs it in-process. The test
+# harness's threads, which also host each `#[tokio::test]` runtime, take
+# their stack from RUST_MIN_STACK. copal-server sizes its own runtime
+# threads in `main`. A RUST_MIN_STACK already in the environment wins.
+[env]
+RUST_MIN_STACK = "16777216"

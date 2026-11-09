@@ -28,10 +28,18 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # On a GitHub-hosted runner rather than shaman, for memory. Compiling
+  # surrealdb-core 4.0.0 with Copal's features (the embedded tier adds
+  # kv-surrealkv) peaks at 6.1 GiB resident on rustc 1.99.1, one rustc
+  # alone, measured under a 6 GiB cgroup; most of it is type and borrow
+  # checking, which no profile setting shrinks. shaman's runner pod is
+  # capped at 6Gi with cargo and the runner beside that rustc, so it
+  # died there at any CARGO_BUILD_JOBS and left no log. The hosted
+  # runner has 16 GB. Moving back needs a pod limit of at least 8Gi.
   check:
     name: fmt + clippy + test
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: [self-hosted, shaman]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
 
@@ -54,16 +62,17 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
-      # shaman's runner pod has a 6Gi memory limit and no CPU limit, so
-      # cargo would otherwise start one rustc or linker per host core.
-      # Linking the integration-test binaries that wide, each carrying
-      # the embedded SurrealDB engine, outgrew the limit: from
-      # 2026-09-26 every run lost its runner about fifteen minutes into
-      # this step. Clippy links nothing and keeps the full width.
+      # Two compiles at a time keeps surrealdb-core's 6.1 GiB beside one
+      # other rustc or a linker (an integration-test binary links at
+      # about 1.9 GiB) well inside the runner's 16 GB. Debug info stays
+      # off to hold the test build's target directory to about 20 GB on
+      # the runner's disk. Clippy links nothing and keeps the full width.
       - name: cargo test
         run: cargo test --workspace
         env:
-          CARGO_BUILD_JOBS: 2
+          CARGO_BUILD_JOBS: "2"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+          CARGO_PROFILE_TEST_DEBUG: "0"
 
       - name: Dependency audit
         run: |

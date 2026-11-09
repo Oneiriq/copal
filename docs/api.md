@@ -499,10 +499,10 @@ GET /v1/files/{id}/text                        one file's extracted text
 
 `mode` is `lexical` (words), `semantic` (meaning), or `hybrid` (both,
 fused; the default). Lexical relevance is BM25, scored by Copal: the
-database index decides which passages match and returns them in
-insertion order, so ranking them is Copal's job. It scores a bounded
-window of matches, which means a query matching more than a few
-hundred passages ranks that window rather than every match. Semantic modes need an embedding service; without
+database index decides which passages match, and Copal takes them
+oldest first and ranks them itself. It scores a bounded window of
+matches, which means a query matching more than a few hundred
+passages ranks the oldest few hundred rather than every match. Semantic modes need an embedding service; without
 one they answer lexically and the response's `mode` field says which
 retrieval actually ran, so a client can tell. An unrecognized mode is
 a request error rather than a silent default.
@@ -558,15 +558,16 @@ stricter.
 
 Hybrid fuses the two rankings by reciprocal rank, using positions
 instead of scores. Lexical and semantic relevance are not on a
-comparable scale, and this engine reports no lexical score at all. A
-document near the top of either ranking scores well, and one near the
-top of both scores best.
+comparable scale, and a SurrealDB 3.x server reports no lexical score
+at all. A document near the top of either ranking scores well, and one
+near the top of both scores best.
 
 Hits carry the file id, the passage that matched, an excerpt bounded
-at 400 characters, and `matches`, in the engine's relevance order.
+at 400 characters, and `matches`, in relevance order.
 There is no score field: SurrealDB 3.x does not report per-row BM25
-values through the full-text scan, so a score column would be a
-constant dressed as relevance. The analyzer lowercases, folds accents,
+values through the full-text scan and 4.0 does, so a score column
+would be a constant dressed as relevance on one server and a value on
+the other. The analyzer lowercases, folds accents,
 and stems English, so `inspect` finds `inspection`.
 
 `matches` locates the query inside the excerpt: a list of

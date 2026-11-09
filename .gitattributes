@@ -2,3 +2,4 @@
 conformance/**/*.sh text eol=lf
 conformance/*.sh text eol=lf
 bench/**/*.sh text eol=lf
+crates/*/tests/fixtures/** binary

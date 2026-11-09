@@ -163,12 +163,24 @@ is the ephemeral variant for demos and tests.
 
 The embedded engine serves one process, so the two-instance topology
 and its shared engine stay on the `ws://` form. The upgrade path is
-mechanical: stop Copal, start a SurrealDB server on the surrealkv
-directory (the on-disk format is the engine's own), point
-`COPAL_DB_URL` at it, and start two instances. Back up the embedded
-tier by including the surrealkv directory in the same snapshot as the
-blob root; the ordering rule in [backup.md](backup.md) applies
-unchanged.
+mechanical: stop Copal, start a SurrealDB server of the same major
+version on the surrealkv directory (the on-disk format is the
+engine's own), point `COPAL_DB_URL` at it, and start two instances.
+Back up the embedded tier by including the surrealkv directory in the
+same snapshot as the blob root; the ordering rule in
+[backup.md](backup.md) applies unchanged.
+
+The embedded engine is SurrealDB 4.0. It refuses a surrealkv directory
+that SurrealDB 3.x wrote, which is any directory an earlier Copal
+release wrote, and boot stops at `connect` with `datastore upgrade
+refused`, leaving the directory as it was. Copal does not convert it,
+because SurrealDB's in-place upgrade from 3.x is experimental and
+one-way: a 3.x engine cannot open the directory afterwards. To move
+such a directory forward, snapshot it, then start a SurrealDB 4.0
+server on it once with `SURREAL_EXPERIMENTAL_UPGRADE_FROM_3X=true`
+(or convert a copy with `skv migrate`), and point Copal at the result.
+A `ws://` deployment is unaffected: this client talks to SurrealDB 3.x
+and 4.x servers alike, and the server's own upgrade is a separate step.
 
 What the network hop costs, measured by `bench/scale.sh` with the same
 engine version on both sides (in-process `mem://` against a same-host

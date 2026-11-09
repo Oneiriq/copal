@@ -2,11 +2,12 @@
 //!
 //! SurrealDB 3.x accepts a `BM25` full-text index and uses it to decide
 //! WHICH rows match, but it reports no per-row score (`search::score`
-//! returns 0) and its scan yields matches in insertion order. Both are
-//! pinned by tests in `copal-store`. So a lexical search that ranked on
-//! the engine's output would be returning the oldest matches rather
-//! than the best ones, and a hybrid search fusing that order would be
-//! fusing noise.
+//! returns 0) and its scan yields matches in insertion order. 4.0
+//! reports a score, and a deployment's server may still be 3.x. So a
+//! lexical search that ranked on the engine's output would be returning
+//! the oldest matches rather than the best ones on one server, and a
+//! hybrid search fusing that order would be fusing noise. What 4.0's
+//! embedded engine does is pinned by tests in `copal-store`.
 //!
 //! The engine still does the expensive part: finding the matching rows
 //! through the index. This module rescores that candidate window, which

@@ -481,18 +481,31 @@ async fn semantic_search_impl(
     // over-fetch absorbs it: the trimmed limit means result counts
     // reveal nothing about how many neighbors were withheld.
     let over_fetch = (limit * 10).clamp(limit, 500);
+    // Nearest first, by an ORDER BY rather than by the scan. SurrealDB 4
+    // returns a statement's rows in no particular order without one,
+    // so the LIMIT below would keep any `limit` of the over-fetched
+    // neighbors instead of the nearest, and the hybrid fusion reads
+    // these rows' ranks. The id breaks ties between identical vectors,
+    // so an identical request ranks them the same way every time.
     let mut query = Query::new()
         .select(Some(vec![
+            "id".to_owned(),
             "file".to_owned(),
             "body".to_owned(),
             "ordinal".to_owned(),
+            "vector::distance::knn() AS distance".to_owned(),
         ]))
         .from_table(CHUNK_TABLE)
         .map_err(|e| map_store_err("semantic_search", e))?
         .where_(eq("tenant_id", tenant.as_str()))
-        .where_str(FILE_DISCLOSABLE)
         .vector_search_indexed("embedding", embedding.to_vec(), over_fetch, HNSW_EF)
         .map_err(|e| map_store_err("semantic_search", e))?;
+    // Conjunct by conjunct, not `where_str(FILE_DISCLOSABLE)`: see
+    // FILE_DISCLOSABLE_CLAUSES for the SurrealDB 4.0.0 refusal the
+    // grouped form meets beside a KNN operator.
+    for clause in FILE_DISCLOSABLE_CLAUSES {
+        query = query.where_str(clause);
+    }
     if enforce_chunk_levels {
         query = query.where_str(CHUNK_DISCLOSABLE);
     }
@@ -501,6 +514,10 @@ async fn semantic_search_impl(
     }
     let query = query
         .where_str(format!("vector::distance::knn() <= {max_distance}"))
+        .order_by("distance", "ASC")
+        .map_err(|e| map_store_err("semantic_search", e))?
+        .order_by("id", "ASC")
+        .map_err(|e| map_store_err("semantic_search", e))?
         .limit(limit)
         .map_err(|e| map_store_err("semantic_search", e))?;
     query_records(store.client(), &query)
@@ -512,9 +529,9 @@ async fn semantic_search_impl(
 ///
 /// There is no score field on purpose. SurrealDB 3.x does not plumb
 /// per-row BM25 values through the full-text scan (`search::score`
-/// returns 0), so a score column would be a constant pretending to be
-/// relevance. The scan itself returns rows in relevance order, which
-/// is the real signal, so hits arrive ranked and unlabeled.
+/// returns 0), and 4.0 does, so a score column would be a constant on
+/// one server and a value on the other, depending on which one a
+/// deployment runs. Hits arrive in rank order and unlabeled.
 #[derive(Debug, Clone, Deserialize)]
 pub struct SearchHit {
     #[serde(default)]
@@ -705,6 +722,23 @@ pub const FILE_DISCLOSABLE: &str = "file.access != 'grant' \
                            AND file.state != 'quarantined' \
                            AND file.state != 'deleted'";
 
+/// [`FILE_DISCLOSABLE`] as its separate conjuncts, which the semantic
+/// leg states one by one.
+///
+/// SurrealDB 4.0.0 refuses a KNN statement whose WHERE holds two or more
+/// conditions through a record link grouped in parentheses beside
+/// another condition, with "Internal database error: IR verification
+/// failed: Dominance" (pinned in `tests/engine_assumptions.rs`). Handed
+/// to `where_str` whole, this rule renders exactly that group. Stated
+/// conjunct by conjunct the same rule plans and answers, on 3.x as on
+/// 4.0. A test holds [`FILE_DISCLOSABLE`] to these joined by `AND`, so
+/// the two forms cannot drift apart.
+pub const FILE_DISCLOSABLE_CLAUSES: [&str; 3] = [
+    "file.access != 'grant'",
+    "file.state != 'quarantined'",
+    "file.state != 'deleted'",
+];
+
 /// The chunk half of the same rule: a passage whose own level is
 /// `grant` answers no search, whatever its file's level admits. NONE
 /// means the file's level, so the file clause above already decided
@@ -728,11 +762,12 @@ pub const CHUNK_DISCLOSABLE: &str = "(access IS NONE OR access != 'grant')";
 ///
 /// Ranking happens in this function. SurrealDB 3.x uses the
 /// BM25 index to decide which rows match and then yields them in
-/// insertion order, reporting `search::score` as 0 for every one
-/// (both pinned by tests in `tests/engine_assumptions.rs`). So the
-/// engine does the selective part through the index and this function
-/// rescores the candidate window, which is the two-stage shape
-/// production search uses anyway.
+/// insertion order, reporting `search::score` as 0 for every one.
+/// SurrealDB 4.0 reports real scores and ranks by them when asked
+/// (both pinned by tests in `tests/engine_assumptions.rs`), and a
+/// deployment's server may be either. So the engine does the selective
+/// part through the index and this function rescores the candidate
+/// window, which is the two-stage shape production search uses anyway.
 ///
 /// A corpus with more than `RESCORE_WINDOW` matches for one query
 /// ranks the window rather than the whole match set. That is a real
@@ -787,8 +822,17 @@ async fn search_impl(
     // contributes no snippet and no rank, it never reaches the
     // rescore below or the rerank window downstream, and a file whose
     // only matching passages are withheld never surfaces at all.
+    //
+    // The window is the matches in id order, the order SurrealDB 3.x
+    // scanned them in (chunk ids are ULIDs, so oldest first), stated
+    // as an ORDER BY because SurrealDB 4 returns rows in no particular
+    // order without one. Unordered, a match set larger than the window
+    // would rescore a different window on each identical request, and
+    // equal scores, which keep their input order below, would trade
+    // places between them.
     let mut query = Query::new()
         .select(Some(vec![
+            "id".to_owned(),
             "file".to_owned(),
             "body".to_owned(),
             "ordinal".to_owned(),
@@ -806,6 +850,8 @@ async fn search_impl(
         query = query.where_str(clause);
     }
     let query = query
+        .order_by("id", "ASC")
+        .map_err(|e| map_store_err("search", e))?
         .limit(window)
         .map_err(|e| map_store_err("search", e))?;
     let candidates: Vec<SearchHit> = query_records(store.client(), &query)
@@ -818,4 +864,16 @@ async fn search_impl(
         .take(limit.max(0) as usize)
         .map(|scored| candidates[scored.index].clone())
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The semantic leg states the file rule conjunct by conjunct, and
+    /// the other legs state it whole; both must be the same rule.
+    #[test]
+    fn the_file_rule_is_the_same_whole_and_in_conjuncts() {
+        assert_eq!(FILE_DISCLOSABLE_CLAUSES.join(" AND "), FILE_DISCLOSABLE);
+    }
 }

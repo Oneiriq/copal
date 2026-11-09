@@ -4,8 +4,35 @@ use copal_blob::ObjectStore;
 use copal_server::{AppState, Config};
 use copal_store::Store;
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// Boot failures cross from the thread that runs the server back to
+/// `main`, so they have to be sendable.
+type BootError = Box<dyn std::error::Error + Send + Sync>;
+
+/// Stack for every thread that can run the embedded SurrealDB engine,
+/// which `COPAL_DB_URL=surrealkv://...` or `mem://` puts in this
+/// process. SurrealDB recommends 10 MiB where it is embedded, and its
+/// 4.0 engine overflows tokio's 2 MiB worker default. The thread that
+/// blocks on the server gets the same, because the main thread has only
+/// 1 MiB on Windows. Against a `ws://` server the queries run there, and
+/// this costs address space and nothing else.
+const ENGINE_STACK: usize = 16 * 1024 * 1024;
+
+fn main() -> Result<(), BootError> {
+    std::thread::Builder::new()
+        .name("copal-server".to_owned())
+        .stack_size(ENGINE_STACK)
+        .spawn(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .thread_stack_size(ENGINE_STACK)
+                .build()?
+                .block_on(run())
+        })?
+        .join()
+        .map_err(|_| "the copal-server thread panicked")?
+}
+
+async fn run() -> Result<(), BootError> {
     init_tracing(std::env::var("COPAL_OTLP_ENDPOINT").ok().as_deref());
 
     let mut config = Config::from_env()?;
@@ -70,10 +97,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let open_tiers = |tiers: &std::collections::HashMap<String, copal_blob::tier::TierConfig>,
                       residency_key: Option<&str>,
                       residency_previous: Option<&str>|
-     -> Result<
-        std::collections::HashMap<String, ObjectStore>,
-        Box<dyn std::error::Error>,
-    > {
+     -> Result<std::collections::HashMap<String, ObjectStore>, BootError> {
         let mut opened = std::collections::HashMap::new();
         for (name, tier) in tiers {
             let mut backend = ObjectStore::open_backend(&tier.backend)?;
@@ -89,48 +113,47 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         Ok(opened)
     };
-    let build_residencies =
-        || -> Result<copal_server::app::Residencies<ObjectStore>, Box<dyn std::error::Error>> {
-            let mut named = std::collections::HashMap::new();
-            let mut tiers = std::collections::HashMap::new();
-            for (name, residency_config) in &config.residencies {
-                if !copal_store::repo::tenant::valid_residency_name(name) {
-                    return Err(format!(
-                        "residency name {name} is invalid: 1..=32 lowercase alphanumeric",
-                    )
-                    .into());
-                }
-                let mut backend = ObjectStore::open_backend(&residency_config.backend)?;
-                if let Some(key) = &config.blob_encryption_key {
-                    backend = backend.with_cipher(key)?;
-                }
-                if let Some(previous) = &config.blob_encryption_key_previous {
-                    backend = backend.with_previous_cipher(previous)?;
-                }
-                named.insert(name.clone(), backend);
-                if !residency_config.tiers.is_empty() {
-                    tiers.insert(
-                        name.clone(),
-                        open_tiers(
-                            &residency_config.tiers,
-                            residency_config.backend.encryption_key(),
-                            residency_config.backend.previous_encryption_key(),
-                        )?,
-                    );
-                }
+    let build_residencies = || -> Result<copal_server::app::Residencies<ObjectStore>, BootError> {
+        let mut named = std::collections::HashMap::new();
+        let mut tiers = std::collections::HashMap::new();
+        for (name, residency_config) in &config.residencies {
+            if !copal_store::repo::tenant::valid_residency_name(name) {
+                return Err(format!(
+                    "residency name {name} is invalid: 1..=32 lowercase alphanumeric",
+                )
+                .into());
             }
-            if !config.local_tiers.is_empty() {
+            let mut backend = ObjectStore::open_backend(&residency_config.backend)?;
+            if let Some(key) = &config.blob_encryption_key {
+                backend = backend.with_cipher(key)?;
+            }
+            if let Some(previous) = &config.blob_encryption_key_previous {
+                backend = backend.with_previous_cipher(previous)?;
+            }
+            named.insert(name.clone(), backend);
+            if !residency_config.tiers.is_empty() {
                 tiers.insert(
-                    "local".to_owned(),
-                    open_tiers(&config.local_tiers, None, None)?,
+                    name.clone(),
+                    open_tiers(
+                        &residency_config.tiers,
+                        residency_config.backend.encryption_key(),
+                        residency_config.backend.previous_encryption_key(),
+                    )?,
                 );
             }
-            Ok(copal_server::app::Residencies {
-                local: open_blobs()?,
-                named,
-                tiers,
-            })
-        };
+        }
+        if !config.local_tiers.is_empty() {
+            tiers.insert(
+                "local".to_owned(),
+                open_tiers(&config.local_tiers, None, None)?,
+            );
+        }
+        Ok(copal_server::app::Residencies {
+            local: open_blobs()?,
+            named,
+            tiers,
+        })
+    };
     // Tiers validate at boot, whole-deployment, BEFORE any backend
     // opens: names hold the residency alphabet, archive classes refuse
     // on backends whose restore this build does not drive, and no
@@ -141,7 +164,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut register =
             |residency: &str,
              tiers: &std::collections::HashMap<String, copal_blob::tier::TierConfig>|
-             -> Result<(), Box<dyn std::error::Error>> {
+             -> Result<(), BootError> {
                 copal_blob::tier::validate_tiers(residency, tiers)?;
                 let classes = tiers
                     .iter()

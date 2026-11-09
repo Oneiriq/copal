@@ -1,10 +1,11 @@
 //! Lexical search ranks by relevance, not by whichever passage was
 //! written first.
 //!
-//! The engine returns full-text matches in insertion order (pinned in
-//! `engine_assumptions.rs`), so these seed the SAME two passages in
-//! BOTH orders. A search that trusted the scan would answer differently
-//! each time; a ranked one answers the same.
+//! The search takes full-text matches in id order, which is write order
+//! (chunk ids are ULIDs) and the order SurrealDB 3.x scanned them in,
+//! so these seed the SAME two passages in BOTH orders. A search that
+//! trusted that order would answer differently each time; a ranked one
+//! answers the same.
 
 use copal_core::{FileSpec, TenantId};
 use copal_store::repo::{file, text};
